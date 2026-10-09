@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    # Dogfoods the reusable workflow this playbook offers to other repositories.
+    uses: ./.github/workflows/reusable-python-ci.yml
+    with:
+      python-versions: '["3.11", "3.12", "3.13"]'
+      coverage-package: ai_guard
+      coverage-min: 90

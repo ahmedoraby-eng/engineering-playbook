@@ -1,0 +1,55 @@
+# Reusable CI for Node.js / TypeScript services: clean install, typecheck and build,
+# tests, and an audit of production dependencies.
+#
+#   jobs:
+#     ci:
+#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-node-ci.yml@main
+#       with:
+#         node-version: "22"
+name: Reusable Node CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+      build-command:
+        type: string
+        default: npm run build --if-present
+      test-command:
+        type: string
+        default: npm test
+      audit-level:
+        description: Fail on production dependency vulnerabilities at or above this level
+        type: string
+        default: high
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: ${{ inputs.build-command }}
+      - run: ${{ inputs.test-command }}
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+      - run: npm audit --omit=dev --audit-level=${{ inputs.audit-level }}

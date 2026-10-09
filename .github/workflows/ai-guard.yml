@@ -1,0 +1,40 @@
+# Runs the AI-engineering guardrails on every pull request.
+# Findings appear as annotations on the PR diff; errors block the merge.
+name: AI guardrails
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  ai-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Collect the pull request diff and description
+        env:
+          # Passed through the environment, never interpolated into the script,
+          # so a PR description cannot inject shell commands.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff "$BASE_SHA"...HEAD > "$RUNNER_TEMP/changes.diff"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+      - name: Run ai-guard
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          PYTHONPATH=src python -m ai_guard \
+            --diff "$RUNNER_TEMP/changes.diff" \
+            --pr-body "$RUNNER_TEMP/pr-body.md" \
+            --labels "$LABELS" \
+            --format github

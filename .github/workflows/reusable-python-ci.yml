@@ -1,0 +1,61 @@
+# Reusable CI for Python services: lint, format, tests on a version matrix and a coverage gate.
+#
+# Adopt it from any repository:
+#
+#   jobs:
+#     ci:
+#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-python-ci.yml@main
+#       with:
+#         coverage-package: my_service
+name: Reusable Python CI
+
+on:
+  workflow_call:
+    inputs:
+      python-versions:
+        description: JSON list of Python versions to test on
+        type: string
+        default: '["3.12"]'
+      coverage-package:
+        description: Package to measure coverage for
+        type: string
+        required: true
+      coverage-min:
+        description: Minimum coverage percentage
+        type: number
+        default: 80
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(inputs.python-versions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest --cov=${{ inputs.coverage-package }} --cov-report=term-missing --cov-fail-under=${{ inputs.coverage-min }}
