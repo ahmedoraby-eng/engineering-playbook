@@ -30,4 +30,4 @@ AI is a tool used by an accountable engineer, not an author. These guardrails ap
 
 ## 3. Adoption
 
-Roll out in this order, one portfolio team at a time: approved tools and A5 training → `ai-guard` in warning mode for two weeks → enforce → evals (B1) for the first AI feature. Review the guardrails each quarter against incidents and near misses; remove any rule that isn't preventing real problems.
+Roll out in this order, one portfolio team at a time: approved tools and A5 training → `ai-guard` with `--warn-only` for two weeks → enforce → evals (B1) for the first AI feature. Review the guardrails each quarter against incidents and near misses; remove any rule that isn't preventing real problems.
