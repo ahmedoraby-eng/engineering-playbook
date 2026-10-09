@@ -56,6 +56,14 @@ def test_cli_emits_github_annotations_and_fails(tmp_path, capsys):
     assert "::error file=src/settings.py,line=1,title=no-secrets::" in out
 
 
+def test_warn_only_mode_reports_but_never_fails(tmp_path, capsys):
+    args = _write(tmp_path, diff_for({"src/settings.py": [f"KEY = '{FAKE_AWS_KEY}'"]}), pr_body())
+    assert main([*args, "--warn-only", "--format", "github"]) == 0
+    out = capsys.readouterr().out
+    assert "::warning file=src/settings.py,line=1,title=no-secrets::" in out
+    assert "0 error(s), 2 warning(s)" in out
+
+
 def test_cli_reads_diff_from_stdin(tmp_path, monkeypatch, capsys):
     import io
 
