@@ -15,7 +15,7 @@ The standards are short on purpose: each one is a handful of *must* practices, w
 | [Standards](standards/) | [Development](standards/01-development.md) · [Testing](standards/02-testing.md) · [Shipping](standards/03-shipping.md) · [Observability](standards/04-observability.md) · [AI engineering guardrails](standards/05-ai-engineering-guardrails.md) |
 | [`ai-guard`](src/ai_guard/) | A pull-request check that enforces the AI guardrails: disclosure, no secrets, tests with AI-written code, human review for sensitive areas, reviewable size |
 | [`agent-evals`](src/agent_evals/) | A guarded agent runtime and an [evaluation suite](evals/support_agent.json) run in CI: tenant isolation, human confirmation for destructive and external actions, prompt-injection and PII cases |
-| [Reusable CI](.github/workflows/) | Drop-in GitHub Actions workflows for [Python](.github/workflows/reusable-python-ci.yml) and [Node.js](.github/workflows/reusable-node-ci.yml) services |
+| [Reusable CI](.github/workflows/) | Drop-in GitHub Actions workflows for [Python](.github/workflows/reusable-python-ci.yml) and [Node.js](.github/workflows/reusable-node-ci.yml) services, and [`ai-guard`](.github/workflows/reusable-ai-guard.yml) for any repository |
 | [Assessment](assessments/engineering-health-scorecard.md) | A one-day engineering health scorecard for a team or company, ending in the three highest-leverage changes |
 | [Templates](templates/) | [ADR](templates/adr.md) · [Incident review](templates/postmortem.md) · [Pull request](.github/pull_request_template.md) |
 
@@ -73,6 +73,14 @@ PYTHONPATH=src python -m agent_evals evals/support_agent.json --min-pass-rate 1.
 ```
 
 CI runs the suite on every change and publishes the results table to the run summary.
+
+## Adopted by
+
+| Repository | Uses |
+|---|---|
+| [dairy-farm-management-platform](https://github.com/ahmedoraby-eng/dairy-farm-management-platform) | Reusable Python CI · `ai-guard` with a tenancy-aware policy |
+
+A repository adopts the playbook with two short workflow files — see [its CI](https://github.com/ahmedoraby-eng/dairy-farm-management-platform/blob/main/.github/workflows/ci.yml) and [ai-guard](https://github.com/ahmedoraby-eng/dairy-farm-management-platform/blob/main/.github/workflows/ai-guard.yml). Changing a standard here changes it everywhere it is adopted.
 
 ## Adopting the playbook
 
