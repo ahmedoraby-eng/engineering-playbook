@@ -6,7 +6,7 @@
 #     ci:
 #       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-python-ci.yml@main
 #       with:
-#         coverage-package: my_service
+#         coverage-package: my_service   # or "pkg_a pkg_b"
 name: Reusable Python CI
 
 on:
@@ -17,7 +17,7 @@ on:
         type: string
         default: '["3.12"]'
       coverage-package:
-        description: Package to measure coverage for
+        description: Package(s) to measure coverage for, space-separated
         type: string
         required: true
       coverage-min:
@@ -34,8 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -52,10 +52,17 @@ jobs:
       matrix:
         python: ${{ fromJSON(inputs.python-versions) }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - run: python -m pytest --cov=${{ inputs.coverage-package }} --cov-report=term-missing --cov-fail-under=${{ inputs.coverage-min }}
+      - name: Tests with coverage gate
+        env:
+          PACKAGES: ${{ inputs.coverage-package }}
+          COVERAGE_MIN: ${{ inputs.coverage-min }}
+        run: |
+          cov_args=()
+          for pkg in $PACKAGES; do cov_args+=("--cov=$pkg"); done
+          python -m pytest "${cov_args[@]}" --cov-report=term-missing --cov-fail-under="$COVERAGE_MIN"
