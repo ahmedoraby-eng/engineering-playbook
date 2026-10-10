@@ -14,6 +14,7 @@ The standards are short on purpose: each one is a handful of *must* practices, w
 |---|---|
 | [Standards](standards/) | [Development](standards/01-development.md) · [Testing](standards/02-testing.md) · [Shipping](standards/03-shipping.md) · [Observability](standards/04-observability.md) · [AI engineering guardrails](standards/05-ai-engineering-guardrails.md) |
 | [`ai-guard`](src/ai_guard/) | A pull-request check that enforces the AI guardrails: disclosure, no secrets, tests with AI-written code, human review for sensitive areas, reviewable size |
+| [`agent-evals`](src/agent_evals/) | A guarded agent runtime and an [evaluation suite](evals/support_agent.json) run in CI: tenant isolation, human confirmation for destructive and external actions, prompt-injection and PII cases |
 | [Reusable CI](.github/workflows/) | Drop-in GitHub Actions workflows for [Python](.github/workflows/reusable-python-ci.yml) and [Node.js](.github/workflows/reusable-node-ci.yml) services |
 | [Assessment](assessments/engineering-health-scorecard.md) | A one-day engineering health scorecard for a team or company, ending in the three highest-leverage changes |
 | [Templates](templates/) | [ADR](templates/adr.md) · [Incident review](templates/postmortem.md) · [Pull request](.github/pull_request_template.md) |
@@ -25,6 +26,7 @@ The standards are short on purpose: each one is a handful of *must* practices, w
       │
       ├── Reusable CI ─────────── lint · tests · coverage gate · dependency audit
       ├── ai-guard ────────────── AI disclosure · secrets · tests · sensitive paths
+      ├── agent-evals ─────────── eval suite gating every change to an AI feature
       ├── PR / ADR / incident templates
       │
       └── Health scorecard ────── measure a team against the standards,
@@ -54,6 +56,24 @@ Add `--warn-only` to report findings without failing the build — useful for a 
 
 Each repository tunes it with an optional [`.ai-guard.toml`](.ai-guard.toml) (source and test paths, sensitive areas, size guideline, extra secret patterns). The [`ai-guard` workflow](.github/workflows/ai-guard.yml) runs it on every pull request — including this repository's own.
 
+## agent-evals
+
+A worked example of AI guardrails B1–B4 and B7 for an agent. A small helpdesk agent proposes actions through a planner (normally an LLM); the **runtime** decides what actually happens:
+
+- only allow-listed tools run, and records are scoped to the caller's tenant
+- destructive (`close_ticket`) and external (`send_email`) actions wait for human confirmation
+- actions prompted by retrieved documents are dropped — prompt injection is contained, not just detected
+- card-like numbers are redacted before any text reaches the model
+- answers cite their source, and the agent says "I don't know" instead of guessing
+
+The planner in CI is a deliberately naive rule-based stand-in (it obeys instructions it finds in documents), so the suite proves the runtime contains a misbehaving model without needing an API key. A test also runs the suite with guardrails switched off and asserts the critical cases fail — the evals catch regressions rather than passing by construction.
+
+```bash
+PYTHONPATH=src python -m agent_evals evals/support_agent.json --min-pass-rate 1.0
+```
+
+CI runs the suite on every change and publishes the results table to the run summary.
+
 ## Adopting the playbook
 
 1. **Assess** the team with the [health scorecard](assessments/engineering-health-scorecard.md) and agree on three changes.
@@ -64,7 +84,7 @@ Each repository tunes it with an optional [`.ai-guard.toml`](.ai-guard.toml) (so
 
 ```bash
 pip install -r requirements-dev.txt
-ruff check . && ruff format --check . && pytest --cov=ai_guard
+ruff check . && ruff format --check . && pytest --cov=ai_guard --cov=agent_evals
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Maintained by [Ahmed Oraby](https://www.linkedin.com/in/ahmedoraby/).
