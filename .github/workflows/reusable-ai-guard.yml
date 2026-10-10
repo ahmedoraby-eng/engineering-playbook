@@ -1,0 +1,74 @@
+# Reusable AI-guardrails check for pull requests in any repository.
+#
+# Adopt it with a workflow like this in the consuming repository:
+#
+#   on:
+#     pull_request:
+#       types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+#   jobs:
+#     ai-guard:
+#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-ai-guard.yml@main
+#
+# Tune the rules with an optional .ai-guard.toml at the repository root.
+name: Reusable AI guardrails
+
+on:
+  workflow_call:
+    inputs:
+      policy:
+        description: Path to the guardrail policy in the calling repository
+        type: string
+        default: .ai-guard.toml
+      warn-only:
+        description: Report findings as warnings without failing (for a trial period)
+        type: boolean
+        default: false
+      playbook-ref:
+        description: Version of the playbook's ai-guard to run
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  ai-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Check out ai-guard from the playbook
+        uses: actions/checkout@v6
+        with:
+          repository: ahmedoraby-eng/engineering-playbook
+          ref: ${{ inputs.playbook-ref }}
+          path: .playbook
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Collect the pull request diff and description
+        env:
+          # Passed through the environment, never interpolated into the script,
+          # so a PR description cannot inject shell commands.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff "$BASE_SHA"...HEAD -- . ':(exclude).playbook' > "$RUNNER_TEMP/changes.diff"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+      - name: Run ai-guard
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          POLICY: ${{ inputs.policy }}
+          WARN_ONLY: ${{ inputs.warn-only }}
+        run: |
+          extra=()
+          if [ "$WARN_ONLY" = "true" ]; then extra+=(--warn-only); fi
+          PYTHONPATH=.playbook/src python -m ai_guard \
+            --diff "$RUNNER_TEMP/changes.diff" \
+            --pr-body "$RUNNER_TEMP/pr-body.md" \
+            --labels "$LABELS" \
+            --policy "$POLICY" \
+            --format github "${extra[@]}"
