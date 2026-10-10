@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .checks import Finding, run_all
@@ -38,6 +39,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--labels", default="", help="comma-separated PR labels")
     parser.add_argument("--policy", default=".ai-guard.toml", help="policy file (defaults apply if missing)")
     parser.add_argument("--format", choices=["text", "github"], default="text")
+    parser.add_argument(
+        "--warn-only",
+        action="store_true",
+        help="report errors as warnings and always exit 0 (for a trial period before enforcing)",
+    )
     args = parser.parse_args(argv)
 
     diff_text = sys.stdin.read() if args.diff == "-" else Path(args.diff).read_text(encoding="utf-8")
@@ -45,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     labels = {label.strip() for label in args.labels.split(",") if label.strip()}
 
     findings = run_all(parse_diff(diff_text), body, labels, Policy.load(args.policy))
+    if args.warn_only:
+        findings = [replace(f, severity="warning") for f in findings]
     for finding in findings:
         print(format_finding(finding, args.format))
     errors = sum(f.severity == "error" for f in findings)

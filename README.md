@@ -50,12 +50,14 @@ git diff main...HEAD > changes.diff
 PYTHONPATH=src python -m ai_guard --diff changes.diff --pr-body pr.md --labels human-reviewed
 ```
 
+Add `--warn-only` to report findings without failing the build — useful for a trial period before enforcing.
+
 Each repository tunes it with an optional [`.ai-guard.toml`](.ai-guard.toml) (source and test paths, sensitive areas, size guideline, extra secret patterns). The [`ai-guard` workflow](.github/workflows/ai-guard.yml) runs it on every pull request — including this repository's own.
 
 ## Adopting the playbook
 
 1. **Assess** the team with the [health scorecard](assessments/engineering-health-scorecard.md) and agree on three changes.
-2. **Automate** the gates: call the reusable CI workflow and add the `ai-guard` workflow — in warning mode for two weeks, then enforced.
+2. **Automate** the gates: call the reusable CI workflow and add the `ai-guard` workflow — with `--warn-only` for two weeks, then enforced.
 3. **Review** progress every two weeks with the team's technical lead; revisit the standards quarterly and delete rules that don't prevent real problems.
 
 ## Development
