@@ -14,5 +14,19 @@ jobs:
     uses: ./.github/workflows/reusable-python-ci.yml
     with:
       python-versions: '["3.11", "3.12", "3.13"]'
-      coverage-package: ai_guard
+      coverage-package: ai_guard agent_evals
       coverage-min: 90
+
+  agent-evals:
+    name: Agent evaluations
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Run the eval suite and publish the report
+        run: |
+          set -o pipefail
+          PYTHONPATH=src python -m agent_evals evals/support_agent.json --min-pass-rate 1.0 | tee -a "$GITHUB_STEP_SUMMARY"
