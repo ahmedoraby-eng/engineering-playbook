@@ -6,6 +6,7 @@
 #       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-node-ci.yml@main
 #       with:
 #         node-version: "22"
+#         audit-in-build-job: true   # optional; see the input below
 name: Reusable Node CI
 
 on:
@@ -24,6 +25,14 @@ on:
         description: Fail on production dependency vulnerabilities at or above this level
         type: string
         default: high
+      audit-in-build-job:
+        description: >-
+          Run the dependency audit as a step of the "Build and test" job instead of a separate
+          job. The audit still runs on every call and still fails the run; it only stops costing
+          a separate billed minute (GitHub rounds each job up to a whole minute on private
+          repositories). The "Dependency audit" job then reports as skipped.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,9 +51,14 @@ jobs:
       - run: npm ci
       - run: ${{ inputs.build-command }}
       - run: ${{ inputs.test-command }}
+      - name: Dependency audit
+        # Runs even when an earlier step failed, so an audit finding is never hidden.
+        if: ${{ inputs.audit-in-build-job && !cancelled() }}
+        run: npm audit --omit=dev --audit-level=${{ inputs.audit-level }}
 
   audit:
     name: Dependency audit
+    if: ${{ !inputs.audit-in-build-job }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

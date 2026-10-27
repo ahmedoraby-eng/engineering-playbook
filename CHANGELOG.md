@@ -2,6 +2,11 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## 2026-10-28
+
+### Added
+- Reusable Node CI: an optional `audit-in-build-job` input runs the dependency audit inside the "Build and test" job, so a private repository stops paying a separate billed minute for a 10-second job. Off by default; the audit still runs on every call and still fails the run.
+
 ## 2026-10-10
 
 ### Changed
