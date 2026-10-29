@@ -25,7 +25,13 @@ git -c user.name="Malek (Basita AI)" -c user.email=malek@<agent-domain> commit \
 ## Jira and Confluence as the agent (trial)
 `scripts/atl <agent> jira-comment <KEY> "text"` and `scripts/atl <agent> confluence-append <page id> "text"` write through the Atlassian gateway with the agent's own **scoped API token**, read from the macOS Keychain at each call: `basita-atl-<agent>-jira` or `basita-atl-<agent>-confluence` (a scoped token covers one app), falling back to `basita-atl-<agent>`; account `basita`. The token is kept only in memory and never printed. Give each token the fewest scopes (Jira `write:comment:jira`; Confluence `read:page:confluence`, `write:page:confluence`) and the shortest expiry. Store it with a command that prompts, so it never lands in chat, files or shell history:
 
-`scripts/atl <agent> jira-comment <KEY> "text" --mention <account id>` @mentions a person (repeatable), and every Jira comment ends with `— <Agent> (Basita AI)` so readers and the comment relay know it came from an agent. `scripts/atl <agent> jira-start <KEY>` is an agent's only transition: To Do to In Progress, with the `agent-picked` label (a second pickup is refused) and a comment; it needs the Jira scopes `read:jira-work` and `write:jira-work` besides `write:comment:jira`. Done comes from a merged PR with `Closes <KEY>`; every other transition stays with the human owner.
+`scripts/atl <agent> jira-comment <KEY> "text" --mention <account id>` @mentions a person (repeatable), and every Jira comment ends with `— <Agent> (Basita AI)` so readers and the comment relay know it came from an agent. An agent's own transitions (Ahmed, 29-30/10/2026), each with a comment; they need the Jira scopes `read:jira-work` and `write:jira-work` besides `write:comment:jira`:
+- `jira-start <KEY>`: To Do or Ready for Development to In Progress or In Development, with the `agent-picked` label (a second pickup is refused, and an issue in Refinement must be refined first);
+- `jira-refine-start <KEY>` and `jira-refined <KEY>`: a refinement job keeps the issue in Refinement with the `agent-refining` label, then moves it to Ready for Development;
+- `jira-review <KEY> --to <account id>`: work that needs a person's approval moves to the workflow's review status where there is one (DFP: Ready for Acceptance), always gets the `awaiting-approval` label, and is assigned to that person. Close-on-merge leaves such an issue open, so it never reaches Done or unblocks its dependants without the person;
+- `jira-link <BLOCKER> <KEY>`: a Blocks link, so pickup waits for the blocker (needs the project's Link Issues permission).
+
+Done comes from a merged PR with `Closes <KEY>`; every other transition stays with the human owner.
 ```bash
 security add-generic-password -U -s basita-atl-salma-jira -a basita -w
 ```

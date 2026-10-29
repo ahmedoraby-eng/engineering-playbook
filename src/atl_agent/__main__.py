@@ -1,7 +1,11 @@
 """Command line:
 
     atl <agent> jira-comment BASITA-1 "text" [--mention <account id> ...]
-    atl <agent> jira-start BASITA-1 ["text"]
+    atl <agent> jira-start BASITA-1 ["text"]          To Do / Ready for Development -> In Progress / In Development
+    atl <agent> jira-refine-start DFP-88 ["text"]     refinement job: label agent-refining
+    atl <agent> jira-refined DFP-88 ["text"]          Refinement -> Ready for Development
+    atl <agent> jira-review DFP-12 "text" --to <id>   review status / awaiting-approval, assigned to a person
+    atl <agent> jira-link DFP-3 DFP-12                DFP-3 blocks DFP-12
     atl <agent> confluence-append <page id> "text"
 
 Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CLOUD_ID. Jira comments end
@@ -21,17 +25,35 @@ from .client import AtlClient, AtlError, keychain_token
 def main(argv: list[str] | None = None, token_source=keychain_token, transport=None) -> int:
     parser = argparse.ArgumentParser(prog="atl", description="Write to Jira or Confluence as a named agent.")
     parser.add_argument("agent", help="agent name, e.g. salma")
-    parser.add_argument("command", choices=["jira-comment", "jira-start", "confluence-append"])
+    parser.add_argument(
+        "command",
+        choices=[
+            "jira-comment",
+            "jira-start",
+            "jira-refine-start",
+            "jira-refined",
+            "jira-review",
+            "jira-link",
+            "confluence-append",
+        ],
+    )
     parser.add_argument("target", help="issue key (jira-*) or page id (confluence-append)")
     parser.add_argument("text", nargs="?", default="", help="text to write, or - to read it from stdin")
     parser.add_argument("--mention", action="append", default=[], help="account id to @mention (repeatable)")
+    parser.add_argument("--to", default="", help="jira-review: account id of the person who approves")
     parser.add_argument("--cloud-id", default=os.environ.get("ATL_CLOUD_ID", ""))
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
     args = parser.parse_args(argv)
 
     text = sys.stdin.read() if args.text == "-" else args.text
-    if args.command == "jira-start" and not text.strip():
-        text = "Picked up; working on it now."
+    defaults = {
+        "jira-start": "Picked up; working on it now.",
+        "jira-refine-start": "Refining this issue now.",
+        "jira-refined": "Refined: ready for development.",
+        "jira-review": "Done on my side; waiting for your approval.",
+    }
+    if args.command in defaults and not text.strip():
+        text = defaults[args.command]
     if not text.strip():
         print("atl: empty text", file=sys.stderr)
         return 2
@@ -45,6 +67,21 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             status = client.jira_start(args.target)
             client.jira_comment(args.target, signed)
             print(f"{args.target} -> {status}, labelled agent-picked, by {client.display}")
+        elif args.command == "jira-refine-start":
+            client.jira_refine_start(args.target)
+            client.jira_comment(args.target, signed)
+            print(f"{args.target} refining, labelled agent-refining, by {client.display}")
+        elif args.command == "jira-refined":
+            status = client.jira_refined(args.target)
+            client.jira_comment(args.target, signed)
+            print(f"{args.target} -> {status}, by {client.display}")
+        elif args.command == "jira-review":
+            status = client.jira_review(args.target, args.to)
+            client.jira_comment(args.target, signed, (args.to,))
+            print(f"{args.target} in {status}, awaiting approval, assigned to {args.to}, by {client.display}")
+        elif args.command == "jira-link":
+            client.jira_link(args.target, args.text)
+            print(f"{args.target} blocks {args.text}, linked by {client.display}")
         elif args.command == "jira-comment":
             result = client.jira_comment(args.target, signed, tuple(args.mention))
             print(f"comment {result.get('id')} on {args.target} by {result.get('author', {}).get('displayName')}")

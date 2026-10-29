@@ -2,6 +2,14 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## 2026-10-30
+
+### Added
+- `atl`: `jira-refine-start` / `jira-refined` (Refinement to Ready for Development), `jira-review --to` (review status or `awaiting-approval`, assigned to a person), `jira-link` (Blocks). `jira-start` now also starts DFP issues (Ready for Development to In Development) and refuses Refinement.
+
+### Changed
+- Close on merge leaves an issue with `awaiting-approval` open and says why.
+
 ## 2026-10-29
 
 ### Added
