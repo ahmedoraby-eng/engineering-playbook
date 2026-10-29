@@ -1,0 +1,20 @@
+# The playbook's own use of the reusable Jira close-on-merge workflow.
+name: Jira close on merge
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  jira-close:
+    if: github.event.pull_request.merged == true
+    uses: ./.github/workflows/reusable-jira-close.yml
+    with:
+      repos: ahmedoraby-eng/engineering-playbook,basitasolutions/basita-ops,basitasolutions/elbayoumy-farm-nutrition-platform
+    secrets:
+      ATL_TOKEN: ${{ secrets.ATL_TOKEN }}
+      GH_SEARCH_TOKEN: ${{ secrets.GH_SEARCH_TOKEN }}
