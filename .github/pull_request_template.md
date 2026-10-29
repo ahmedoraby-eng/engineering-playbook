@@ -4,6 +4,12 @@
 
 Closes #
 
+<!-- Jira (Basita): put the issue key in the PR title and branch, e.g. BASITA-1. Then, below, keep ONE of
+     these lines and delete the other. `Closes` goes only in the PR that completes the acceptance
+     criteria: when it merges, the issue moves to Done by itself. -->
+Refs <KEY>
+Closes <KEY>
+
 ## How it was tested
 
 - [ ] Tests added or updated for the changed behaviour

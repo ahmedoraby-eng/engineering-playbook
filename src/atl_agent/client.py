@@ -109,6 +109,24 @@ class AtlClient:
         """Add a comment to a Jira issue. Needs the Jira scope write:comment:jira."""
         return self._call("POST", "jira", f"/rest/api/3/issue/{issue}/comment", {"body": _adf(text)})
 
+    def jira_status(self, issue: str) -> dict:
+        """The issue's status: {"name": ..., "category": "new" | "indeterminate" | "done"}.
+        Needs read:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status")
+        status = data["fields"]["status"]
+        return {"name": status["name"], "category": status["statusCategory"]["key"]}
+
+    def jira_close(self, issue: str) -> str:
+        """Move the issue to a status in the Done category and return that status's name.
+        Needs read:jira-work and write:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions")
+        options = [t for t in data.get("transitions", []) if t["to"]["statusCategory"]["key"] == "done"]
+        if not options:
+            raise AtlError(f"{issue}: no transition to a Done status is available from its current status")
+        chosen = next((t for t in options if t["to"]["name"] == "Done"), options[0])
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        return chosen["to"]["name"]
+
     def confluence_append(self, page_id: str, text: str) -> dict:
         """Append a paragraph to a Confluence page, with a version note naming the agent.
         Needs the Confluence scopes read:page:confluence and write:page:confluence."""

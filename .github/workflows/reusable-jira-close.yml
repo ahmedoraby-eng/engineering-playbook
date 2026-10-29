@@ -1,0 +1,107 @@
+# Reusable Jira close-on-merge: when a merged PR's description says `Closes <KEY>`, the Jira issue
+# moves to Done and gets a comment with the links of the PRs that mention it (Basita convention:
+# `Refs <KEY>` in intermediate PRs, `Closes <KEY>` only in the final one; see CONTRIBUTING.md).
+#
+# Adopt it with a workflow like this in the consuming repository. pull_request_target runs the
+# caller's workflow from the base branch; this job never checks out or runs the pull request's code
+# (only the playbook's), which keeps pull_request_target safe.
+#
+#   on:
+#     pull_request_target:
+#       types: [closed]
+#   permissions:
+#     contents: read
+#     pull-requests: read
+#   jobs:
+#     jira-close:
+#       if: github.event.pull_request.merged == true
+#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-jira-close.yml@main
+#       with:
+#         repos: owner/this-repo,owner/other-repo   # where to look for the other PRs that mention the key
+#       secrets:
+#         ATL_TOKEN: ${{ secrets.ATL_TOKEN }}
+#         GH_SEARCH_TOKEN: ${{ secrets.GH_SEARCH_TOKEN }}   # optional: needed only to see PRs in other private repos
+name: Reusable Jira close on merge
+
+on:
+  workflow_call:
+    inputs:
+      cloud-id:
+        description: Atlassian cloud id of the Jira site
+        type: string
+        default: 67176086-263c-46b2-8f6d-167a10620df4
+      agent:
+        description: Agent whose Atlassian account the token belongs to (its email is <agent>@<domain>)
+        type: string
+        default: talia
+      repos:
+        description: Comma-separated owner/repo list searched for the other PRs that mention the issue
+        type: string
+        default: ""
+      playbook-ref:
+        description: Version of the playbook's atl_agent to run
+        type: string
+        default: main
+    secrets:
+      ATL_TOKEN:
+        description: Scoped Atlassian API token of the agent (read:jira-work, write:jira-work, write:comment:jira)
+        required: true
+      GH_SEARCH_TOKEN:
+        description: Optional GitHub token that can read the other repos, for the PR links in the comment
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  jira-close:
+    name: Close Jira issue
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out atl_agent from the playbook
+        uses: actions/checkout@v6
+        with:
+          repository: ahmedoraby-eng/engineering-playbook
+          ref: ${{ inputs.playbook-ref }}
+          path: .playbook
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Find the issues this PR closes
+        id: keys
+        env:
+          # Passed through the environment, never interpolated into the script.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/body.txt"
+          dry=$(PYTHONPATH=.playbook/src python -m atl_agent.close --pr-url x --dry-run < "$RUNNER_TEMP/body.txt")
+          echo "$dry"
+          echo "keys=$(echo "$dry" | sed -n 's/^Would close: //p' | tr -d ' ')" >> "$GITHUB_OUTPUT"
+      - name: Collect the PRs that mention each issue
+        if: steps.keys.outputs.keys != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_SEARCH_TOKEN || github.token }}
+          REPOS: ${{ inputs.repos }}
+          KEYS: ${{ steps.keys.outputs.keys }}
+        run: |
+          : > "$RUNNER_TEMP/links.txt"
+          for key in ${KEYS//,/ }; do
+            for repo in ${REPOS//,/ }; do
+              gh search prs "$key" --repo "$repo" --json url,state,title \
+                --jq '.[] | "- \(.url) (\(.state)) \(.title)"' >> "$RUNNER_TEMP/links.txt" || true
+            done
+          done
+          sort -u "$RUNNER_TEMP/links.txt" -o "$RUNNER_TEMP/links.txt"
+      - name: Move the issues to Done
+        if: steps.keys.outputs.keys != ''
+        env:
+          ATL_TOKEN: ${{ secrets.ATL_TOKEN }}
+          ATL_CLOUD_ID: ${{ inputs.cloud-id }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AGENT: ${{ inputs.agent }}
+        run: |
+          PYTHONPATH=.playbook/src python -m atl_agent.close --pr-url "$PR_URL" --agent "$AGENT" \
+            --links-file "$RUNNER_TEMP/links.txt" < "$RUNNER_TEMP/body.txt"
