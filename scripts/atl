@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Write to Jira or Confluence as a named AI agent, with its scoped API token from the Keychain.
+#
+#   atl salma jira-comment BASITA-1 "text"
+#   atl salma confluence-append <page id> "text"
+#
+# Needs ATL_CLOUD_ID (or --cloud-id). See standards/06-agent-identity.md.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m atl_agent "$@"
