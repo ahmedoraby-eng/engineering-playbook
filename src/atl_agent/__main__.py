@@ -29,7 +29,8 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     try:
         agent = args.agent.lower()
         kwargs = {"transport": transport} if transport else {}
-        client = AtlClient(agent, args.cloud_id, token_source(agent), args.domain, **kwargs)
+        product = "jira" if args.command == "jira-comment" else "confluence"
+        client = AtlClient(agent, args.cloud_id, token_source(agent, product), args.domain, **kwargs)
         if args.command == "jira-comment":
             result = client.jira_comment(args.target, text)
             print(f"comment {result.get('id')} on {args.target} by {result.get('author', {}).get('displayName')}")

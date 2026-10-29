@@ -64,22 +64,32 @@ def test_unknown_agent_and_missing_cloud_id_are_refused():
         AtlClient("salma", "", TOKEN)
 
 
-def test_keychain_token_reads_the_agent_item():
+def test_keychain_token_prefers_the_product_item_then_falls_back():
     seen = []
 
     def run(cmd, **_):
-        seen.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout=TOKEN + "\n", stderr="")
+        seen.append(cmd[3])
+        found = cmd[3] == "basita-atl-salma"
+        return subprocess.CompletedProcess(cmd, 0 if found else 44, stdout=TOKEN + "\n" if found else "", stderr="")
 
-    assert keychain_token("salma", run=run) == TOKEN
-    assert seen[0] == ["security", "find-generic-password", "-s", "basita-atl-salma", "-a", "basita", "-w"]
+    assert keychain_token("salma", "jira", run=run) == TOKEN
+    assert seen == ["basita-atl-salma-jira", "basita-atl-salma"]
+
+
+def test_keychain_token_reads_the_product_item():
+    def run(cmd, **_):
+        return subprocess.CompletedProcess(cmd, 0, stdout=TOKEN, stderr="")
+
+    assert keychain_token("salma", "confluence", run=run) == TOKEN
 
 
 def test_keychain_token_missing_item_is_an_error():
     def run(cmd, **_):
         return subprocess.CompletedProcess(cmd, 44, stdout="", stderr="not found")
 
-    with pytest.raises(AtlError, match="basita-atl-salma"):
+    with pytest.raises(AtlError, match="basita-atl-salma-jira or basita-atl-salma"):
+        keychain_token("salma", "jira", run=run)
+    with pytest.raises(AtlError, match="no Keychain item basita-atl-salma "):
         keychain_token("salma", run=run)
 
 
@@ -87,7 +97,7 @@ def test_cli_posts_a_comment(capsys):
     transport = FakeTransport((201, json.dumps({"id": "10", "author": {"displayName": "Salma"}})))
     code = main(
         ["Salma", "jira-comment", "BASITA-1", "hello", "--cloud-id", CLOUD],
-        token_source=lambda agent: TOKEN,
+        token_source=lambda agent, product: TOKEN,
         transport=transport,
     )
     assert code == 0
@@ -99,7 +109,7 @@ def test_cli_appends_to_a_page(capsys):
     transport = FakeTransport((200, json.dumps(page)), (200, json.dumps({"version": {"number": 2}})))
     code = main(
         ["salma", "confluence-append", "77", "hi", "--cloud-id", CLOUD],
-        token_source=lambda agent: TOKEN,
+        token_source=lambda agent, product: TOKEN,
         transport=transport,
     )
     assert code == 0
@@ -107,7 +117,7 @@ def test_cli_appends_to_a_page(capsys):
 
 
 def test_cli_reports_errors_without_the_token(capsys):
-    def no_token(agent):
+    def no_token(agent, product):
         raise AtlError("no Keychain item 'basita-atl-salma'")
 
     assert main(["salma", "jira-comment", "BASITA-1", "x", "--cloud-id", CLOUD], token_source=no_token) == 1
@@ -116,4 +126,4 @@ def test_cli_reports_errors_without_the_token(capsys):
 
 def test_cli_rejects_empty_text(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO("  "))
-    assert main(["salma", "jira-comment", "BASITA-1", "-", "--cloud-id", CLOUD], token_source=lambda a: TOKEN) == 2
+    assert main(["salma", "jira-comment", "BASITA-1", "-", "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN) == 2

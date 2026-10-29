@@ -1,8 +1,9 @@
 """Jira and Confluence writes as one agent's Atlassian account.
 
-The agent's scoped API token is read from the macOS Keychain (service `basita-atl-<agent>`,
-account `basita`) for each command and kept only in memory: it is never printed, logged or
-written to disk. Scoped tokens only work through the api.atlassian.com gateway, so every call
+The agent's scoped API token is read from the macOS Keychain for each command (service
+`basita-atl-<agent>-<jira|confluence>`, falling back to `basita-atl-<agent>`; account `basita`) and
+kept only in memory: it is never printed, logged or written to disk. A scoped token is made for
+one app, hence one item per product. Scoped tokens only work through the api.atlassian.com gateway, so every call
 goes to `https://api.atlassian.com/ex/{jira|confluence}/<cloud id>/...` with basic auth
 `<agent>@<domain>:<token>`.
 """
@@ -31,17 +32,19 @@ class AtlError(Exception):
     """A failed call. The message never contains the token."""
 
 
-def keychain_token(agent: str, run: Callable = subprocess.run) -> str:
-    """The agent's token from the login Keychain, or AtlError if it is not there."""
-    result = run(
-        ["security", "find-generic-password", "-s", f"basita-atl-{agent}", "-a", "basita", "-w"],
-        capture_output=True,
-        text=True,
-    )
-    token = (result.stdout or "").strip()
-    if result.returncode != 0 or not token:
-        raise AtlError(f"no Keychain item 'basita-atl-{agent}' (account 'basita'); see the token trial runbook")
-    return token
+def keychain_token(agent: str, product: str = "", run: Callable = subprocess.run) -> str:
+    """The agent's token for a product from the login Keychain, or AtlError if there is none."""
+    services = [f"basita-atl-{agent}-{product}", f"basita-atl-{agent}"] if product else [f"basita-atl-{agent}"]
+    for service in services:
+        result = run(
+            ["security", "find-generic-password", "-s", service, "-a", "basita", "-w"],
+            capture_output=True,
+            text=True,
+        )
+        token = (result.stdout or "").strip()
+        if result.returncode == 0 and token:
+            return token
+    raise AtlError(f"no Keychain item {' or '.join(services)} (account 'basita'); see the token trial runbook")
 
 
 def urllib_transport(method: str, url: str, headers: dict, body: bytes | None) -> tuple[int, str]:
