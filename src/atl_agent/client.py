@@ -1,0 +1,124 @@
+"""Jira and Confluence writes as one agent's Atlassian account.
+
+The agent's scoped API token is read from the macOS Keychain for each command (service
+`basita-atl-<agent>-<jira|confluence>`, falling back to `basita-atl-<agent>`; account `basita`) and
+kept only in memory: it is never printed, logged or written to disk. A scoped token is made for
+one app, hence one item per product. Scoped tokens only work through the api.atlassian.com gateway, so every call
+goes to `https://api.atlassian.com/ex/{jira|confluence}/<cloud id>/...` with basic auth
+`<agent>@<domain>:<token>`.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import subprocess
+import urllib.error
+import urllib.request
+from html import escape
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # the CLI also runs on macOS's system Python 3.9
+    from collections.abc import Callable
+
+    # (method, url, headers, body) -> (status, response text). Swapped out in tests.
+    Transport = Callable[[str, str, dict, bytes | None], tuple[int, str]]
+
+AGENTS = ("talia", "malek", "salma", "sherif", "haya", "adam", "nora", "maya")
+GATEWAY = "https://api.atlassian.com/ex"
+
+
+class AtlError(Exception):
+    """A failed call. The message never contains the token."""
+
+
+def keychain_token(agent: str, product: str = "", run: Callable = subprocess.run) -> str:
+    """The agent's token for a product from the login Keychain, or AtlError if there is none."""
+    services = [f"basita-atl-{agent}-{product}", f"basita-atl-{agent}"] if product else [f"basita-atl-{agent}"]
+    for service in services:
+        result = run(
+            ["security", "find-generic-password", "-s", service, "-a", "basita", "-w"],
+            capture_output=True,
+            text=True,
+        )
+        token = (result.stdout or "").strip()
+        if result.returncode == 0 and token:
+            return token
+    raise AtlError(f"no Keychain item {' or '.join(services)} (account 'basita'); see the token trial runbook")
+
+
+def urllib_transport(method: str, url: str, headers: dict, body: bytes | None) -> tuple[int, str]:
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read().decode("utf-8", "replace")
+
+
+def _adf(text: str) -> dict:
+    """Plain text as an Atlassian Document Format document, one paragraph per line."""
+    paragraphs = [
+        {"type": "paragraph", "content": [{"type": "text", "text": line}]} if line else {"type": "paragraph"}
+        for line in text.splitlines() or [""]
+    ]
+    return {"type": "doc", "version": 1, "content": paragraphs}
+
+
+class AtlClient:
+    def __init__(
+        self,
+        agent: str,
+        cloud_id: str,
+        token: str,
+        domain: str = "basitasolutions.com",
+        transport: Transport = urllib_transport,
+    ):
+        agent = agent.lower()
+        if agent not in AGENTS:
+            raise AtlError(f"unknown agent '{agent}' (known: {', '.join(AGENTS)})")
+        if not cloud_id:
+            raise AtlError("no Atlassian cloud id: set ATL_CLOUD_ID or pass --cloud-id")
+        self.agent = agent
+        self.display = agent.capitalize()
+        self.cloud_id = cloud_id
+        self._auth = "Basic " + base64.b64encode(f"{agent}@{domain}:{token}".encode()).decode()
+        self._transport = transport
+
+    def __repr__(self) -> str:  # keep the token out of any accidental print
+        return f"AtlClient(agent={self.agent!r}, cloud_id={self.cloud_id!r})"
+
+    def _call(self, method: str, product: str, path: str, payload: dict | None = None) -> dict:
+        url = f"{GATEWAY}/{product}/{self.cloud_id}{path}"
+        headers = {"Authorization": self._auth, "Accept": "application/json"}
+        body = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(payload).encode("utf-8")
+        status, text = self._transport(method, url, headers, body)
+        if not 200 <= status < 300:
+            hint = {
+                401: "token missing, expired or revoked, or the email does not match the token's account",
+                403: "the token's scopes or the account's permissions do not allow this",
+                404: "not found, or not visible to this account",
+            }.get(status, "request failed")
+            raise AtlError(f"{method} {product}{path}: HTTP {status} ({hint}): {text[:300]}")
+        return json.loads(text) if text.strip() else {}
+
+    def jira_comment(self, issue: str, text: str) -> dict:
+        """Add a comment to a Jira issue. Needs the Jira scope write:comment:jira."""
+        return self._call("POST", "jira", f"/rest/api/3/issue/{issue}/comment", {"body": _adf(text)})
+
+    def confluence_append(self, page_id: str, text: str) -> dict:
+        """Append a paragraph to a Confluence page, with a version note naming the agent.
+        Needs the Confluence scopes read:page:confluence and write:page:confluence."""
+        page = self._call("GET", "confluence", f"/wiki/api/v2/pages/{page_id}?body-format=storage")
+        current = page["body"]["storage"]["value"]
+        payload = {
+            "id": page["id"],
+            "status": "current",
+            "title": page["title"],
+            "body": {"representation": "storage", "value": current + f"<p>{escape(text)}</p>"},
+            "version": {"number": page["version"]["number"] + 1, "message": f"[{self.display}] {text[:200]}"},
+        }
+        return self._call("PUT", "confluence", f"/wiki/api/v2/pages/{page_id}", payload)

@@ -14,7 +14,7 @@ jobs:
     uses: ./.github/workflows/reusable-python-ci.yml
     with:
       python-versions: '["3.11", "3.12", "3.13"]'
-      coverage-package: ai_guard agent_evals agent_attribution
+      coverage-package: ai_guard agent_evals agent_attribution atl_agent
       coverage-min: 90
 
   agent-evals:

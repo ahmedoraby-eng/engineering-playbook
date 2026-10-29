@@ -22,6 +22,12 @@ git -c user.name="Malek (Basita AI)" -c user.email=malek@<agent-domain> commit \
   --trailer "Agent: Malek" --trailer "Requested-by: Ahmed Oraby <ahmed.oraby@icloud.com>" -m "DFP-123: ..."
 ```
 
+## Jira and Confluence as the agent (trial)
+`scripts/atl <agent> jira-comment <KEY> "text"` and `scripts/atl <agent> confluence-append <page id> "text"` write through the Atlassian gateway with the agent's own **scoped API token**, read from the macOS Keychain at each call: `basita-atl-<agent>-jira` or `basita-atl-<agent>-confluence` (a scoped token covers one app), falling back to `basita-atl-<agent>`; account `basita`. The token is kept only in memory and never printed. Give each token the fewest scopes (Jira `write:comment:jira`; Confluence `read:page:confluence`, `write:page:confluence`) and the shortest expiry. Store it with a command that prompts, so it never lands in chat, files or shell history:
+```bash
+security add-generic-password -U -s basita-atl-salma-jira -a basita -w
+```
+
 ## Enforcement
 `reusable-agent-attribution.yml` checks every pull request: agent commits must carry a matching `Agent:` trailer and no Smart Commit command, unknown authors fail, AI-made commits authored as a human and missing issue keys are warnings. On a free private repository GitHub cannot make the check required, so the merge rule ("merge only on green") is the control.
 

@@ -6,6 +6,7 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ### Added
 - Agent attribution: `scripts/agent-git` commits as a named AI agent (own author/committer plus `Agent:` and `Requested-by:` trailers), and the reusable `agent-attribution` workflow checks every pull request for it, rejects Jira Smart Commit commands in agent commits, and warns on AI-made commits authored as a human and on missing issue keys. Standard: [06 — Agent identity](standards/06-agent-identity.md).
+- `scripts/atl` (trial): Jira comments and Confluence page appends as a named agent, with that agent's scoped API token from the macOS Keychain.
 
 ## 2026-10-28
 
