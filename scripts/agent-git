@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Run git as a named AI agent, so every commit says which agent made it.
+#
+#   agent-git <agent> <git arguments...>
+#   agent-git malek commit -m "DFP-123: fix the plan total"
+#
+# Sets author and committer to "<Name> (Basita AI) <name@domain>" for this one command only
+# (no shared git config, so parallel sessions in one checkout don't clash). On `commit` it
+# also adds the trailers that the agent-attribution check reads:
+#   Agent: Malek
+#   Requested-by: <the human the agent works for>
+#   Agent-Model: <model>   (only when AGENT_MODEL is set)
+#
+# Environment: BASITA_AGENT_DOMAIN (default basitasolutions.com),
+#              BASITA_REQUESTED_BY (default "Ahmed Oraby <ahmed.oraby@icloud.com>"), AGENT_MODEL.
+set -euo pipefail
+
+AGENTS="talia malek salma sherif haya adam nora maya"
+
+if [ $# -lt 2 ]; then
+  echo "usage: agent-git <agent> <git arguments...>   agents: $AGENTS" >&2
+  exit 2
+fi
+
+agent=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+shift
+case " $AGENTS " in
+  *" $agent "*) ;;
+  *) echo "agent-git: unknown agent '$agent' (known: $AGENTS)" >&2; exit 2 ;;
+esac
+
+display="$(printf '%s' "${agent:0:1}" | tr '[:lower:]' '[:upper:]')${agent:1}"
+name="$display (Basita AI)"
+email="$agent@${BASITA_AGENT_DOMAIN:-basitasolutions.com}"
+
+if [ "$1" = "commit" ]; then
+  shift
+  trailers=(--trailer "Agent: $display" --trailer "Requested-by: ${BASITA_REQUESTED_BY:-Ahmed Oraby <ahmed.oraby@icloud.com>}")
+  if [ -n "${AGENT_MODEL:-}" ]; then
+    trailers+=(--trailer "Agent-Model: $AGENT_MODEL")
+  fi
+  set -- commit "${trailers[@]}" "$@"
+fi
+
+exec git -c "user.name=$name" -c "user.email=$email" "$@"
