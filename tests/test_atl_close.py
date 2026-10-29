@@ -1,7 +1,10 @@
 import io
 import json
 
-from atl_agent import AtlClient
+import pytest
+
+from atl_agent import AtlClient, AtlError
+from atl_agent.__main__ import main as cli
 from atl_agent.close import close_issues, closing_keys, main
 
 TOKEN = "tok-" + "x" * 12  # assembled at runtime; not a real credential
@@ -101,3 +104,74 @@ def test_main_closes_and_reads_the_links_file(tmp_path, capsys):
         transport=transport,
     )
     assert code == 0 and "ELB-7: In Progress -> Done" in capsys.readouterr().out
+
+
+def issue(status_name, category, labels=()):
+    fields = {"status": {"name": status_name, "statusCategory": {"key": category}}, "labels": list(labels)}
+    return (200, json.dumps({"fields": fields}))
+
+
+def test_start_moves_to_do_to_in_progress_and_labels_it():
+    transport = FakeTransport(
+        issue("To Do", "new"),
+        transitions(("21", "In Progress", "indeterminate"), ("31", "Done", "done")),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(transport).jira_start("DFP-12") == "In Progress"
+    assert transport.calls[2] == ("PUT", "/rest/api/3/issue/DFP-12", {"update": {"labels": [{"add": "agent-picked"}]}})
+    assert transport.calls[3] == ("POST", "/rest/api/3/issue/DFP-12/transitions", {"transition": {"id": "21"}})
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (issue("To Do", "new", ["agent-picked"]), "already has the 'agent-picked' label"),
+        (issue("In Review", "indeterminate"), "only starts issues in To Do"),
+    ],
+)
+def test_start_refuses_a_second_pickup_or_a_started_issue(response, message):
+    transport = FakeTransport(response)
+    with pytest.raises(AtlError, match=message):
+        client(transport).jira_start("DFP-12")
+    assert len(transport.calls) == 1  # nothing written
+
+
+def test_start_without_in_progress_transition_writes_nothing():
+    transport = FakeTransport(issue("To Do", "new"), transitions(("31", "Done", "done")))
+    with pytest.raises(AtlError, match="no transition to an In Progress"):
+        client(transport).jira_start("DFP-12")
+    assert [c[0] for c in transport.calls] == ["GET", "GET"]
+
+
+def test_comment_mentions_people_first():
+    transport = FakeTransport((201, "{}"))
+    client(transport).jira_comment("ELB-3", "hello", ("acc-1",))
+    first = transport.calls[0][2]["body"]["content"][0]["content"]
+    assert first[0] == {"type": "mention", "attrs": {"id": "acc-1"}}
+
+
+def test_cli_signs_comments_and_starts_issues(capsys):
+    def run(*argv, responses):
+        transport = FakeTransport(*responses)
+        code = cli(["malek", *argv, "--cloud-id", "cloud-1"], token_source=lambda a, p: TOKEN, transport=transport)
+        return code, transport
+
+    code, transport = run("jira-comment", "ELB-3", "reply", "--mention", "acc-9", responses=[(201, "{}")])
+    body = transport.calls[0][2]["body"]["content"]
+    assert code == 0 and body[0]["content"][0]["attrs"]["id"] == "acc-9"
+    assert body[-1]["content"][0]["text"] == "— Malek (Basita AI)"
+
+    code, transport = run(
+        "jira-start",
+        "DFP-12",
+        responses=[
+            issue("To Do", "new"),
+            transitions(("21", "In Progress", "indeterminate")),
+            (204, ""),
+            (204, ""),
+            (201, "{}"),
+        ],
+    )
+    assert code == 0 and "DFP-12 -> In Progress" in capsys.readouterr().out
+    assert transport.calls[-1][2]["body"]["content"][0]["content"][0]["text"] == "Picked up; working on it now."

@@ -56,12 +56,21 @@ def urllib_transport(method: str, url: str, headers: dict, body: bytes | None) -
         return error.code, error.read().decode("utf-8", "replace")
 
 
-def _adf(text: str) -> dict:
-    """Plain text as an Atlassian Document Format document, one paragraph per line."""
+PICKED_LABEL = "agent-picked"
+
+
+def _adf(text: str, mentions: tuple[str, ...] = ()) -> dict:
+    """Plain text as an Atlassian Document Format document, one paragraph per line.
+    Each account id in `mentions` becomes an @mention in a first paragraph, so Jira notifies that person."""
     paragraphs = [
         {"type": "paragraph", "content": [{"type": "text", "text": line}]} if line else {"type": "paragraph"}
         for line in text.splitlines() or [""]
     ]
+    if mentions:
+        nodes: list[dict] = []
+        for account in mentions:
+            nodes += [{"type": "mention", "attrs": {"id": account}}, {"type": "text", "text": " "}]
+        paragraphs.insert(0, {"type": "paragraph", "content": nodes})
     return {"type": "doc", "version": 1, "content": paragraphs}
 
 
@@ -105,9 +114,9 @@ class AtlClient:
             raise AtlError(f"{method} {product}{path}: HTTP {status} ({hint}): {text[:300]}")
         return json.loads(text) if text.strip() else {}
 
-    def jira_comment(self, issue: str, text: str) -> dict:
-        """Add a comment to a Jira issue. Needs the Jira scope write:comment:jira."""
-        return self._call("POST", "jira", f"/rest/api/3/issue/{issue}/comment", {"body": _adf(text)})
+    def jira_comment(self, issue: str, text: str, mentions: tuple[str, ...] = ()) -> dict:
+        """Add a comment to a Jira issue, @mentioning the given account ids. Needs write:comment:jira."""
+        return self._call("POST", "jira", f"/rest/api/3/issue/{issue}/comment", {"body": _adf(text, mentions)})
 
     def jira_status(self, issue: str) -> dict:
         """The issue's status: {"name": ..., "category": "new" | "indeterminate" | "done"}.
@@ -124,6 +133,28 @@ class AtlClient:
         if not options:
             raise AtlError(f"{issue}: no transition to a Done status is available from its current status")
         chosen = next((t for t in options if t["to"]["name"] == "Done"), options[0])
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        return chosen["to"]["name"]
+
+    def jira_start(self, issue: str) -> str:
+        """Pick up an issue: To Do -> In Progress, add the `agent-picked` label, return the new status.
+
+        The only transition an agent makes on its own (Ahmed, 29/10/2026); Done comes from a merged PR
+        with `Closes <KEY>`, and every other transition stays with Ahmed. Refuses an issue that is not in
+        a To Do status or was already picked, so a second pickup can't happen.
+        Needs read:jira-work and write:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels")
+        fields = data["fields"]
+        if PICKED_LABEL in fields.get("labels", []):
+            raise AtlError(f"{issue}: already has the '{PICKED_LABEL}' label, not picking it up again")
+        if fields["status"]["statusCategory"]["key"] != "new":
+            raise AtlError(f"{issue}: status is '{fields['status']['name']}', an agent only starts issues in To Do")
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        options = [t for t in moves if t["to"]["statusCategory"]["key"] == "indeterminate"]
+        if not options:
+            raise AtlError(f"{issue}: no transition to an In Progress status is available")
+        chosen = next((t for t in options if t["to"]["name"] == "In Progress"), options[0])
+        self._call("PUT", "jira", f"/rest/api/3/issue/{issue}", {"update": {"labels": [{"add": PICKED_LABEL}]}})
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
