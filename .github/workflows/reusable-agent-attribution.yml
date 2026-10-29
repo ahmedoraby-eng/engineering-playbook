@@ -1,0 +1,98 @@
+# Reusable agent-attribution check: every commit in a pull request says which person or AI agent
+# made it (see standards/06-agent-identity.md).
+#
+# Adopt it with a workflow like this in the consuming repository. pull_request_target runs the
+# caller's workflow from the base branch, so a pull request cannot weaken its own check; this job
+# never checks out or runs the pull request's code, which keeps pull_request_target safe.
+#
+#   on:
+#     pull_request_target:
+#       types: [opened, edited, synchronize, reopened]
+#   permissions:
+#     contents: read
+#     pull-requests: read
+#   jobs:
+#     agent-attribution:
+#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-agent-attribution.yml@main
+#       with:
+#         agents: talia,malek,salma
+#         agent-domain: example.com
+#         humans: owner@example.com,owner-login
+name: Reusable agent attribution
+
+on:
+  workflow_call:
+    inputs:
+      agents:
+        description: Comma-separated agent names (the local part of each agent's email)
+        type: string
+        required: true
+      agent-domain:
+        description: Email domain of the agents
+        type: string
+        required: true
+      humans:
+        description: Comma-separated team member emails or GitHub logins
+        type: string
+        default: ""
+      require-issue-key:
+        description: Fail (instead of warn) when the PR title and branch have no issue key
+        type: boolean
+        default: false
+      warn-only:
+        description: Report findings as warnings without failing (for a trial period)
+        type: boolean
+        default: false
+      playbook-ref:
+        description: Version of the playbook's agent_attribution to run
+        type: string
+        default: main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  agent-attribution:
+    name: Agent attribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out agent_attribution from the playbook
+        uses: actions/checkout@v6
+        with:
+          repository: ahmedoraby-eng/engineering-playbook
+          ref: ${{ inputs.playbook-ref }}
+          path: .playbook
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Collect the pull request and its commits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          # Passed through the environment, never interpolated into the script.
+          PR_JSON: ${{ toJSON(github.event.pull_request) }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PR_JSON" > "$RUNNER_TEMP/pr.json"
+          gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[]' | jq -s . > "$RUNNER_TEMP/commits.json"
+      - name: Run agent-attribution
+        env:
+          AGENTS: ${{ inputs.agents }}
+          AGENT_DOMAIN: ${{ inputs.agent-domain }}
+          HUMANS: ${{ inputs.humans }}
+          REQUIRE_KEY: ${{ inputs.require-issue-key }}
+          WARN_ONLY: ${{ inputs.warn-only }}
+        run: |
+          extra=()
+          if [ "$REQUIRE_KEY" = "true" ]; then extra+=(--require-issue-key); fi
+          if [ "$WARN_ONLY" = "true" ]; then extra+=(--warn-only); fi
+          PYTHONPATH=.playbook/src python -m agent_attribution \
+            --commits "$RUNNER_TEMP/commits.json" \
+            --pr "$RUNNER_TEMP/pr.json" \
+            --agents "$AGENTS" \
+            --agent-domain "$AGENT_DOMAIN" \
+            --humans "$HUMANS" \
+            --format github "${extra[@]}"

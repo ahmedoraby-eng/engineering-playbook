@@ -12,10 +12,10 @@ The standards are short on purpose: each one is a handful of *must* practices, w
 
 | Area | Contents |
 |---|---|
-| [Standards](standards/) | [Development](standards/01-development.md) · [Testing](standards/02-testing.md) · [Shipping](standards/03-shipping.md) · [Observability](standards/04-observability.md) · [AI engineering guardrails](standards/05-ai-engineering-guardrails.md) |
+| [Standards](standards/) | [Development](standards/01-development.md) · [Testing](standards/02-testing.md) · [Shipping](standards/03-shipping.md) · [Observability](standards/04-observability.md) · [AI engineering guardrails](standards/05-ai-engineering-guardrails.md) · [Agent identity](standards/06-agent-identity.md) |
 | [`ai-guard`](src/ai_guard/) | A pull-request check that enforces the AI guardrails: disclosure, no secrets, tests with AI-written code, human review for sensitive areas, reviewable size |
 | [`agent-evals`](src/agent_evals/) | A guarded agent runtime and an [evaluation suite](evals/support_agent.json) run in CI: tenant isolation, human confirmation for destructive and external actions, prompt-injection and PII cases |
-| [Reusable CI](.github/workflows/) | Drop-in GitHub Actions workflows for [Python](.github/workflows/reusable-python-ci.yml) and [Node.js](.github/workflows/reusable-node-ci.yml) services, and [`ai-guard`](.github/workflows/reusable-ai-guard.yml) for any repository |
+| [Reusable CI](.github/workflows/) | Drop-in GitHub Actions workflows for [Python](.github/workflows/reusable-python-ci.yml) and [Node.js](.github/workflows/reusable-node-ci.yml) services, [`ai-guard`](.github/workflows/reusable-ai-guard.yml) and [`agent-attribution`](.github/workflows/reusable-agent-attribution.yml) for any repository; [`scripts/agent-git`](scripts/agent-git) to commit as a named agent |
 | [Assessment](assessments/engineering-health-scorecard.md) | A one-day engineering health scorecard for a team or company, ending in the three highest-leverage changes |
 | [Templates](templates/) | [ADR](templates/adr.md) · [Incident review](templates/postmortem.md) · [Pull request](.github/pull_request_template.md) |
 
