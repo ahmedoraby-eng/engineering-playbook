@@ -139,7 +139,7 @@ def test_start_refuses_a_second_pickup_or_a_started_issue(response, message):
 
 def test_start_without_in_progress_transition_writes_nothing():
     transport = FakeTransport(issue("To Do", "new"), transitions(("31", "Done", "done")))
-    with pytest.raises(AtlError, match="no transition to In Progress or In Development"):
+    with pytest.raises(AtlError, match="no transition to In Development or In Progress"):
         client(transport).jira_start("DFP-12")
     assert [c[0] for c in transport.calls] == ["GET", "GET"]
 
@@ -324,3 +324,13 @@ def test_cli_refinement_review_and_link(capsys):
     assert (
         "refining" in out and "Ready for Development" in out and "awaiting approval" in out and "blocks DFP-12" in out
     )
+
+
+def test_start_prefers_in_development_when_both_exist():
+    transport = FakeTransport(
+        issue("To Do", "new"),
+        transitions(("21", "In Progress", "indeterminate"), ("41", "In Development", "indeterminate")),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(transport).jira_start("ELB-3") == "In Development"

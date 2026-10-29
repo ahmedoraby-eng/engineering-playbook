@@ -62,7 +62,7 @@ REVIEW_LABEL = "awaiting-approval"
 # Workflow names on the Basita site (30/10/2026). DFP: Refinement -> Ready for Development -> In
 # Development -> ... -> Ready for Acceptance -> Released. BASITA and ELB: To Do -> In Progress -> Done.
 REFINEMENT_STATUS = "Refinement"
-WORK_STATUSES = ("In Progress", "In Development")
+WORK_STATUSES = ("In Development", "In Progress")  # DFP has In Development, BASITA and ELB In Progress
 READY_STATUSES = ("Ready for Development", "Ready", "To Do")
 REVIEW_STATUSES = ("Ready for Acceptance", "In Review", "Awaiting Approval")
 
