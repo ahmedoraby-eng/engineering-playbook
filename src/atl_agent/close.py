@@ -16,7 +16,7 @@ import os
 import re
 import sys
 
-from .client import AtlClient, AtlError
+from .client import REVIEW_LABEL, AtlClient, AtlError
 
 PROJECTS = ("BASITA", "DFP", "ELB")
 
@@ -45,6 +45,11 @@ def close_issues(client: AtlClient, keys: list[str], pr_url: str, links: str = "
         status = client.jira_status(key)
         if status["category"] == "done":
             lines.append(f"{key}: already {status['name']}, nothing to do")
+            continue
+        if REVIEW_LABEL in status.get("labels", []):
+            # Human in the loop: a person approves, then closes it (Ahmed, 30/10/2026).
+            client.jira_comment(key, f"Not closed: {pr_url} was merged, but {key} is awaiting a person's approval.")
+            lines.append(f"{key}: awaiting approval, left open")
             continue
         new_status = client.jira_close(key)
         comment = f"Closed automatically: {pr_url} was merged and its description says 'Closes {key}'."
