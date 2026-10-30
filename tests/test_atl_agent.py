@@ -194,3 +194,162 @@ def test_jira_ready_in_a_project_without_a_ready_status_changes_nothing():
     with pytest.raises(AtlError, match="no transition to Ready"):
         client(transport).jira_ready("BASITA-5")
     assert [c[0] for c in transport.calls] == ["GET", "GET"]
+
+
+# ---- BASITA-38: links, Salma's queue, Adam's return path, Salma's closing (fake transport; the DFP workflow
+# statuses Ready for Testing / In Testing / Closed do not exist in Jira yet) ----
+
+
+def _status_issue(status, category="new", labels=()):
+    return (
+        200,
+        json.dumps(
+            {"fields": {"status": {"name": status, "statusCategory": {"key": category}}, "labels": list(labels)}}
+        ),
+    )
+
+
+def _to(*pairs):
+    return (
+        200,
+        json.dumps(
+            {
+                "transitions": [
+                    {"id": str(i), "to": {"name": n, "statusCategory": {"key": c}}} for i, (n, c) in enumerate(pairs, 1)
+                ]
+            }
+        ),
+    )
+
+
+def test_comment_links_are_clickable_in_adf():
+    from atl_agent.client import _adf
+
+    text = "PR [basita-ops#9](https://github.com/o/r/pull/9) and https://example.com/a?b=1, done."
+    nodes = _adf(text)["content"][0]["content"]
+    links = [n for n in nodes if n.get("marks")]
+    assert [(n["text"], n["marks"][0]["attrs"]["href"]) for n in links] == [
+        ("basita-ops#9", "https://github.com/o/r/pull/9"),
+        ("https://example.com/a?b=1", "https://example.com/a?b=1"),
+    ]
+    assert "".join(n["text"] for n in nodes) == "PR basita-ops#9 and https://example.com/a?b=1, done."
+
+
+def test_plain_text_without_links_is_unchanged():
+    from atl_agent.client import _adf
+
+    assert _adf("no links here")["content"][0]["content"] == [{"type": "text", "text": "no links here"}]
+
+
+def test_salma_pulls_from_ready_for_testing_into_in_testing():
+    transport = FakeTransport(
+        _status_issue("Ready for Testing", "indeterminate"),
+        _to(("In Development", "indeterminate"), ("In Testing", "indeterminate")),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(transport, "salma").jira_start("DFP-5") == "In Testing"
+    assert transport.calls[-1][3] == {"transition": {"id": "2"}}
+
+
+def test_no_other_agent_pulls_from_salmas_queue():
+    transport = FakeTransport(_status_issue("Ready for Testing"))
+    with pytest.raises(AtlError, match="Salma's queue"):
+        client(transport, "malek").jira_start("DFP-5")
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("status", ["Ready for Development", "Refinement", "In Testing"])
+def test_salma_pulls_nothing_else_in_dfp(status):
+    transport = FakeTransport(_status_issue(status))
+    with pytest.raises(AtlError, match="pulls only from 'Ready for Testing'"):
+        client(transport, "salma").jira_start("DFP-5")
+    assert len(transport.calls) == 1
+
+
+def test_salma_still_starts_to_do_issues_outside_dfp():
+    transport = FakeTransport(_status_issue("To Do"), _to(("In Progress", "indeterminate")), (204, ""), (204, ""))
+    assert client(transport, "salma").jira_start("BASITA-9") == "In Progress"
+
+
+def test_engineers_still_go_to_in_development():
+    transport = FakeTransport(
+        _status_issue("Ready for Development"),
+        _to(("In Testing", "indeterminate"), ("In Development", "indeterminate")),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(transport, "malek").jira_start("DFP-5") == "In Development"  # never In Testing: that is Salma's
+
+
+def test_adam_returns_from_refinement_to_ready_for_testing_assigned_to_salma():
+    transport = FakeTransport(
+        _issue("Refinement"), _moves("Ready for Development", "Ready for Testing"), (204, ""), (204, "")
+    )
+    assert client(transport, "adam").jira_return("DFP-7") == "Ready for Testing"
+    assert transport.calls[-2][3] == {"transition": {"id": "2"}}
+    method, url, _, body = transport.calls[-1]
+    assert (
+        method == "PUT"
+        and url.endswith("/issue/DFP-7/assignee")
+        and body == {"accountId": "712020:a11d40c9-5c21-4caf-8743-b118b75cd9d2"}
+    )
+
+
+@pytest.mark.parametrize(
+    "agent,status,kind",
+    [("malek", "Refinement", "Task"), ("adam", "In Development", "Task"), ("adam", "Refinement", "Epic")],
+)
+def test_jira_return_is_adams_and_only_leaves_refinement(agent, status, kind):
+    transport = FakeTransport(_issue(status, kind))
+    with pytest.raises(AtlError):
+        client(transport, agent).jira_return("DFP-7")
+    assert all(c[0] == "GET" for c in transport.calls)
+
+
+def test_cli_jira_return_needs_the_reason_and_comments_it(capsys):
+    argv = ["adam", "jira-return", "DFP-7"]
+    assert main([*argv, "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN, transport=FakeTransport()) == 2
+    transport = FakeTransport(
+        _issue("Refinement"), _moves("Ready for Testing"), (204, ""), (204, ""), (201, json.dumps({"id": "9"}))
+    )
+    assert (
+        main(
+            [*argv, "Not a bug: works as specified", "--cloud-id", CLOUD],
+            token_source=lambda a, p: TOKEN,
+            transport=transport,
+        )
+        == 0
+    )
+    assert "Not a bug: works as specified" in json.dumps(transport.calls[-1][3])
+    assert "DFP-7 -> Ready for Testing, assigned to Salma" in capsys.readouterr().out
+
+
+def test_salma_closes_from_in_testing_with_a_reason():
+    transport = FakeTransport(_issue("In Testing"), _moves("Ready for Testing", "Closed"), (204, ""))
+    assert client(transport, "salma").jira_dismiss("DFP-7", "Duplicate") == "Closed"
+    assert transport.calls[-1][3] == {"transition": {"id": "2"}}
+
+
+@pytest.mark.parametrize(
+    "agent,status,reason",
+    [
+        ("adam", "In Testing", "Duplicate"),
+        ("salma", "Ready for Testing", "Duplicate"),
+        ("salma", "In Testing", "Because"),
+    ],
+)
+def test_jira_dismiss_is_salmas_from_in_testing_with_a_listed_reason(agent, status, reason):
+    transport = FakeTransport(_issue(status))
+    with pytest.raises(AtlError):
+        client(transport, agent).jira_dismiss("DFP-7", reason)
+    assert all(c[0] == "GET" for c in transport.calls)
+
+
+def test_cli_jira_dismiss_requires_a_reason_and_comments_it(capsys):
+    argv = ["salma", "jira-dismiss", "DFP-7", "--cloud-id", CLOUD]
+    assert main(argv, token_source=lambda a, p: TOKEN, transport=FakeTransport()) == 2
+    transport = FakeTransport(_issue("In Testing"), _moves("Closed"), (204, ""), (201, json.dumps({"id": "9"})))
+    assert main([*argv, "--reason", "Already Fixed"], token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert "Closed: Already Fixed." in json.dumps(transport.calls[-1][3])
+    assert "DFP-7 -> Closed (Already Fixed)" in capsys.readouterr().out
