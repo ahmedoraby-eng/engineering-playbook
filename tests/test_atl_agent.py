@@ -181,3 +181,16 @@ def test_cli_jira_ready_transitions_and_comments(capsys):
     argv = ["haya", "jira-ready", "BASITA-5", "--cloud-id", CLOUD]
     assert main(argv, token_source=lambda a, p: TOKEN, transport=transport) == 0
     assert "BASITA-5 -> Ready, by Haya" in capsys.readouterr().out
+
+
+def test_jira_ready_lands_on_ready_for_development_in_dfp():
+    transport = FakeTransport(_issue("Refinement"), _moves("In Development", "Ready for Development"), (204, ""))
+    assert client(transport, "adam").jira_ready("DFP-88") == "Ready for Development"
+    assert transport.calls[-1][3] == {"transition": {"id": "2"}}
+
+
+def test_jira_ready_in_a_project_without_a_ready_status_changes_nothing():
+    transport = FakeTransport(_issue("Refinement"), _moves("To Do", "Done"))
+    with pytest.raises(AtlError, match="no transition to Ready"):
+        client(transport).jira_ready("BASITA-5")
+    assert [c[0] for c in transport.calls] == ["GET", "GET"]

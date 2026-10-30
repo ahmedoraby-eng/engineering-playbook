@@ -84,6 +84,10 @@ def default_cloud_id(environ: dict | None = None) -> str:
     return ((environ if environ is not None else os.environ).get("ATL_CLOUD_ID") or "").strip() or DEFAULT_CLOUD_ID
 
 
+# The status a refined issue moves to: BASITA/ELB call it Ready, DFP calls it Ready for Development.
+READY_STATUSES = ("ready", "ready for development")
+
+
 class AtlClient:
     def __init__(
         self,
@@ -169,10 +173,11 @@ class AtlClient:
         return chosen["to"]["name"]
 
     def jira_ready(self, issue: str) -> str:
-        """Refinement -> Ready, the one transition an agent makes on a refined issue (Ahmed, 30/10/2026).
+        """Refinement -> Ready (or Ready for Development in DFP), the one transition an agent makes on a
+        refined issue (Ahmed, 30/10/2026).
 
         Refuses an Epic (never worked as a ticket) and any issue that is not in Refinement, and only ever
-        takes a transition that lands on Ready. Needs read:jira-work and write:jira-work."""
+        takes a transition that lands on one of READY_STATUSES. Needs read:jira-work and write:jira-work."""
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype")
         fields = data["fields"]
         if fields["issuetype"]["name"] == "Epic":
@@ -181,9 +186,9 @@ class AtlClient:
             current = fields["status"]["name"]
             raise AtlError(f"{issue}: status is '{current}', an agent only readies issues in Refinement")
         moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
-        chosen = next((t for t in moves if t["to"]["name"].lower() == "ready"), None)
+        chosen = next((t for t in moves if t["to"]["name"].lower() in READY_STATUSES), None)
         if not chosen:
-            raise AtlError(f"{issue}: no transition to Ready is available from Refinement")
+            raise AtlError(f"{issue}: no transition to Ready or Ready for Development is available from Refinement")
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
