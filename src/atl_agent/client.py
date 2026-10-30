@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.request
@@ -72,6 +73,15 @@ def _adf(text: str, mentions: tuple[str, ...] = ()) -> dict:
             nodes += [{"type": "mention", "attrs": {"id": account}}, {"type": "text", "text": " "}]
         paragraphs.insert(0, {"type": "paragraph", "content": nodes})
     return {"type": "doc", "version": 1, "content": paragraphs}
+
+
+# Basita's Atlassian site (basitasolutions.atlassian.net). The cloud id is an identifier, not a secret.
+# ATL_CLOUD_ID or --cloud-id override it, so an autonomous session needs no environment setup.
+DEFAULT_CLOUD_ID = "67176086-263c-46b2-8f6d-167a10620df4"
+
+
+def default_cloud_id(environ: dict | None = None) -> str:
+    return ((environ if environ is not None else os.environ).get("ATL_CLOUD_ID") or "").strip() or DEFAULT_CLOUD_ID
 
 
 class AtlClient:

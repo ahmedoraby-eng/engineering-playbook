@@ -23,11 +23,13 @@ git -c user.name="Malek (Basita AI)" -c user.email=malek@<agent-domain> commit \
 ```
 
 ## Jira and Confluence as the agent (trial)
-`scripts/atl <agent> jira-comment <KEY> "text"` and `scripts/atl <agent> confluence-append <page id> "text"` write through the Atlassian gateway with the agent's own **scoped API token**, read from the macOS Keychain at each call: `basita-atl-<agent>-jira` or `basita-atl-<agent>-confluence` (a scoped token covers one app), falling back to `basita-atl-<agent>`; account `basita`. The token is kept only in memory and never printed. Give each token the fewest scopes (Jira `write:comment:jira`; Confluence `read:page:confluence`, `write:page:confluence`) and the shortest expiry. Store it with a command that prompts, so it never lands in chat, files or shell history:
+The cloud id defaults to Basita's site (`basitasolutions.atlassian.net`), so `atl` needs no environment setup in an autonomous session; `ATL_CLOUD_ID` or `--cloud-id` override it.
+
+`scripts/atl <agent> jira-comment <KEY> "text"` and `scripts/atl <agent> confluence-append <page id> "text"` write through the Atlassian gateway with the agent's own **scoped API token**, read from the macOS Keychain at each call: `basita-atl-<agent>-jira` or `basita-atl-<agent>-confluence` (a scoped token covers one app), falling back to `basita-atl-<agent>`; account `basita`. The token is kept only in memory and never printed. Give each token the fewest scopes (Jira `write:comment:jira`; Confluence `read:page:confluence`, `write:page:confluence`) and the shortest expiry. Store it from the clipboard, not at the prompt: `security add-generic-password -w` at its interactive prompt cuts a token at 128 characters, and Atlassian scoped tokens are longer, so a token stored that way fails with 401. Copy the token, then run the command below. It refuses to store anything 128 characters or fewer (a cut or empty paste) and keeps the token out of chat, files and shell history. Clear the clipboard afterwards (`pbcopy </dev/null`).
 
 `scripts/atl <agent> jira-comment <KEY> "text" --mention <account id>` @mentions a person (repeatable), and every Jira comment ends with `— <Agent> (Basita AI)` so readers and the comment relay know it came from an agent. `scripts/atl <agent> jira-start <KEY>` is an agent's only transition: To Do to In Progress, with the `agent-picked` label (a second pickup is refused) and a comment; it needs the Jira scopes `read:jira-work` and `write:jira-work` besides `write:comment:jira`. Done comes from a merged PR with `Closes <KEY>`; every other transition stays with the human owner.
 ```bash
-security add-generic-password -U -s basita-atl-salma-jira -a basita -w
+t="$(pbpaste)"; [ "${#t}" -gt 128 ] && security add-generic-password -U -s basita-atl-salma-jira -a basita -w "$t"; unset t
 ```
 
 ## Enforcement

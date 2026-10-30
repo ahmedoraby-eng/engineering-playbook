@@ -127,3 +127,20 @@ def test_cli_reports_errors_without_the_token(capsys):
 def test_cli_rejects_empty_text(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO("  "))
     assert main(["salma", "jira-comment", "BASITA-1", "-", "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN) == 2
+
+
+def test_cloud_id_defaults_to_basitas_site_and_can_be_overridden():
+    from atl_agent.client import DEFAULT_CLOUD_ID, default_cloud_id
+
+    assert default_cloud_id({}) == DEFAULT_CLOUD_ID
+    assert default_cloud_id({"ATL_CLOUD_ID": "  "}) == DEFAULT_CLOUD_ID
+    assert default_cloud_id({"ATL_CLOUD_ID": "other"}) == "other"
+
+
+def test_cli_works_without_cloud_id_in_the_environment(monkeypatch):
+    from atl_agent.client import DEFAULT_CLOUD_ID
+
+    monkeypatch.delenv("ATL_CLOUD_ID", raising=False)
+    transport = FakeTransport((201, json.dumps({"id": "1", "author": {"displayName": "Salma"}})))
+    assert main(["salma", "jira-comment", "BASITA-1", "hi"], token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert DEFAULT_CLOUD_ID in transport.calls[0][1]
