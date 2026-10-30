@@ -186,7 +186,8 @@ class AtlClient:
         fields = data["fields"]
         status = fields["status"]["name"]
         in_testing_queue = status.lower() == TESTING_QUEUE
-        if PICKED_LABEL in fields.get("labels", []):
+        # In a `Ready for ...` queue the label comes from the previous agent: this is a handoff, not a second pickup.
+        if PICKED_LABEL in fields.get("labels", []) and not status.lower().startswith("ready for"):
             raise AtlError(f"{issue}: already has the '{PICKED_LABEL}' label, not picking it up again")
         if in_testing_queue and self.agent != "salma":
             raise AtlError(f"{issue}: '{status}' is Salma's queue, {self.display} does not pull from it")
