@@ -353,3 +353,10 @@ def test_cli_jira_dismiss_requires_a_reason_and_comments_it(capsys):
     assert main([*argv, "--reason", "Already Fixed"], token_source=lambda a, p: TOKEN, transport=transport) == 0
     assert "Closed: Already Fixed." in json.dumps(transport.calls[-1][3])
     assert "DFP-7 -> Closed (Already Fixed)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("agent", ["salma", "adam", "malek"])
+def test_every_agent_pulls_a_simple_workflow_to_do_issue_into_in_progress(agent):
+    """ELB and BASITA only have To Do / In Progress / Done: no refinement or testing-queue rules there."""
+    transport = FakeTransport(_status_issue("To Do"), _to(("In Progress", "indeterminate")), (204, ""), (204, ""))
+    assert client(transport, agent).jira_start("ELB-9") == "In Progress"
