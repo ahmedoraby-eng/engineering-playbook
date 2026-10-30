@@ -5,8 +5,8 @@
     atl <agent> confluence-append <page id> "text"
 
 Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CLOUD_ID, and defaults to Basita's
-site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to recognise agents' own
-replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and comments.
+site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
+recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and comments.
 """
 
 from __future__ import annotations
