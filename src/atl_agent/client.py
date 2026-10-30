@@ -168,6 +168,25 @@ class AtlClient:
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
+    def jira_ready(self, issue: str) -> str:
+        """Refinement -> Ready, the one transition an agent makes on a refined issue (Ahmed, 30/10/2026).
+
+        Refuses an Epic (never worked as a ticket) and any issue that is not in Refinement, and only ever
+        takes a transition that lands on Ready. Needs read:jira-work and write:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype")
+        fields = data["fields"]
+        if fields["issuetype"]["name"] == "Epic":
+            raise AtlError(f"{issue}: an Epic is never worked as a ticket")
+        if fields["status"]["name"].lower() != "refinement":
+            current = fields["status"]["name"]
+            raise AtlError(f"{issue}: status is '{current}', an agent only readies issues in Refinement")
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        chosen = next((t for t in moves if t["to"]["name"].lower() == "ready"), None)
+        if not chosen:
+            raise AtlError(f"{issue}: no transition to Ready is available from Refinement")
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        return chosen["to"]["name"]
+
     def confluence_append(self, page_id: str, text: str) -> dict:
         """Append a paragraph to a Confluence page, with a version note naming the agent.
         Needs the Confluence scopes read:page:confluence and write:page:confluence."""

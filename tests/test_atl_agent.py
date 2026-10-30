@@ -144,3 +144,40 @@ def test_cli_works_without_cloud_id_in_the_environment(monkeypatch):
     transport = FakeTransport((201, json.dumps({"id": "1", "author": {"displayName": "Salma"}})))
     assert main(["salma", "jira-comment", "BASITA-1", "hi"], token_source=lambda a, p: TOKEN, transport=transport) == 0
     assert DEFAULT_CLOUD_ID in transport.calls[0][1]
+
+
+def _issue(status, kind="Task"):
+    return (200, json.dumps({"fields": {"status": {"name": status}, "issuetype": {"name": kind}}}))
+
+
+def _moves(*names):
+    return (200, json.dumps({"transitions": [{"id": str(i), "to": {"name": n}} for i, n in enumerate(names, 1)]}))
+
+
+def test_jira_ready_takes_only_the_refinement_to_ready_transition():
+    transport = FakeTransport(_issue("Refinement"), _moves("Done", "Ready", "In Progress"), (204, ""))
+    assert client(transport).jira_ready("BASITA-5") == "Ready"
+    method, url, _, body = transport.calls[-1]
+    assert method == "POST" and url.endswith("/issue/BASITA-5/transitions") and body == {"transition": {"id": "2"}}
+
+
+@pytest.mark.parametrize("status,kind", [("To Do", "Task"), ("In Progress", "Task"), ("Refinement", "Epic")])
+def test_jira_ready_refuses_anything_but_a_refinement_task(status, kind):
+    transport = FakeTransport(_issue(status, kind))
+    with pytest.raises(AtlError):
+        client(transport).jira_ready("BASITA-5")
+    assert len(transport.calls) == 1
+
+
+def test_jira_ready_refuses_when_no_transition_lands_on_ready():
+    transport = FakeTransport(_issue("Refinement"), _moves("Done", "In Progress"))
+    with pytest.raises(AtlError, match="no transition to Ready"):
+        client(transport).jira_ready("BASITA-5")
+    assert len(transport.calls) == 2
+
+
+def test_cli_jira_ready_transitions_and_comments(capsys):
+    transport = FakeTransport(_issue("Refinement"), _moves("Ready"), (204, ""), (201, json.dumps({"id": "3"})))
+    argv = ["haya", "jira-ready", "BASITA-5", "--cloud-id", CLOUD]
+    assert main(argv, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert "BASITA-5 -> Ready, by Haya" in capsys.readouterr().out
