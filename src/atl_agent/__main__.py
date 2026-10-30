@@ -3,6 +3,8 @@
     atl <agent> jira-comment BASITA-1 "text" [--mention <account id> ...]
     atl <agent> jira-start BASITA-1 ["text"]
     atl <agent> jira-ready BASITA-1 ["text"]
+    atl adam jira-return DFP-1 "reason"
+    atl salma jira-dismiss DFP-1 --reason "Not a Bug" ["text"]
     atl <agent> confluence-append <page id> "text"
 
 Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CLOUD_ID, and defaults to Basita's
@@ -17,16 +19,20 @@ import argparse
 import os
 import sys
 
-from .client import AtlClient, AtlError, default_cloud_id, keychain_token
+from .client import CLOSE_REASONS, AtlClient, AtlError, default_cloud_id, keychain_token
 
 
 def main(argv: list[str] | None = None, token_source=keychain_token, transport=None) -> int:
     parser = argparse.ArgumentParser(prog="atl", description="Write to Jira or Confluence as a named agent.")
     parser.add_argument("agent", help="agent name, e.g. salma")
-    parser.add_argument("command", choices=["jira-comment", "jira-start", "jira-ready", "confluence-append"])
+    parser.add_argument(
+        "command",
+        choices=["jira-comment", "jira-start", "jira-ready", "jira-return", "jira-dismiss", "confluence-append"],
+    )
     parser.add_argument("target", help="issue key (jira-*) or page id (confluence-append)")
     parser.add_argument("text", nargs="?", default="", help="text to write, or - to read it from stdin")
     parser.add_argument("--mention", action="append", default=[], help="account id to @mention (repeatable)")
+    parser.add_argument("--reason", choices=CLOSE_REASONS, help="jira-dismiss: why the issue is closed")
     parser.add_argument("--cloud-id", default=default_cloud_id())
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
     args = parser.parse_args(argv)
@@ -36,8 +42,13 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         text = "Picked up; working on it now."
     if args.command == "jira-ready" and not text.strip():
         text = "Refined; moving to Ready."
+    if args.command == "jira-dismiss":
+        if not args.reason:
+            print("atl: jira-dismiss needs --reason", file=sys.stderr)
+            return 2
+        text = f"Closed: {args.reason}." + (f" {text.strip()}" if text.strip() else "")
     if not text.strip():
-        print("atl: empty text", file=sys.stderr)
+        print("atl: empty text (jira-return needs the reason)", file=sys.stderr)
         return 2
     try:
         agent = args.agent.lower()
@@ -53,6 +64,14 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             status = client.jira_ready(args.target)
             client.jira_comment(args.target, signed)
             print(f"{args.target} -> {status}, by {client.display}")
+        elif args.command == "jira-return":
+            status = client.jira_return(args.target)
+            client.jira_comment(args.target, signed)
+            print(f"{args.target} -> {status}, assigned to Salma, by {client.display}")
+        elif args.command == "jira-dismiss":
+            status = client.jira_dismiss(args.target, args.reason)
+            client.jira_comment(args.target, signed)
+            print(f"{args.target} -> {status} ({args.reason}), by {client.display}")
         elif args.command == "jira-comment":
             result = client.jira_comment(args.target, signed, tuple(args.mention))
             print(f"comment {result.get('id')} on {args.target} by {result.get('author', {}).get('displayName')}")

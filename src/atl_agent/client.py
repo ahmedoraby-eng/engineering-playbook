@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -60,11 +61,29 @@ def urllib_transport(method: str, url: str, headers: dict, body: bytes | None) -
 PICKED_LABEL = "agent-picked"
 
 
+_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()]+[^\s<>\[\]().,;:!?\"'])")
+
+
+def _inline(line: str) -> list[dict]:
+    """A line as ADF text nodes in which `[label](url)` and bare http(s) URLs are clickable links (§4.4 item 5)."""
+    nodes: list[dict] = []
+    position = 0
+    for match in _LINK.finditer(line):
+        if match.start() > position:
+            nodes.append({"type": "text", "text": line[position : match.start()]})
+        label, url = (match.group(1), match.group(2)) if match.group(2) else (match.group(3), match.group(3))
+        nodes.append({"type": "text", "text": label, "marks": [{"type": "link", "attrs": {"href": url}}]})
+        position = match.end()
+    if position < len(line):
+        nodes.append({"type": "text", "text": line[position:]})
+    return nodes
+
+
 def _adf(text: str, mentions: tuple[str, ...] = ()) -> dict:
     """Plain text as an Atlassian Document Format document, one paragraph per line.
     Each account id in `mentions` becomes an @mention in a first paragraph, so Jira notifies that person."""
     paragraphs = [
-        {"type": "paragraph", "content": [{"type": "text", "text": line}]} if line else {"type": "paragraph"}
+        {"type": "paragraph", "content": _inline(line)} if line else {"type": "paragraph"}
         for line in text.splitlines() or [""]
     ]
     if mentions:
@@ -82,6 +101,16 @@ DEFAULT_CLOUD_ID = "67176086-263c-46b2-8f6d-167a10620df4"
 
 def default_cloud_id(environ: dict | None = None) -> str:
     return ((environ if environ is not None else os.environ).get("ATL_CLOUD_ID") or "").strip() or DEFAULT_CLOUD_ID
+
+
+# The status a refined issue moves to: BASITA/ELB call it Ready, DFP calls it Ready for Development.
+READY_STATUSES = ("ready", "ready for development")
+# DFP queues (operating model 4.3 items 11 and 12): a `Ready for ...` status is a queue, an `In ...` status
+# means someone is working. Salma pulls only from Ready for Testing, into In Testing, and no other agent
+# pulls from it; in DFP she pulls from nothing else.
+TESTING_QUEUE = "ready for testing"
+CLOSE_REASONS = ("Not a Bug", "Already Fixed", "Duplicate", "Business Requirement")
+SALMA_ACCOUNT = "712020:a11d40c9-5c21-4caf-8743-b118b75cd9d2"
 
 
 class AtlClient:
@@ -155,24 +184,40 @@ class AtlClient:
         Needs read:jira-work and write:jira-work."""
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels")
         fields = data["fields"]
+        status = fields["status"]["name"]
+        in_testing_queue = status.lower() == TESTING_QUEUE
         if PICKED_LABEL in fields.get("labels", []):
             raise AtlError(f"{issue}: already has the '{PICKED_LABEL}' label, not picking it up again")
-        if fields["status"]["statusCategory"]["key"] != "new":
-            raise AtlError(f"{issue}: status is '{fields['status']['name']}', an agent only starts issues in To Do")
+        if in_testing_queue and self.agent != "salma":
+            raise AtlError(f"{issue}: '{status}' is Salma's queue, {self.display} does not pull from it")
+        if self.agent == "salma" and issue.startswith("DFP-") and not in_testing_queue:
+            raise AtlError(f"{issue}: in DFP Salma pulls only from 'Ready for Testing', not '{status}'")
+        if not in_testing_queue and fields["status"]["statusCategory"]["key"] != "new":
+            raise AtlError(f"{issue}: status is '{status}', an agent only starts issues in To Do")
         moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
-        options = [t for t in moves if t["to"]["statusCategory"]["key"] == "indeterminate"]
-        if not options:
-            raise AtlError(f"{issue}: no transition to an In Progress status is available")
-        chosen = next((t for t in options if t["to"]["name"] == "In Progress"), options[0])
+        if in_testing_queue:
+            chosen = next((t for t in moves if t["to"]["name"].lower() == "in testing"), None)
+            if not chosen:
+                raise AtlError(f"{issue}: no transition to In Testing is available")
+        else:
+            options = [
+                t
+                for t in moves
+                if t["to"]["statusCategory"]["key"] == "indeterminate" and t["to"]["name"].lower() != "in testing"
+            ]
+            if not options:
+                raise AtlError(f"{issue}: no transition to an In Progress status is available")
+            chosen = next((t for t in options if t["to"]["name"] in ("In Progress", "In Development")), options[0])
         self._call("PUT", "jira", f"/rest/api/3/issue/{issue}", {"update": {"labels": [{"add": PICKED_LABEL}]}})
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
     def jira_ready(self, issue: str) -> str:
-        """Refinement -> Ready, the one transition an agent makes on a refined issue (Ahmed, 30/10/2026).
+        """Refinement -> Ready (or Ready for Development in DFP), the one transition an agent makes on a
+        refined issue (Ahmed, 30/10/2026).
 
         Refuses an Epic (never worked as a ticket) and any issue that is not in Refinement, and only ever
-        takes a transition that lands on Ready. Needs read:jira-work and write:jira-work."""
+        takes a transition that lands on one of READY_STATUSES. Needs read:jira-work and write:jira-work."""
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype")
         fields = data["fields"]
         if fields["issuetype"]["name"] == "Epic":
@@ -181,9 +226,48 @@ class AtlClient:
             current = fields["status"]["name"]
             raise AtlError(f"{issue}: status is '{current}', an agent only readies issues in Refinement")
         moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
-        chosen = next((t for t in moves if t["to"]["name"].lower() == "ready"), None)
+        chosen = next((t for t in moves if t["to"]["name"].lower() in READY_STATUSES), None)
         if not chosen:
-            raise AtlError(f"{issue}: no transition to Ready is available from Refinement")
+            raise AtlError(f"{issue}: no transition to Ready or Ready for Development is available from Refinement")
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        return chosen["to"]["name"]
+
+    def jira_return(self, issue: str) -> str:
+        """Adam's return path (4.3 item 11): Refinement -> Ready for Testing, assigned to Salma. The
+        reason is the comment the CLI posts. It can only leave Refinement, and only Adam may use it.
+        Needs read:jira-work and write:jira-work."""
+        if self.agent != "adam":
+            raise AtlError("jira-return is Adam's: only the Product Owner returns an issue from Refinement")
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype")
+        fields = data["fields"]
+        if fields["issuetype"]["name"] == "Epic":
+            raise AtlError(f"{issue}: an Epic is never worked as a ticket")
+        if fields["status"]["name"].lower() != "refinement":
+            current = fields["status"]["name"]
+            raise AtlError(f"{issue}: status is '{current}', jira-return only leaves Refinement")
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        chosen = next((t for t in moves if t["to"]["name"].lower() == TESTING_QUEUE), None)
+        if not chosen:
+            raise AtlError(f"{issue}: no transition to Ready for Testing is available from Refinement")
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        self._call("PUT", "jira", f"/rest/api/3/issue/{issue}/assignee", {"accountId": SALMA_ACCOUNT})
+        return chosen["to"]["name"]
+
+    def jira_dismiss(self, issue: str, reason: str) -> str:
+        """Salma's closing (4.3 item 12): In Testing -> Closed with one of CLOSE_REASONS (the CLI posts
+        it as the comment). Only Salma, only from In Testing. Needs read:jira-work and write:jira-work."""
+        if self.agent != "salma":
+            raise AtlError("jira-dismiss is Salma's: QA closes a bug, as QA opened it")
+        if reason not in CLOSE_REASONS:
+            raise AtlError(f"reason must be one of: {', '.join(CLOSE_REASONS)}")
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status")
+        current = data["fields"]["status"]["name"]
+        if current.lower() != "in testing":
+            raise AtlError(f"{issue}: status is '{current}', jira-dismiss only closes from In Testing")
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        chosen = next((t for t in moves if t["to"]["name"].lower() == "closed"), None)
+        if not chosen:
+            raise AtlError(f"{issue}: no transition to Closed is available from In Testing")
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 

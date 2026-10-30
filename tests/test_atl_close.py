@@ -62,7 +62,8 @@ def test_close_moves_to_done_and_comments_with_links():
     assert lines == ["BASITA-1: To Do -> Done"]
     assert transport.calls[2] == ("POST", "/rest/api/3/issue/BASITA-1/transitions", {"transition": {"id": "31"}})
     comment = transport.calls[3][2]["body"]["content"]
-    assert "https://github.com/o/r/pull/7 was merged" in comment[0]["content"][0]["text"]
+    first = "".join(n["text"] for n in comment[0]["content"])  # the PR URL is a link node now
+    assert "https://github.com/o/r/pull/7 was merged" in first
     assert any("o/r#7 merged" in p.get("content", [{}])[0].get("text", "") for p in comment)
 
 
