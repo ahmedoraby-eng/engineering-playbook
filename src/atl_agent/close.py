@@ -16,7 +16,7 @@ import os
 import re
 import sys
 
-from .client import AtlClient, AtlError
+from .client import AtlClient, AtlError, default_cloud_id
 
 PROJECTS = ("BASITA", "DFP", "ELB")
 
@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None, stdin=None, environ=None, transport=None
         kwargs = {"transport": transport} if transport else {}
         client = AtlClient(
             args.agent,
-            environ.get("ATL_CLOUD_ID", ""),
+            default_cloud_id(environ),
             environ.get("ATL_TOKEN", ""),
             environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"),
             **kwargs,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.request
@@ -72,6 +73,15 @@ def _adf(text: str, mentions: tuple[str, ...] = ()) -> dict:
             nodes += [{"type": "mention", "attrs": {"id": account}}, {"type": "text", "text": " "}]
         paragraphs.insert(0, {"type": "paragraph", "content": nodes})
     return {"type": "doc", "version": 1, "content": paragraphs}
+
+
+# Basita's Atlassian site (basitasolutions.atlassian.net). The cloud id is an identifier, not a secret.
+# ATL_CLOUD_ID or --cloud-id override it, so an autonomous session needs no environment setup.
+DEFAULT_CLOUD_ID = "67176086-263c-46b2-8f6d-167a10620df4"
+
+
+def default_cloud_id(environ: dict | None = None) -> str:
+    return ((environ if environ is not None else os.environ).get("ATL_CLOUD_ID") or "").strip() or DEFAULT_CLOUD_ID
 
 
 class AtlClient:
@@ -155,6 +165,25 @@ class AtlClient:
             raise AtlError(f"{issue}: no transition to an In Progress status is available")
         chosen = next((t for t in options if t["to"]["name"] == "In Progress"), options[0])
         self._call("PUT", "jira", f"/rest/api/3/issue/{issue}", {"update": {"labels": [{"add": PICKED_LABEL}]}})
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        return chosen["to"]["name"]
+
+    def jira_ready(self, issue: str) -> str:
+        """Refinement -> Ready, the one transition an agent makes on a refined issue (Ahmed, 30/10/2026).
+
+        Refuses an Epic (never worked as a ticket) and any issue that is not in Refinement, and only ever
+        takes a transition that lands on Ready. Needs read:jira-work and write:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype")
+        fields = data["fields"]
+        if fields["issuetype"]["name"] == "Epic":
+            raise AtlError(f"{issue}: an Epic is never worked as a ticket")
+        if fields["status"]["name"].lower() != "refinement":
+            current = fields["status"]["name"]
+            raise AtlError(f"{issue}: status is '{current}', an agent only readies issues in Refinement")
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        chosen = next((t for t in moves if t["to"]["name"].lower() == "ready"), None)
+        if not chosen:
+            raise AtlError(f"{issue}: no transition to Ready is available from Refinement")
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
