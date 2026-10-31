@@ -1,9 +1,7 @@
 """Command line:
 
-    atl <agent> jira-read BASITA-1
-    atl <agent> jira-search "project = DFP AND status = 'To Do'"
-    atl <agent> confluence-read <page id or URL>
-    atl <agent> confluence-search "words or CQL"
+    atl <agent> jira-get BASITA-1
+    atl <agent> jira-jql "project = DFP AND status = 'To Do'"
     atl <agent> jira-comment BASITA-1 "text" [--mention <account id> ...]
     atl <agent> jira-start BASITA-1 ["text"]
     atl <agent> jira-ready BASITA-1 ["text"]
@@ -15,9 +13,8 @@ Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CL
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
 recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and
 comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments. The read commands print
-JSON and change nothing: `jira-read` gives an issue with its comments, sub-tasks and linked issues; `jira-search`
-runs a JQL query; `confluence-read` gives a page with its body, comments and children; `confluence-search` finds
-pages by words or CQL. Every read names the agent whose token answered (`read_by`).
+JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
+JQL query. Each result names the agent whose token answered (`read_by`).
 """
 
 from __future__ import annotations
@@ -29,26 +26,19 @@ import sys
 
 from .client import CLOSE_REASONS, AtlClient, AtlError, default_cloud_id, keychain_token
 
-READS = {
-    "jira-read": lambda c: c.jira_read,
-    "jira-search": lambda c: c.jira_search,
-    "confluence-read": lambda c: c.confluence_read,
-    "confluence-search": lambda c: c.confluence_search,
-}
+READS = {"jira-get": lambda c: c.jira_get, "jira-jql": lambda c: c.jira_jql}
 
 
 def main(argv: list[str] | None = None, token_source=keychain_token, transport=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="atl", description="Read Jira and Confluence, or write to them, as a named agent."
+        prog="atl", description="Read Jira, or write to Jira or Confluence, as a named agent."
     )
     parser.add_argument("agent", help="agent name, e.g. salma")
     parser.add_argument(
         "command",
         choices=[
-            "jira-read",
-            "jira-search",
-            "confluence-read",
-            "confluence-search",
+            "jira-get",
+            "jira-jql",
             "jira-comment",
             "jira-start",
             "jira-ready",
@@ -57,7 +47,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "confluence-append",
         ],
     )
-    parser.add_argument("target", help="issue key, JQL, page id or URL, or search words, by command")
+    parser.add_argument("target", help="issue key, JQL query or page id, by command")
     parser.add_argument("text", nargs="?", default="", help="text to write, or - to read it from stdin")
     parser.add_argument("--mention", action="append", default=[], help="account id to @mention (repeatable)")
     parser.add_argument("--reason", choices=CLOSE_REASONS, help="jira-dismiss: why the issue is closed")
@@ -69,8 +59,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         try:
             agent = args.agent.lower()
             kwargs = {"transport": transport} if transport else {}
-            product = args.command.split("-")[0]
-            client = AtlClient(agent, args.cloud_id, token_source(agent, product), args.domain, **kwargs)
+            client = AtlClient(agent, args.cloud_id, token_source(agent, "jira"), args.domain, **kwargs)
             print(json.dumps(READS[args.command](client)(args.target), ensure_ascii=False, indent=2))
         except AtlError as error:
             print(f"atl: {error}", file=sys.stderr)

@@ -6,6 +6,7 @@ import pytest
 
 from atl_agent import AtlClient, AtlError, keychain_token
 from atl_agent.__main__ import main
+from atl_agent.client import _adf_text
 
 TOKEN = "tok-" + "x" * 12  # assembled at runtime; not a real credential
 CLOUD = "cloud-1"
@@ -422,9 +423,9 @@ def _read_responses():
     )
 
 
-def test_jira_read_returns_the_issue_comments_and_links_with_get_calls_only():
+def test_jira_get_returns_the_issue_comments_and_links_with_get_calls_only():
     transport = FakeTransport(*_read_responses())
-    result = client(transport, "malek").jira_read("BASITA-1")
+    result = client(transport, "malek").jira_get("BASITA-1")
     assert {call[0] for call in transport.calls} == {"GET"}
     auth = transport.calls[0][2]["Authorization"]
     assert base64.b64decode(auth.split()[1]).decode() == f"malek@basitasolutions.com:{TOKEN}"
@@ -440,7 +441,7 @@ def test_jira_read_returns_the_issue_comments_and_links_with_get_calls_only():
     ]
 
 
-def test_jira_read_follows_comment_pages():
+def test_jira_get_follows_comment_pages():
     issue, _, mine = _read_responses()
     one = {"author": {"displayName": "H"}, "created": "d", "body": None}
     transport = FakeTransport(
@@ -449,24 +450,24 @@ def test_jira_read_follows_comment_pages():
         (200, json.dumps({"total": 2, "comments": [one]})),
         mine,
     )
-    assert len(client(transport).jira_read("BASITA-1")["comments"]) == 2
+    assert len(client(transport).jira_get("BASITA-1")["comments"]) == 2
     assert "startAt=1" in transport.calls[2][1]
 
 
-def test_jira_read_refuses_anything_but_an_issue_key():
+def test_jira_get_refuses_anything_but_an_issue_key():
     with pytest.raises(AtlError, match="not an issue key"):
-        client(FakeTransport()).jira_read("BASITA-1/../../x")
+        client(FakeTransport()).jira_get("BASITA-1/../../x")
 
 
-def test_cli_jira_read_prints_json_and_needs_no_text(capsys):
+def test_cli_jira_get_prints_json_and_needs_no_text(capsys):
     transport = FakeTransport(*_read_responses())
-    args = ["malek", "jira-read", "BASITA-1", "--cloud-id", CLOUD]
+    args = ["malek", "jira-get", "BASITA-1", "--cloud-id", CLOUD]
     code = main(args, token_source=lambda a, p: TOKEN, transport=transport)
     assert code == 0
     assert json.loads(capsys.readouterr().out)["key"] == "BASITA-1"
 
 
-def test_jira_search_follows_next_page_tokens_and_stops_at_the_limit():
+def test_jira_jql_follows_next_page_tokens_and_stops_at_the_limit():
     def issue(key):
         return {"key": key, "fields": {"summary": key, "status": {"name": "To Do"}, "issuetype": {"name": "Task"}}}
 
@@ -474,80 +475,29 @@ def test_jira_search_follows_next_page_tokens_and_stops_at_the_limit():
         (200, json.dumps({"issues": [issue("DFP-1")], "nextPageToken": "t2"})),
         (200, json.dumps({"issues": [issue("DFP-2")]})),
     )
-    result = client(transport).jira_search("project = DFP", limit=5)
+    result = client(transport).jira_jql("project = DFP", limit=5)
     assert [i["key"] for i in result["issues"]] == ["DFP-1", "DFP-2"] and result["count"] == 2
     assert "jql=project%20%3D%20DFP" in transport.calls[0][1] and "nextPageToken=t2" in transport.calls[1][1]
     assert result["read_by"] == "Salma"
 
 
-def _page_responses():
-    adf = json.dumps({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Body"}]}]})
-    page = {
-        "id": "123",
-        "title": "Plan",
-        "status": "current",
-        "spaceId": "7",
-        "parentId": "100",
-        "version": {"number": 3, "createdAt": "2026-10-31"},
-        "body": {"atlas_doc_format": {"value": adf}},
-        "labels": {"results": [{"name": "elb"}]},
-        "_links": {"base": "https://x.atlassian.net/wiki", "webui": "/spaces/ELB/pages/123"},
-    }
-    return (
-        (200, json.dumps(page)),
-        (200, json.dumps({"key": "ELB", "name": "Elbayoumy"})),
-        (
-            200,
-            json.dumps(
-                {"results": [{"id": "9", "version": {"number": 1}, "body": {"atlas_doc_format": {"value": adf}}}]}
-            ),
-        ),
-        (200, json.dumps({"results": [{"id": "124", "title": "Child"}]})),
-    )
-
-
-def test_confluence_read_accepts_an_id_or_a_url_and_flattens_the_page():
-    transport = FakeTransport(*_page_responses())
-    result = client(transport).confluence_read("https://x.atlassian.net/wiki/spaces/ELB/pages/123/Plan")
-    assert transport.calls[0][1].endswith("/wiki/api/v2/pages/123?body-format=atlas_doc_format&include-labels=true")
-    assert {call[0] for call in transport.calls} == {"GET"}
-    assert result["title"] == "Plan" and result["space"] == "ELB" and result["body"] == "Body"
-    assert result["labels"] == ["elb"] and result["children"] == [{"id": "124", "title": "Child"}]
-    assert result["comments"] == [{"id": "9", "version": 1, "text": "Body"}]
-    assert result["url"] == "https://x.atlassian.net/wiki/spaces/ELB/pages/123"
-    with pytest.raises(AtlError, match="not a Confluence page"):
-        client(FakeTransport()).confluence_read("plan")
-
-
-def test_confluence_search_takes_words_or_cql():
-    hit = {
-        "content": {"id": "5", "type": "page", "title": "Rations"},
-        "title": "Rations",
-        "excerpt": "the @@@hl@@@ration@@@endhl@@@ plan",
-        "url": "/spaces/ELB/pages/5",
-        "lastModified": "2026-10-30",
-        "resultGlobalContainer": {"title": "Elbayoumy"},
-    }
-    transport = FakeTransport((200, json.dumps({"results": [hit], "_links": {"base": "https://x/wiki"}})))
-    result = client(transport).confluence_search("ration plan")
-    assert result["cql"] == 'type in (page, blogpost) AND text ~ "ration plan"'
-    assert (
-        result["results"][0]["excerpt"] == "the ration plan"
-        and result["results"][0]["url"] == "https://x/wiki/spaces/ELB/pages/5"
-    )
-    transport = FakeTransport((200, json.dumps({"results": []})))
-    assert (
-        client(transport).confluence_search('space = ELB AND title ~ "plan"')["cql"] == 'space = ELB AND title ~ "plan"'
-    )
-
-
-def test_cli_read_commands_use_the_product_token(capsys):
+def test_cli_read_commands_use_the_jira_token(capsys):
     seen = []
 
     def token(agent, product):
         seen.append(product)
         return TOKEN
 
-    transport = FakeTransport(*_page_responses())
-    assert main(["haya", "confluence-read", "123", "--cloud-id", CLOUD], token_source=token, transport=transport) == 0
-    assert seen == ["confluence"] and json.loads(capsys.readouterr().out)["read_by"] == "Haya"
+    transport = FakeTransport((200, json.dumps({"issues": []})))
+    assert (
+        main(["haya", "jira-jql", "project = DFP", "--cloud-id", CLOUD], token_source=token, transport=transport) == 0
+    )
+    assert seen == ["jira"] and json.loads(capsys.readouterr().out)["read_by"] == "Haya"
+
+
+def test_adf_text_keeps_table_rows_on_one_line():
+    def cell(text):
+        return {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]}
+
+    table = {"type": "table", "content": [{"type": "tableRow", "content": [cell("Owner"), cell("Ahmed")]}]}
+    assert _adf_text(table) == "Owner | Ahmed"

@@ -5,7 +5,7 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 ## 2026-10-31
 
 ### Added
-- `atl` read commands, with the agent's own token, for pickup workers that have the Atlassian MCP tools locked (BASITA-41): `jira-read <KEY>` (issue, comments, sub-tasks, linked issues), `jira-search \"<JQL>\"`, `confluence-read <page id or URL>` (body, comments, children) and `confluence-search \"<words or CQL>\"`. Each result names the agent that read it.
+- `atl` read commands, with the agent's own token, for pickup workers that have the Atlassian MCP tools locked (BASITA-41): `jira-get <KEY>` (issue, comments, sub-tasks, linked issues) and `jira-jql "<JQL>"`. Each result names the agent that read it.
 
 ## 2026-10-29
 

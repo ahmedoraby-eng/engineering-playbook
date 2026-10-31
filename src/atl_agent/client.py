@@ -1,4 +1,4 @@
-"""Jira and Confluence reads, and Jira and Confluence writes, as one agent's Atlassian account.
+"""Jira reads, and Jira and Confluence writes, as one agent's Atlassian account.
 
 The agent's scoped API token is read from the macOS Keychain for each command (service
 `basita-atl-<agent>-<jira|confluence>`, falling back to `basita-atl-<agent>`; account `basita`) and
@@ -61,7 +61,6 @@ def urllib_transport(method: str, url: str, headers: dict, body: bytes | None) -
 
 PICKED_LABEL = "agent-picked"
 ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9]+-[0-9]+$")
-_PAGE_ID = re.compile(r"^(?:.*/pages/)?([0-9]+)(?:/.*)?$")
 
 
 _LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()]+[^\s<>\[\]().,;:!?\"'])")
@@ -113,8 +112,10 @@ def _adf_text(node: dict | None) -> str:
     if kind in ("inlineCard", "blockCard"):
         return node.get("attrs", {}).get("url", "")
     children = node.get("content", [])
-    inline = kind in ("paragraph", "heading")
-    text = ("" if inline else "\n").join(_adf_text(child) for child in children)
+    separator = {"paragraph": "", "heading": "", "tableRow": " | ", "tableCell": " ", "tableHeader": " "}.get(
+        kind, "\n"
+    )
+    text = separator.join(_adf_text(child) for child in children)
     return f"- {text}" if kind == "listItem" else text
 
 
@@ -188,7 +189,7 @@ class AtlClient:
         status = data["fields"]["status"]
         return {"name": status["name"], "category": status["statusCategory"]["key"]}
 
-    def jira_read(self, issue: str) -> dict:
+    def jira_get(self, issue: str) -> dict:
         """An issue's fields, comments and linked issues, read as this agent. Only makes GET calls.
         `assigned_to_reader` comes from a currentUser() search, which shows whose token this is, since these
         tokens can't call /myself. Needs read:jira-work."""
@@ -247,7 +248,7 @@ class AtlClient:
             "comments": comments,
         }
 
-    def jira_search(self, jql: str, limit: int = 100) -> dict:
+    def jira_jql(self, jql: str, limit: int = 100) -> dict:
         """The issues a JQL query matches, as this agent, up to `limit`. Needs read:jira-work."""
         fields = "summary,status,issuetype,assignee,priority,parent,labels"
         issues: list[dict] = []
@@ -275,82 +276,6 @@ class AtlClient:
             if not token or not page.get("issues"):
                 break
         return {"read_by": self.display, "jql": jql, "count": len(issues), "issues": issues}
-
-    def confluence_read(self, page: str) -> dict:
-        """A page (by id or URL): title, space, version, labels, body as plain text, footer comments and child
-        pages, read as this agent. Needs read:page:confluence, read:space:confluence and read:comment:confluence."""
-        match = _PAGE_ID.match(page.strip())
-        if not match:
-            raise AtlError(f"'{page}' is not a Confluence page id or URL")
-        page_id = match.group(1)
-        data = self._call(
-            "GET", "confluence", f"/wiki/api/v2/pages/{page_id}?body-format=atlas_doc_format&include-labels=true"
-        )
-        body = (data.get("body") or {}).get("atlas_doc_format", {}).get("value") or ""
-        try:
-            text = _adf_text(json.loads(body)) if body else ""
-        except json.JSONDecodeError:
-            text = body
-        space = self._call("GET", "confluence", f"/wiki/api/v2/spaces/{data['spaceId']}") if data.get("spaceId") else {}
-        comments = self._call(
-            "GET", "confluence", f"/wiki/api/v2/pages/{page_id}/footer-comments?body-format=atlas_doc_format&limit=100"
-        )
-        children = self._call("GET", "confluence", f"/wiki/api/v2/pages/{page_id}/children?limit=100")
-        base = (data.get("_links") or {}).get("base", "")
-
-        def comment_text(c: dict) -> str:
-            value = (c.get("body") or {}).get("atlas_doc_format", {}).get("value") or ""
-            try:
-                return _adf_text(json.loads(value)) if value else ""
-            except json.JSONDecodeError:
-                return value
-
-        return {
-            "id": data.get("id"),
-            "read_by": self.display,
-            "title": data.get("title"),
-            "space": space.get("key"),
-            "space_name": space.get("name"),
-            "status": data.get("status"),
-            "version": (data.get("version") or {}).get("number"),
-            "updated": (data.get("version") or {}).get("createdAt"),
-            "url": base + ((data.get("_links") or {}).get("webui") or ""),
-            "labels": [label.get("name") for label in (data.get("labels") or {}).get("results", [])],
-            "parent": data.get("parentId"),
-            "children": [{"id": c.get("id"), "title": c.get("title")} for c in children.get("results", [])],
-            "body": text,
-            "comments": [
-                {"id": c.get("id"), "version": (c.get("version") or {}).get("number"), "text": comment_text(c)}
-                for c in comments.get("results", [])
-            ],
-        }
-
-    def confluence_search(self, query: str, limit: int = 25) -> dict:
-        """Pages matching a CQL query, or plain words searched in titles and text, as this agent. Needs
-        search:confluence."""
-        is_cql = (
-            bool(re.search(r"(^|\s)(=|~|!=|>|<|AND|OR|NOT)(\s|$)", query, re.IGNORECASE))
-            and "=" in query
-            or "~" in query
-        )
-        cql = query if is_cql else f'type in (page, blogpost) AND text ~ "{query.replace(chr(34), " ")}"'
-        data = self._call("GET", "confluence", f"/wiki/rest/api/search?cql={quote(cql)}&limit={min(limit, 100)}")
-        base = (data.get("_links") or {}).get("base", "")
-        results = []
-        for item in data.get("results", []):
-            content = item.get("content") or {}
-            results.append(
-                {
-                    "id": content.get("id"),
-                    "type": content.get("type"),
-                    "title": item.get("title") or content.get("title"),
-                    "space": ((item.get("resultGlobalContainer") or {}).get("title")),
-                    "updated": item.get("lastModified"),
-                    "excerpt": re.sub(r"@@@(end)?hl@@@", "", item.get("excerpt") or ""),
-                    "url": base + (item.get("url") or ""),
-                }
-            )
-        return {"read_by": self.display, "cql": cql, "count": len(results), "results": results}
 
     def jira_close(self, issue: str) -> str:
         """Move the issue to a status in the Done category and return that status's name.
