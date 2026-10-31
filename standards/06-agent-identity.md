@@ -36,6 +36,9 @@ A Confluence token (`basita-atl-<agent>-confluence`) is a scoped token for the C
 t="$(pbpaste)"; [ "${#t}" -gt 128 ] && security add-generic-password -U -s basita-atl-salma-jira -a basita -w "$t"; unset t
 ```
 
+## Agents with no Atlassian user
+Yousef and Basel have no Atlassian user, and work through Talia's. `scripts/atl yousef ...` uses Talia's token and signs Jira comments `— Yousef (Basita AI, via Talia)`, so Jira shows her account and the signature says who did the work. `--via talia` does the same for an agent that has a user of its own. In git they are ordinary agents: `scripts/agent-git yousef commit` commits as `Yousef (Basita AI) <yousef@<agent-domain>>`.
+
 ## Enforcement
 `reusable-agent-attribution.yml` checks every pull request: agent commits must carry a matching `Agent:` trailer and no Smart Commit command, unknown authors fail, AI-made commits authored as a human and missing issue keys are warnings. On a free private repository GitHub cannot make the check required, so the merge rule ("merge only on green") is the control.
 

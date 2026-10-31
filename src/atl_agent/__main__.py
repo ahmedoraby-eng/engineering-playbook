@@ -13,6 +13,9 @@
     atl <agent> confluence-edit <page id or URL> "text" [--title "New title"] [--storage]
     atl <agent> confluence-append <page id> "text"
 
+An agent with no Atlassian user (Yousef, Basel), or one given --via talia, uses Talia's user and token, and signs
+"— Yousef (Basita AI, via Talia)".
+
 Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CLOUD_ID, and defaults to Basita's
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
 recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and
@@ -31,7 +34,7 @@ import json
 import os
 import sys
 
-from .client import CLOSE_REASONS, AtlClient, AtlError, default_cloud_id, keychain_token
+from .client import CLOSE_REASONS, AtlClient, AtlError, account_for, default_cloud_id, keychain_token
 
 READS = {
     "jira-get": lambda c: c.jira_get,
@@ -68,6 +71,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     parser.add_argument("--title", default="", help="confluence-create, confluence-edit: the page title")
     parser.add_argument("--parent", default="", help="confluence-create: the parent page's id or URL")
     parser.add_argument("--storage", action="store_true", help="the text is Confluence storage format")
+    parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. talia")
     parser.add_argument("--cloud-id", default=default_cloud_id())
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
     args = parser.parse_args(argv)
@@ -77,7 +81,14 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             agent = args.agent.lower()
             kwargs = {"transport": transport} if transport else {}
             product = args.command.split("-")[0]
-            client = AtlClient(agent, args.cloud_id, token_source(agent, product), args.domain, **kwargs)
+            client = AtlClient(
+                agent,
+                args.cloud_id,
+                token_source(account_for(agent, args.via), product),
+                args.domain,
+                via=args.via,
+                **kwargs,
+            )
             print(json.dumps(READS[args.command](client)(args.target), ensure_ascii=False, indent=2))
         except AtlError as error:
             print(f"atl: {error}", file=sys.stderr)
@@ -92,7 +103,14 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         try:
             agent = args.agent.lower()
             kwargs = {"transport": transport} if transport else {}
-            client = AtlClient(agent, args.cloud_id, token_source(agent, "confluence"), args.domain, **kwargs)
+            client = AtlClient(
+                agent,
+                args.cloud_id,
+                token_source(account_for(agent, args.via), "confluence"),
+                args.domain,
+                via=args.via,
+                **kwargs,
+            )
             if args.command == "confluence-create":
                 result = client.confluence_create(args.target, args.title.strip(), text, args.parent, args.storage)
             else:
@@ -121,8 +139,15 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         agent = args.agent.lower()
         kwargs = {"transport": transport} if transport else {}
         product = args.command.split("-")[0]
-        client = AtlClient(agent, args.cloud_id, token_source(agent, product), args.domain, **kwargs)
-        signed = f"{text.rstrip()}\n\n— {client.display} (Basita AI)"
+        client = AtlClient(
+            agent,
+            args.cloud_id,
+            token_source(account_for(agent, args.via), product),
+            args.domain,
+            via=args.via,
+            **kwargs,
+        )
+        signed = f"{text.rstrip()}\n\n— {client.signature}"
         if args.command == "jira-start":
             status = client.jira_start(args.target)
             client.jira_comment(args.target, signed)

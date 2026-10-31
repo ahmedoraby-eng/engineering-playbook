@@ -6,6 +6,7 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ### Added
 - `atl` reads and writes as the agent's own identity (BASITA-41): `jira-get <KEY>` (issue, comments, sub-tasks, linked issues), `jira-jql "<JQL>"`, `confluence-get <page id or URL>`, `confluence-search "<words or CQL>"`, `confluence-create <space key> "text" --title "Title"` and `confluence-edit <page id or URL> "text"`. Each read names the agent that read it. Nothing deletes. The Confluence commands need a scoped Confluence token for the agent.
+- Agents with no Atlassian user (Yousef, Basel), or any agent given `--via talia`, work through Talia's user and sign `— Yousef (Basita AI, via Talia)`; `agent-git` knows both names (BASITA-41).
 
 ## 2026-10-29
 

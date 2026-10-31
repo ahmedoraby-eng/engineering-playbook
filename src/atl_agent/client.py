@@ -27,7 +27,9 @@ if TYPE_CHECKING:  # the CLI also runs on macOS's system Python 3.9
     # (method, url, headers, body) -> (status, response text). Swapped out in tests.
     Transport = Callable[[str, str, dict, bytes | None], tuple[int, str]]
 
-AGENTS = ("talia", "malek", "salma", "sherif", "haya", "adam", "nora", "maya")
+AGENTS = ("talia", "malek", "salma", "sherif", "haya", "adam", "nora", "maya", "yousef", "basel")
+# Agents with no Atlassian user of their own work through Talia's, and sign as themselves (Ahmed, 31/10/2026).
+NO_USER_VIA = {"yousef": "talia", "basel": "talia"}
 GATEWAY = "https://api.atlassian.com/ex"
 
 
@@ -160,6 +162,14 @@ CLOSE_REASONS = ("Not a Bug", "Already Fixed", "Duplicate", "Business Requiremen
 SALMA_ACCOUNT = "712020:a11d40c9-5c21-4caf-8743-b118b75cd9d2"
 
 
+def account_for(agent: str, via: str = "") -> str:
+    """The Atlassian user an agent works through: its own, unless it has none or --via names another."""
+    account = (via or NO_USER_VIA.get(agent, agent)).lower()
+    if account not in AGENTS or account in NO_USER_VIA:
+        raise AtlError(f"'{account}' has no Atlassian user to work through")
+    return account
+
+
 class AtlClient:
     def __init__(
         self,
@@ -168,17 +178,29 @@ class AtlClient:
         token: str,
         domain: str = "basitasolutions.com",
         transport: Transport = urllib_transport,
+        via: str = "",
     ):
         agent = agent.lower()
         if agent not in AGENTS:
             raise AtlError(f"unknown agent '{agent}' (known: {', '.join(AGENTS)})")
+        account = account_for(agent, via)
         if not cloud_id:
             raise AtlError("no Atlassian cloud id: set ATL_CLOUD_ID or pass --cloud-id")
         self.agent = agent
         self.display = agent.capitalize()
+        self.via = "" if account == agent else account.capitalize()
         self.cloud_id = cloud_id
-        self._auth = "Basic " + base64.b64encode(f"{agent}@{domain}:{token}".encode()).decode()
+        self._auth = "Basic " + base64.b64encode(f"{account}@{domain}:{token}".encode()).decode()
         self._transport = transport
+
+    @property
+    def signature(self) -> str:
+        """Who did the work, as it appears on a Jira comment."""
+        return f"{self.display} (Basita AI, via {self.via})" if self.via else f"{self.display} (Basita AI)"
+
+    @property
+    def reader(self) -> str:
+        return f"{self.display} (via {self.via})" if self.via else self.display
 
     def __repr__(self) -> str:  # keep the token out of any accidental print
         return f"AtlClient(agent={self.agent!r}, cloud_id={self.cloud_id!r})"
@@ -251,7 +273,7 @@ class AtlClient:
         name = lambda field: (data.get(field) or {}).get("displayName")  # noqa: E731
         return {
             "key": issue,
-            "read_by": self.display,
+            "read_by": self.reader,
             "assigned_to_reader": bool(mine.get("issues")),
             "summary": data.get("summary"),
             "status": data["status"]["name"],
@@ -297,7 +319,7 @@ class AtlClient:
             token = page.get("nextPageToken", "")
             if not token or not page.get("issues"):
                 break
-        return {"read_by": self.display, "jql": jql, "count": len(issues), "issues": issues}
+        return {"read_by": self.reader, "jql": jql, "count": len(issues), "issues": issues}
 
     def jira_close(self, issue: str) -> str:
         """Move the issue to a status in the Done category and return that status's name.
@@ -428,7 +450,7 @@ class AtlClient:
         links = data.get("_links") or {}
         return {
             "id": data.get("id"),
-            "read_by": self.display,
+            "read_by": self.reader,
             "title": data.get("title"),
             "space": space.get("key"),
             "space_name": space.get("name"),
@@ -464,7 +486,7 @@ class AtlClient:
             }
             for item in data.get("results", [])
         ]
-        return {"read_by": self.display, "cql": cql, "count": len(results), "results": results}
+        return {"read_by": self.reader, "cql": cql, "count": len(results), "results": results}
 
     def confluence_create(self, space: str, title: str, text: str, parent: str = "", storage: bool = False) -> dict:
         """Create a published page in a space, by its key. Needs read:space and write:page (both :confluence)."""
@@ -489,7 +511,7 @@ class AtlClient:
             body = _page_body(text, storage)
         else:
             body = {"representation": "storage", "value": current["body"]["storage"]["value"]}
-        note = f"[{self.display}] " + (
+        note = f"[{self.reader}] " + (
             text.strip()[:150] if text.strip() and not storage else f"edited: {title or 'body'}"
         )
         payload = {
@@ -526,6 +548,6 @@ class AtlClient:
             "status": "current",
             "title": page["title"],
             "body": {"representation": "storage", "value": current + f"<p>{escape(text)}</p>"},
-            "version": {"number": page["version"]["number"] + 1, "message": f"[{self.display}] {text[:200]}"},
+            "version": {"number": page["version"]["number"] + 1, "message": f"[{self.reader}] {text[:200]}"},
         }
         return self._call("PUT", "confluence", f"/wiki/api/v2/pages/{page_id}", payload)

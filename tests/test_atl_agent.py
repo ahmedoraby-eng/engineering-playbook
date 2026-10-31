@@ -656,3 +656,52 @@ def test_cli_confluence_commands_use_the_confluence_token(capsys):
 def test_cli_confluence_create_needs_a_title_and_text(capsys):
     assert main(["haya", "confluence-create", "ELB", "text", "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN) == 2
     assert "--title" in capsys.readouterr().err
+
+
+def test_an_agent_with_no_user_works_through_talia_and_signs_as_itself(capsys):
+    seen = []
+
+    def token(agent, product):
+        seen.append((agent, product))
+        return TOKEN
+
+    transport = FakeTransport((201, json.dumps({"id": "10", "author": {"displayName": "Talia"}})))
+    args = ["yousef", "jira-comment", "BASITA-1", "Plan ready", "--cloud-id", CLOUD]
+    assert main(args, token_source=token, transport=transport) == 0
+    assert seen == [("talia", "jira")]
+    _, _, headers, body = transport.calls[0]
+    assert base64.b64decode(headers["Authorization"].split()[1]).decode().startswith("talia@")
+    lines = [node.get("content", [{}])[0].get("text") for node in body["body"]["content"]]
+    assert lines[-1] == "— Yousef (Basita AI, via Talia)"
+
+
+def test_via_moves_an_agent_with_its_own_user_onto_talias(capsys):
+    seen = []
+
+    def token(agent, product):
+        seen.append(agent)
+        return TOKEN
+
+    transport = FakeTransport((200, json.dumps({"issues": []})))
+    args = ["maya", "--via", "talia", "jira-jql", "project = DFP", "--cloud-id", CLOUD]
+    assert main(args, token_source=token, transport=transport) == 0
+    assert seen == ["talia"] and json.loads(capsys.readouterr().out)["read_by"] == "Maya (via Talia)"
+
+
+def test_without_via_an_agent_keeps_its_own_user_and_signature():
+    c = client(FakeTransport(), "maya")
+    assert c.via == "" and c.signature == "Maya (Basita AI)" and c.reader == "Maya"
+
+
+def test_via_refuses_an_account_that_does_not_exist():
+    with pytest.raises(AtlError, match="no Atlassian user"):
+        AtlClient("maya", CLOUD, TOKEN, via="yousef")
+    with pytest.raises(AtlError, match="no Atlassian user"):
+        AtlClient("maya", CLOUD, TOKEN, via="mallory")
+
+
+def test_a_page_edit_through_talia_names_the_agent():
+    page = {"id": "123", "title": "Plan", "version": {"number": 1}, "body": {"storage": {"value": ""}}}
+    transport = FakeTransport((200, json.dumps(page)), (200, json.dumps({"id": "123"})))
+    client(transport, "basel").confluence_edit("123", "new")
+    assert transport.calls[1][3]["version"]["message"] == "[Basel (via Talia)] new"
