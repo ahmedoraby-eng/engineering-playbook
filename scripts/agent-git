@@ -15,7 +15,7 @@
 #              BASITA_REQUESTED_BY (default "Ahmed Oraby <ahmed.oraby@icloud.com>"), AGENT_MODEL.
 set -euo pipefail
 
-AGENTS="talia malek salma sherif haya adam nora maya"
+AGENTS="talia malek salma sherif haya adam nora maya yousef basel"
 
 if [ $# -lt 2 ]; then
   echo "usage: agent-git <agent> <git arguments...>   agents: $AGENTS" >&2

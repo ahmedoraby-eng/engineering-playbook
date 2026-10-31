@@ -656,3 +656,82 @@ def test_cli_confluence_commands_use_the_confluence_token(capsys):
 def test_cli_confluence_create_needs_a_title_and_text(capsys):
     assert main(["haya", "confluence-create", "ELB", "text", "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN) == 2
     assert "--title" in capsys.readouterr().err
+
+
+def test_via_sherif_uses_sherifs_jira_token_and_signs_as_maya(capsys):
+    seen = []
+
+    def token(agent, product):
+        seen.append((agent, product))
+        return TOKEN
+
+    transport = FakeTransport((201, json.dumps({"id": "10", "author": {"displayName": "Sherif"}})))
+    args = ["maya", "--via", "sherif", "jira-comment", "DFP-1", "Notes ready", "--cloud-id", CLOUD]
+    assert main(args, token_source=token, transport=transport) == 0
+    assert seen == [("sherif", "jira")]
+    _, _, headers, body = transport.calls[0]
+    assert base64.b64decode(headers["Authorization"].split()[1]).decode().startswith("sherif@")
+    lines = [node.get("content", [{}])[0].get("text") for node in body["body"]["content"]]
+    assert lines[-1] == "— Maya (Basita AI, via Sherif)"
+
+
+def test_via_sherif_reads_jira_as_maya(capsys):
+    seen = []
+
+    def token(agent, product):
+        seen.append(agent)
+        return TOKEN
+
+    transport = FakeTransport((200, json.dumps({"issues": []})))
+    args = ["maya", "--via", "sherif", "jira-jql", "project = DFP", "--cloud-id", CLOUD]
+    assert main(args, token_source=token, transport=transport) == 0
+    assert seen == ["sherif"] and json.loads(capsys.readouterr().out)["read_by"] == "Maya (via Sherif)"
+
+
+def test_maya_uses_her_own_user_on_confluence(capsys):
+    seen = []
+
+    def token(agent, product):
+        seen.append((agent, product))
+        return TOKEN
+
+    page = {"id": "123", "title": "Plan", "version": {"number": 1}, "body": {"storage": {"value": ""}}, "results": []}
+    logins = []
+
+    def transport(method, url, headers, body):
+        logins.append(base64.b64decode(headers["Authorization"].split()[1]).decode())
+        return 200, json.dumps(page)
+
+    assert main(["maya", "confluence-get", "123", "--cloud-id", CLOUD], token_source=token, transport=transport) == 0
+    assert seen == [("maya", "confluence")]
+    assert all(login.startswith("maya@") for login in logins) and logins
+
+
+def test_yousef_uses_his_own_user_and_signature():
+    c = client(FakeTransport(), "yousef")
+    assert c.via == "" and c.signature == "Yousef (Basita AI)" and c.reader == "Yousef"
+
+
+def test_an_agent_with_no_token_and_no_via_fails(capsys):
+    def no_token(agent, product):
+        raise AtlError(f"no Keychain item basita-atl-{agent}-{product}")
+
+    assert main(["basel", "jira-get", "DFP-1", "--cloud-id", CLOUD], token_source=no_token) != 0
+    assert "basita-atl-basel-jira" in capsys.readouterr().err
+
+
+def test_without_via_an_agent_keeps_its_own_user_and_signature():
+    c = client(FakeTransport(), "sherif")
+    assert c.via == "" and c.signature == "Sherif (Basita AI)" and c.reader == "Sherif"
+
+
+def test_via_refuses_an_account_that_does_not_exist():
+    with pytest.raises(AtlError, match="no Atlassian user"):
+        AtlClient("maya", CLOUD, TOKEN, via="mallory")
+
+
+def test_a_page_edit_through_another_user_names_the_agent():
+    page = {"id": "123", "title": "Plan", "version": {"number": 1}, "body": {"storage": {"value": ""}}}
+    transport = FakeTransport((200, json.dumps(page)), (200, json.dumps({"id": "123"})))
+    AtlClient("maya", CLOUD, TOKEN, transport=transport, via="sherif").confluence_edit("123", "new")
+    assert transport.calls[1][3]["version"]["message"] == "[Maya (via Sherif)] new"
