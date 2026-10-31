@@ -197,7 +197,8 @@ class AtlClient:
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields={fields}")["fields"]
         comments: list[dict] = []
         while True:
-            page = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/comment?startAt={len(comments)}&maxResults=100")
+            query = f"startAt={len(comments)}&maxResults=100"
+            page = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/comment?{query}")
             found = page.get("comments", [])
             comments += [
                 {

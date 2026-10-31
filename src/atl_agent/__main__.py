@@ -26,11 +26,21 @@ from .client import CLOSE_REASONS, AtlClient, AtlError, default_cloud_id, keycha
 
 
 def main(argv: list[str] | None = None, token_source=keychain_token, transport=None) -> int:
-    parser = argparse.ArgumentParser(prog="atl", description="Read Jira, or write to Jira or Confluence, as a named agent.")
+    parser = argparse.ArgumentParser(
+        prog="atl", description="Read Jira, or write to Jira or Confluence, as a named agent."
+    )
     parser.add_argument("agent", help="agent name, e.g. salma")
     parser.add_argument(
         "command",
-        choices=["jira-read", "jira-comment", "jira-start", "jira-ready", "jira-return", "jira-dismiss", "confluence-append"],
+        choices=[
+            "jira-read",
+            "jira-comment",
+            "jira-start",
+            "jira-ready",
+            "jira-return",
+            "jira-dismiss",
+            "confluence-append",
+        ],
     )
     parser.add_argument("target", help="issue key (jira-*) or page id (confluence-append)")
     parser.add_argument("text", nargs="?", default="", help="text to write, or - to read it from stdin")
