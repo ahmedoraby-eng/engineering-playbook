@@ -13,8 +13,8 @@
     atl <agent> confluence-edit <page id or URL> "text" [--title "New title"] [--storage]
     atl <agent> confluence-append <page id> "text"
 
-An agent with no Atlassian user (Yousef, Basel), or one given --via talia, uses Talia's user and token, and signs
-"— Yousef (Basita AI, via Talia)".
+--via <agent> uses that agent's user and token for the command, and signs "— Maya (Basita AI, via Sherif)". Maya has
+no Jira seat, so her Jira commands take --via sherif; her Confluence commands don't, because she has her own user there.
 
 Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CLOUD_ID, and defaults to Basita's
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     parser.add_argument("--title", default="", help="confluence-create, confluence-edit: the page title")
     parser.add_argument("--parent", default="", help="confluence-create: the parent page's id or URL")
     parser.add_argument("--storage", action="store_true", help="the text is Confluence storage format")
-    parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. talia")
+    parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. sherif")
     parser.add_argument("--cloud-id", default=default_cloud_id())
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
     args = parser.parse_args(argv)

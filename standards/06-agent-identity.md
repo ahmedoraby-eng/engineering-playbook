@@ -36,8 +36,8 @@ A Confluence token (`basita-atl-<agent>-confluence`) is a scoped token for the C
 t="$(pbpaste)"; [ "${#t}" -gt 128 ] && security add-generic-password -U -s basita-atl-salma-jira -a basita -w "$t"; unset t
 ```
 
-## Agents with no Atlassian user
-Yousef and Basel have no Atlassian user, and work through Talia's. `scripts/atl yousef ...` uses Talia's token and signs Jira comments `— Yousef (Basita AI, via Talia)`, so Jira shows her account and the signature says who did the work. `--via talia` does the same for an agent that has a user of its own. In git they are ordinary agents: `scripts/agent-git yousef commit` commits as `Yousef (Basita AI) <yousef@<agent-domain>>`.
+## Agents with no seat on a product
+An agent with no seat on a product works through another agent's user there, with `--via`. Maya has no Jira seat: `scripts/atl maya --via sherif jira-comment DFP-1 "text"` uses Sherif's Jira token and signs `— Maya (Basita AI, via Sherif)`, so Jira shows that account and the signature says who did the work. She has her own Confluence user, so `scripts/atl maya confluence-get <page>` takes no `--via`. An agent with no Atlassian user and no `--via` fails on the missing Keychain item. In git they are ordinary agents: `scripts/agent-git maya commit` commits as `Maya (Basita AI) <maya@<agent-domain>>`.
 
 ## Enforcement
 `reusable-agent-attribution.yml` checks every pull request: agent commits must carry a matching `Agent:` trailer and no Smart Commit command, unknown authors fail, AI-made commits authored as a human and missing issue keys are warnings. On a free private repository GitHub cannot make the check required, so the merge rule ("merge only on green") is the control.

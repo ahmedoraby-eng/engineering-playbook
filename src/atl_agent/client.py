@@ -28,8 +28,6 @@ if TYPE_CHECKING:  # the CLI also runs on macOS's system Python 3.9
     Transport = Callable[[str, str, dict, bytes | None], tuple[int, str]]
 
 AGENTS = ("talia", "malek", "salma", "sherif", "haya", "adam", "nora", "maya", "yousef", "basel")
-# Agents with no Atlassian user of their own work through Talia's, and sign as themselves (Ahmed, 31/10/2026).
-NO_USER_VIA = {"yousef": "talia", "basel": "talia"}
 GATEWAY = "https://api.atlassian.com/ex"
 
 
@@ -163,9 +161,9 @@ SALMA_ACCOUNT = "712020:a11d40c9-5c21-4caf-8743-b118b75cd9d2"
 
 
 def account_for(agent: str, via: str = "") -> str:
-    """The Atlassian user an agent works through: its own, unless it has none or --via names another."""
-    account = (via or NO_USER_VIA.get(agent, agent)).lower()
-    if account not in AGENTS or account in NO_USER_VIA:
+    """The Atlassian user an agent works through: its own, unless --via names another agent's."""
+    account = (via or agent).lower()
+    if account not in AGENTS:
         raise AtlError(f"'{account}' has no Atlassian user to work through")
     return account
 
