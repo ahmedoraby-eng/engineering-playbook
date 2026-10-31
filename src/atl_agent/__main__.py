@@ -1,5 +1,6 @@
 """Command line:
 
+    atl <agent> jira-read BASITA-1
     atl <agent> jira-comment BASITA-1 "text" [--mention <account id> ...]
     atl <agent> jira-start BASITA-1 ["text"]
     atl <agent> jira-ready BASITA-1 ["text"]
@@ -10,12 +11,14 @@
 Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CLOUD_ID, and defaults to Basita's
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
 recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and
-comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments.
+comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments. `jira-read` prints the
+issue, its comments and its linked issues as JSON, and changes nothing.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -23,11 +26,11 @@ from .client import CLOSE_REASONS, AtlClient, AtlError, default_cloud_id, keycha
 
 
 def main(argv: list[str] | None = None, token_source=keychain_token, transport=None) -> int:
-    parser = argparse.ArgumentParser(prog="atl", description="Write to Jira or Confluence as a named agent.")
+    parser = argparse.ArgumentParser(prog="atl", description="Read Jira, or write to Jira or Confluence, as a named agent.")
     parser.add_argument("agent", help="agent name, e.g. salma")
     parser.add_argument(
         "command",
-        choices=["jira-comment", "jira-start", "jira-ready", "jira-return", "jira-dismiss", "confluence-append"],
+        choices=["jira-read", "jira-comment", "jira-start", "jira-ready", "jira-return", "jira-dismiss", "confluence-append"],
     )
     parser.add_argument("target", help="issue key (jira-*) or page id (confluence-append)")
     parser.add_argument("text", nargs="?", default="", help="text to write, or - to read it from stdin")
@@ -36,6 +39,17 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     parser.add_argument("--cloud-id", default=default_cloud_id())
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
     args = parser.parse_args(argv)
+
+    if args.command == "jira-read":
+        try:
+            agent = args.agent.lower()
+            kwargs = {"transport": transport} if transport else {}
+            client = AtlClient(agent, args.cloud_id, token_source(agent, "jira"), args.domain, **kwargs)
+            print(json.dumps(client.jira_read(args.target), ensure_ascii=False, indent=2))
+        except AtlError as error:
+            print(f"atl: {error}", file=sys.stderr)
+            return 1
+        return 0
 
     text = sys.stdin.read() if args.text == "-" else args.text
     if args.command == "jira-start" and not text.strip():

@@ -2,6 +2,11 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## 2026-10-31
+
+### Added
+- `atl <agent> jira-read <KEY>`: an issue, its comments and its linked issues as JSON, read with the agent's own token, for pickup workers that have the Atlassian MCP tools locked (BASITA-41).
+
 ## 2026-10-29
 
 ### Added

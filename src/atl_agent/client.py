@@ -1,4 +1,4 @@
-"""Jira and Confluence writes as one agent's Atlassian account.
+"""Jira reads, and Jira and Confluence writes, as one agent's Atlassian account.
 
 The agent's scoped API token is read from the macOS Keychain for each command (service
 `basita-atl-<agent>-<jira|confluence>`, falling back to `basita-atl-<agent>`; account `basita`) and
@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from html import escape
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 if TYPE_CHECKING:  # the CLI also runs on macOS's system Python 3.9
     from collections.abc import Callable
@@ -59,6 +60,7 @@ def urllib_transport(method: str, url: str, headers: dict, body: bytes | None) -
 
 
 PICKED_LABEL = "agent-picked"
+ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9]+-[0-9]+$")
 
 
 _LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()]+[^\s<>\[\]().,;:!?\"'])")
@@ -92,6 +94,27 @@ def _adf(text: str, mentions: tuple[str, ...] = ()) -> dict:
             nodes += [{"type": "mention", "attrs": {"id": account}}, {"type": "text", "text": " "}]
         paragraphs.insert(0, {"type": "paragraph", "content": nodes})
     return {"type": "doc", "version": 1, "content": paragraphs}
+
+
+def _adf_text(node: dict | None) -> str:
+    """An Atlassian Document Format node as plain text, keeping link targets and mentions."""
+    if not node:
+        return ""
+    kind = node.get("type")
+    if kind == "text":
+        text = node.get("text", "")
+        href = next((m["attrs"].get("href") for m in node.get("marks", []) if m.get("type") == "link"), None)
+        return f"{text} ({href})" if href and href != text else text
+    if kind == "hardBreak":
+        return "\n"
+    if kind == "mention":
+        return node.get("attrs", {}).get("text", "@?")
+    if kind in ("inlineCard", "blockCard"):
+        return node.get("attrs", {}).get("url", "")
+    children = node.get("content", [])
+    inline = kind in ("paragraph", "heading")
+    text = ("" if inline else "\n").join(_adf_text(child) for child in children)
+    return f"- {text}" if kind == "listItem" else text
 
 
 # Basita's Atlassian site (basitasolutions.atlassian.net). The cloud id is an identifier, not a secret.
@@ -163,6 +186,60 @@ class AtlClient:
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status")
         status = data["fields"]["status"]
         return {"name": status["name"], "category": status["statusCategory"]["key"]}
+
+    def jira_read(self, issue: str) -> dict:
+        """An issue's fields, comments and linked issues, read as this agent. Only makes GET calls.
+        `assigned_to_reader` comes from a currentUser() search, which shows whose token this is, since these
+        tokens can't call /myself. Needs read:jira-work."""
+        if not ISSUE_KEY.match(issue):
+            raise AtlError(f"'{issue}' is not an issue key")
+        fields = "summary,status,issuetype,labels,assignee,reporter,priority,parent,description,issuelinks"
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields={fields}")["fields"]
+        comments: list[dict] = []
+        while True:
+            page = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/comment?startAt={len(comments)}&maxResults=100")
+            found = page.get("comments", [])
+            comments += [
+                {
+                    "author": (c.get("author") or {}).get("displayName"),
+                    "created": c.get("created"),
+                    "text": _adf_text(c.get("body")),
+                }
+                for c in found
+            ]
+            if not found or len(comments) >= page.get("total", 0):
+                break
+        links = []
+        for link in data.get("issuelinks", []):
+            outward = "outwardIssue" in link
+            other = link["outwardIssue"] if outward else link["inwardIssue"]
+            links.append(
+                {
+                    "relation": link["type"]["outward" if outward else "inward"],
+                    "key": other["key"],
+                    "summary": other["fields"]["summary"],
+                    "status": other["fields"]["status"]["name"],
+                }
+            )
+        jql = quote(f"key = {issue} AND assignee = currentUser()")
+        mine = self._call("GET", "jira", f"/rest/api/3/search/jql?jql={jql}&fields=key")
+        name = lambda field: (data.get(field) or {}).get("displayName")  # noqa: E731
+        return {
+            "key": issue,
+            "read_by": self.display,
+            "assigned_to_reader": bool(mine.get("issues")),
+            "summary": data.get("summary"),
+            "status": data["status"]["name"],
+            "type": data["issuetype"]["name"],
+            "priority": (data.get("priority") or {}).get("name"),
+            "assignee": name("assignee"),
+            "reporter": name("reporter"),
+            "labels": data.get("labels", []),
+            "parent": (data.get("parent") or {}).get("key"),
+            "description": _adf_text(data.get("description")),
+            "links": links,
+            "comments": comments,
+        }
 
     def jira_close(self, issue: str) -> str:
         """Move the issue to a status in the Done category and return that status's name.

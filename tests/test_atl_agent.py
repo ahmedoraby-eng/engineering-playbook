@@ -360,3 +360,104 @@ def test_every_agent_pulls_a_simple_workflow_to_do_issue_into_in_progress(agent)
     """ELB and BASITA only have To Do / In Progress / Done: no refinement or testing-queue rules there."""
     transport = FakeTransport(_status_issue("To Do"), _to(("In Progress", "indeterminate")), (204, ""), (204, ""))
     assert client(transport, agent).jira_start("ELB-9") == "In Progress"
+
+
+def _read_responses():
+    fields = {
+        "summary": "S",
+        "status": {"name": "To Do"},
+        "issuetype": {"name": "Task"},
+        "labels": ["l"],
+        "assignee": {"displayName": "Malek"},
+        "reporter": {"displayName": "Ahmed"},
+        "priority": {"name": "High"},
+        "parent": {"key": "BASITA-2"},
+        "description": {
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Given"}]},
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": "see",
+                                            "marks": [{"type": "link", "attrs": {"href": "https://x.test"}}],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+        },
+        "issuelinks": [
+            {
+                "type": {"outward": "blocks", "inward": "is blocked by"},
+                "outwardIssue": {"key": "DFP-1", "fields": {"summary": "A", "status": {"name": "Done"}}},
+            },
+            {
+                "type": {"outward": "blocks", "inward": "is blocked by"},
+                "inwardIssue": {"key": "DFP-2", "fields": {"summary": "B", "status": {"name": "To Do"}}},
+            },
+        ],
+    }
+    comment = {
+        "author": {"displayName": "Haya"},
+        "created": "2026-10-31",
+        "body": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hi"}]}]},
+    }
+    return (
+        (200, json.dumps({"fields": fields})),
+        (200, json.dumps({"total": 1, "comments": [comment]})),
+        (200, json.dumps({"issues": [{"key": "BASITA-1"}]})),
+    )
+
+
+def test_jira_read_returns_the_issue_comments_and_links_with_get_calls_only():
+    transport = FakeTransport(*_read_responses())
+    result = client(transport, "malek").jira_read("BASITA-1")
+    assert {call[0] for call in transport.calls} == {"GET"}
+    auth = transport.calls[0][2]["Authorization"]
+    assert base64.b64decode(auth.split()[1]).decode() == f"malek@basitasolutions.com:{TOKEN}"
+    assert "currentUser" in transport.calls[2][1]
+    assert result["read_by"] == "Malek" and result["assigned_to_reader"] is True
+    assert result["status"] == "To Do" and result["parent"] == "BASITA-2" and result["labels"] == ["l"]
+    assert result["description"] == "Given\n- see (https://x.test)"
+    assert result["comments"] == [{"author": "Haya", "created": "2026-10-31", "text": "hi"}]
+    assert result["links"] == [
+        {"relation": "blocks", "key": "DFP-1", "summary": "A", "status": "Done"},
+        {"relation": "is blocked by", "key": "DFP-2", "summary": "B", "status": "To Do"},
+    ]
+
+
+def test_jira_read_follows_comment_pages():
+    issue, _, mine = _read_responses()
+    one = {"author": {"displayName": "H"}, "created": "d", "body": None}
+    transport = FakeTransport(
+        issue,
+        (200, json.dumps({"total": 2, "comments": [one]})),
+        (200, json.dumps({"total": 2, "comments": [one]})),
+        mine,
+    )
+    assert len(client(transport).jira_read("BASITA-1")["comments"]) == 2
+    assert "startAt=1" in transport.calls[2][1]
+
+
+def test_jira_read_refuses_anything_but_an_issue_key():
+    with pytest.raises(AtlError, match="not an issue key"):
+        client(FakeTransport()).jira_read("BASITA-1/../../x")
+
+
+def test_cli_jira_read_prints_json_and_needs_no_text(capsys):
+    transport = FakeTransport(*_read_responses())
+    code = main(["malek", "jira-read", "BASITA-1", "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN, transport=transport)
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["key"] == "BASITA-1"
