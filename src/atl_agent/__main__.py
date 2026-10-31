@@ -29,7 +29,6 @@ import sys
 
 from .client import CLOSE_REASONS, AtlClient, AtlError, default_cloud_id, keychain_token
 
-
 READS = {
     "jira-read": lambda c: c.jira_read,
     "jira-search": lambda c: c.jira_search,
