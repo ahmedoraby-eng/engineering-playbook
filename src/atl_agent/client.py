@@ -1,4 +1,4 @@
-"""Jira reads, and Jira and Confluence writes, as one agent's Atlassian account.
+"""Jira and Confluence reads and writes, as one agent's Atlassian account. Nothing here deletes.
 
 The agent's scoped API token is read from the macOS Keychain for each command (service
 `basita-atl-<agent>-<jira|confluence>`, falling back to `basita-atl-<agent>`; account `basita`) and
@@ -61,6 +61,8 @@ def urllib_transport(method: str, url: str, headers: dict, body: bytes | None) -
 
 PICKED_LABEL = "agent-picked"
 ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9]+-[0-9]+$")
+_PAGE_ID = re.compile(r"^(?:.*/pages/)?([0-9]+)(?:[/?#].*)?$")
+_SPACE_KEY = re.compile(r"^~?[A-Za-z0-9_-]+$")
 
 
 _LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()]+[^\s<>\[\]().,;:!?\"'])")
@@ -117,6 +119,26 @@ def _adf_text(node: dict | None) -> str:
     )
     text = separator.join(_adf_text(child) for child in children)
     return f"- {text}" if kind == "listItem" else text
+
+
+def _doc_text(item: dict) -> str:
+    """The plain text of a Confluence page or comment asked for with body-format=atlas_doc_format."""
+    value = ((item.get("body") or {}).get("atlas_doc_format") or {}).get("value") or ""
+    try:
+        return _adf_text(json.loads(value)) if value else ""
+    except json.JSONDecodeError:
+        return value
+
+
+def _version_at(item: dict) -> str | None:
+    return (item.get("version") or {}).get("createdAt")
+
+
+def _page_body(text: str, storage: bool) -> dict:
+    """A page body: plain text with clickable links, or Confluence storage format as given (for tables and macros)."""
+    if storage:
+        return {"representation": "storage", "value": text}
+    return {"representation": "atlas_doc_format", "value": json.dumps(_adf(text))}
 
 
 # Basita's Atlassian site (basitasolutions.atlassian.net). The cloud id is an identifier, not a secret.
@@ -383,6 +405,116 @@ class AtlClient:
             raise AtlError(f"{issue}: no transition to Closed is available from In Testing")
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
+
+    def confluence_get(self, page: str) -> dict:
+        """A page, by id or URL: its details, labels, body as plain text, comments, attachments and child pages.
+        Only GET calls. Needs read:page, read:space, read:comment, read:attachment and
+        read:hierarchical-content (all :confluence)."""
+        page_id = self._page_id(page)
+        data = self._call(
+            "GET", "confluence", f"/wiki/api/v2/pages/{page_id}?body-format=atlas_doc_format&include-labels=true"
+        )
+        space = self._call("GET", "confluence", f"/wiki/api/v2/spaces/{data['spaceId']}") if data.get("spaceId") else {}
+        comments = []
+        for kind in ("footer", "inline"):
+            found = self._results(
+                f"/wiki/api/v2/pages/{page_id}/{kind}-comments?body-format=atlas_doc_format&limit=100"
+            )
+            comments += [
+                {"id": c.get("id"), "kind": kind, "created": _version_at(c), "text": _doc_text(c)} for c in found
+            ]
+        attachments = self._results(f"/wiki/api/v2/pages/{page_id}/attachments?limit=100")
+        children = self._results(f"/wiki/api/v2/pages/{page_id}/direct-children?limit=100")
+        links = data.get("_links") or {}
+        return {
+            "id": data.get("id"),
+            "read_by": self.display,
+            "title": data.get("title"),
+            "space": space.get("key"),
+            "space_name": space.get("name"),
+            "status": data.get("status"),
+            "version": (data.get("version") or {}).get("number"),
+            "updated": _version_at(data),
+            "url": (links.get("base") or "") + (links.get("webui") or ""),
+            "labels": [label.get("name") for label in (data.get("labels") or {}).get("results", [])],
+            "parent": data.get("parentId"),
+            "children": [{"id": c.get("id"), "title": c.get("title"), "type": c.get("type")} for c in children],
+            "attachments": [{"title": a.get("title"), "size": a.get("fileSize")} for a in attachments],
+            "body": _doc_text(data),
+            "comments": comments,
+        }
+
+    def confluence_search(self, query: str, limit: int = 25) -> dict:
+        """Pages matching a CQL query, or plain words searched in their text, as this agent.
+        Needs search:confluence."""
+        is_cql = any(mark in query for mark in ("=", "~", " AND ", " OR ", " order by "))
+        words = query.replace('"', " ")
+        cql = query if is_cql else f'type in (page, blogpost) AND text ~ "{words}"'
+        data = self._call("GET", "confluence", f"/wiki/rest/api/search?cql={quote(cql)}&limit={min(limit, 100)}")
+        base = (data.get("_links") or {}).get("base", "")
+        results = [
+            {
+                "id": (item.get("content") or {}).get("id"),
+                "type": (item.get("content") or {}).get("type"),
+                "title": item.get("title") or (item.get("content") or {}).get("title"),
+                "space": (item.get("resultGlobalContainer") or {}).get("title"),
+                "updated": item.get("lastModified"),
+                "excerpt": re.sub(r"@@@(end)?hl@@@", "", item.get("excerpt") or ""),
+                "url": base + (item.get("url") or ""),
+            }
+            for item in data.get("results", [])
+        ]
+        return {"read_by": self.display, "cql": cql, "count": len(results), "results": results}
+
+    def confluence_create(self, space: str, title: str, text: str, parent: str = "", storage: bool = False) -> dict:
+        """Create a published page in a space, by its key. Needs read:space and write:page (both :confluence)."""
+        if not _SPACE_KEY.match(space):
+            raise AtlError(f"'{space}' is not a space key")
+        found = self._results(f"/wiki/api/v2/spaces?keys={quote(space)}")
+        if not found:
+            raise AtlError(f"no space with the key '{space}', or it is not visible to {self.display}")
+        payload = {"spaceId": found[0]["id"], "status": "current", "title": title, "body": _page_body(text, storage)}
+        if parent:
+            payload["parentId"] = self._page_id(parent)
+        return self._call("POST", "confluence", "/wiki/api/v2/pages", payload)
+
+    def confluence_edit(self, page: str, text: str = "", title: str = "", storage: bool = False) -> dict:
+        """Replace a page's body, its title, or both. Confluence keeps every earlier version, and the version note
+        names the agent. Needs read:page and write:page (both :confluence)."""
+        if not text.strip() and not title.strip():
+            raise AtlError("nothing to change: give the new text, a new title, or both")
+        page_id = self._page_id(page)
+        current = self._call("GET", "confluence", f"/wiki/api/v2/pages/{page_id}?body-format=storage")
+        if text.strip():
+            body = _page_body(text, storage)
+        else:
+            body = {"representation": "storage", "value": current["body"]["storage"]["value"]}
+        note = f"[{self.display}] " + (
+            text.strip()[:150] if text.strip() and not storage else f"edited: {title or 'body'}"
+        )
+        payload = {
+            "id": current["id"],
+            "status": "current",
+            "title": title.strip() or current["title"],
+            "body": body,
+            "version": {"number": current["version"]["number"] + 1, "message": note},
+        }
+        return self._call("PUT", "confluence", f"/wiki/api/v2/pages/{page_id}", payload)
+
+    def _page_id(self, page: str) -> str:
+        match = _PAGE_ID.match(page.strip())
+        if not match:
+            raise AtlError(f"'{page}' is not a Confluence page id or URL")
+        return match.group(1)
+
+    def _results(self, path: str) -> list[dict]:
+        """Every page of a Confluence v2 list, following its `next` links."""
+        results: list[dict] = []
+        while path:
+            data = self._call("GET", "confluence", path)
+            results += data.get("results", [])
+            path = (data.get("_links") or {}).get("next") or ""
+        return results
 
     def confluence_append(self, page_id: str, text: str) -> dict:
         """Append a paragraph to a Confluence page, with a version note naming the agent.

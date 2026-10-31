@@ -1,6 +1,7 @@
 import base64
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -501,3 +502,157 @@ def test_adf_text_keeps_table_rows_on_one_line():
 
     table = {"type": "table", "content": [{"type": "tableRow", "content": [cell("Owner"), cell("Ahmed")]}]}
     assert _adf_text(table) == "Owner | Ahmed"
+
+
+def _doc(text):
+    content = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]}
+    return {"atlas_doc_format": {"value": json.dumps(content)}}
+
+
+def _page_responses():
+    page = {
+        "id": "123",
+        "title": "Plan",
+        "status": "current",
+        "spaceId": "7",
+        "parentId": "100",
+        "version": {"number": 3, "createdAt": "2026-10-31"},
+        "body": _doc("Body"),
+        "labels": {"results": [{"name": "elb"}]},
+        "_links": {"base": "https://x.atlassian.net/wiki", "webui": "/spaces/ELB/pages/123"},
+    }
+    return (
+        (200, json.dumps(page)),
+        (200, json.dumps({"key": "ELB", "name": "Elbayoumy"})),
+        (200, json.dumps({"results": [{"id": "9", "body": _doc("footer"), "version": {"createdAt": "d1"}}]})),
+        (200, json.dumps({"results": [{"id": "8", "body": _doc("inline"), "version": {"createdAt": "d2"}}]})),
+        (200, json.dumps({"results": [{"title": "a.pdf", "fileSize": 5}]})),
+        (200, json.dumps({"results": [{"id": "124", "title": "Child", "type": "page"}]})),
+    )
+
+
+def test_confluence_get_takes_an_id_or_a_url_and_only_reads():
+    transport = FakeTransport(*_page_responses())
+    result = client(transport).confluence_get("https://x.atlassian.net/wiki/spaces/ELB/pages/123/Plan")
+    assert transport.calls[0][1].endswith("/wiki/api/v2/pages/123?body-format=atlas_doc_format&include-labels=true")
+    assert {call[0] for call in transport.calls} == {"GET"}
+    assert all("/ex/confluence/cloud-1/" in call[1] for call in transport.calls)
+    assert result["read_by"] == "Salma" and result["title"] == "Plan" and result["space"] == "ELB"
+    assert result["body"] == "Body" and result["labels"] == ["elb"] and result["version"] == 3
+    assert [c["text"] for c in result["comments"]] == ["footer", "inline"]
+    assert result["attachments"] == [{"title": "a.pdf", "size": 5}]
+    assert result["children"] == [{"id": "124", "title": "Child", "type": "page"}]
+    assert result["url"] == "https://x.atlassian.net/wiki/spaces/ELB/pages/123"
+
+
+def test_confluence_lists_follow_next_links():
+    transport = FakeTransport(
+        (200, json.dumps({"results": [{"id": "1"}], "_links": {"next": "/wiki/api/v2/x?cursor=b"}})),
+        (200, json.dumps({"results": [{"id": "2"}]})),
+    )
+    assert [r["id"] for r in client(transport)._results("/wiki/api/v2/x")] == ["1", "2"]
+    assert transport.calls[1][1].endswith("/wiki/api/v2/x?cursor=b")
+
+
+def test_confluence_get_refuses_what_is_not_a_page():
+    with pytest.raises(AtlError, match="not a Confluence page"):
+        client(FakeTransport()).confluence_get("plan")
+
+
+def test_confluence_search_takes_words_or_cql():
+    hit = {
+        "content": {"id": "5", "type": "page"},
+        "title": "Rations",
+        "excerpt": "the @@@hl@@@ration@@@endhl@@@ plan",
+        "url": "/spaces/ELB/pages/5",
+        "resultGlobalContainer": {"title": "Elbayoumy"},
+    }
+    transport = FakeTransport((200, json.dumps({"results": [hit], "_links": {"base": "https://x/wiki"}})))
+    result = client(transport).confluence_search("ration plan")
+    assert result["cql"] == 'type in (page, blogpost) AND text ~ "ration plan"'
+    assert result["results"][0]["excerpt"] == "the ration plan"
+    assert result["results"][0]["url"] == "https://x/wiki/spaces/ELB/pages/5"
+    transport = FakeTransport((200, json.dumps({"results": []})))
+    cql = 'space = ELB AND title ~ "plan"'
+    assert client(transport).confluence_search(cql)["cql"] == cql
+
+
+def test_confluence_create_finds_the_space_and_publishes_as_the_agent():
+    transport = FakeTransport(
+        (200, json.dumps({"results": [{"id": "7"}]})),
+        (200, json.dumps({"id": "200", "version": {"number": 1}})),
+    )
+    client(transport, "maya").confluence_create("ELB", "Analysis", "line [x](https://x.test)", parent="100")
+    assert transport.calls[0][1].endswith("/wiki/api/v2/spaces?keys=ELB")
+    method, url, headers, body = transport.calls[1]
+    assert method == "POST" and url.endswith("/wiki/api/v2/pages")
+    assert base64.b64decode(headers["Authorization"].split()[1]).decode().startswith("maya@")
+    assert body["spaceId"] == "7" and body["title"] == "Analysis" and body["status"] == "current"
+    assert body["parentId"] == "100" and body["body"]["representation"] == "atlas_doc_format"
+    assert "https://x.test" in body["body"]["value"]
+
+
+def test_confluence_create_refuses_an_unknown_space():
+    with pytest.raises(AtlError, match="no space"):
+        client(FakeTransport((200, json.dumps({"results": []})))).confluence_create("NOPE", "T", "x")
+
+
+def test_confluence_edit_bumps_the_version_and_names_the_agent():
+    page = {"id": "123", "title": "Plan", "version": {"number": 4}, "body": {"storage": {"value": "<p>old</p>"}}}
+    transport = FakeTransport((200, json.dumps(page)), (200, json.dumps({"id": "123", "version": {"number": 5}})))
+    client(transport).confluence_edit("123", "new text")
+    method, url, _, body = transport.calls[1]
+    assert method == "PUT" and url.endswith("/wiki/api/v2/pages/123")
+    assert body["version"] == {"number": 5, "message": "[Salma] new text"}
+    assert body["title"] == "Plan" and body["body"]["representation"] == "atlas_doc_format"
+
+
+def test_confluence_edit_of_the_title_keeps_the_body():
+    page = {"id": "123", "title": "Plan", "version": {"number": 4}, "body": {"storage": {"value": "<p>old</p>"}}}
+    transport = FakeTransport((200, json.dumps(page)), (200, json.dumps({"id": "123"})))
+    client(transport).confluence_edit("123", title="New")
+    body = transport.calls[1][3]
+    assert body["title"] == "New" and body["body"] == {"representation": "storage", "value": "<p>old</p>"}
+
+
+def test_confluence_edit_with_nothing_to_change_is_refused():
+    with pytest.raises(AtlError, match="nothing to change"):
+        client(FakeTransport()).confluence_edit("123")
+
+
+def test_storage_text_goes_through_as_it_is():
+    page = {"id": "123", "title": "Plan", "version": {"number": 1}, "body": {"storage": {"value": ""}}}
+    transport = FakeTransport((200, json.dumps(page)), (200, json.dumps({"id": "123"})))
+    client(transport).confluence_edit("123", "<table/>", storage=True)
+    assert transport.calls[1][3]["body"] == {"representation": "storage", "value": "<table/>"}
+
+
+def test_nothing_in_atl_can_delete():
+    source = (Path(__file__).parent.parent / "src" / "atl_agent" / "client.py").read_text()
+    assert '"DELETE"' not in source and "def confluence_delete" not in source
+
+
+def test_cli_confluence_commands_use_the_confluence_token(capsys):
+    seen = []
+
+    def token(agent, product):
+        seen.append(product)
+        return TOKEN
+
+    transport = FakeTransport(
+        (200, json.dumps({"results": [{"id": "7"}]})),
+        (200, json.dumps({"id": "200", "version": {"number": 1}, "_links": {"base": "https://x", "webui": "/p"}})),
+    )
+    args = ["haya", "confluence-create", "ELB", "text", "--title", "Design", "--cloud-id", CLOUD]
+    assert main(args, token_source=token, transport=transport) == 0
+    assert seen == ["confluence"]
+    assert capsys.readouterr().out.strip() == "page 200 version 1 by Haya https://x/p"
+    transport = FakeTransport((200, json.dumps({"results": []})))
+    args = ["haya", "confluence-search", "plan", "--cloud-id", CLOUD]
+    assert main(args, token_source=token, transport=transport) == 0
+    assert seen == ["confluence", "confluence"] and json.loads(capsys.readouterr().out)["read_by"] == "Haya"
+
+
+def test_cli_confluence_create_needs_a_title_and_text(capsys):
+    assert main(["haya", "confluence-create", "ELB", "text", "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN) == 2
+    assert "--title" in capsys.readouterr().err
