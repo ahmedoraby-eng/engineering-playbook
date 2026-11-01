@@ -20,6 +20,7 @@ Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CL
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
 recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and
 comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments.
+`jira-create <PROJECT> <Story|Task|Bug> "summary" "description"` creates an unassigned issue, signed in its description.
 `jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject): the table in
 client.py gives who may, the next status and the next assignee. The read commands print
 JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
@@ -58,6 +59,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "jira-start",
             "jira-ready",
             "jira-flow",
+            "jira-create",
             "jira-return",
             "jira-dismiss",
             "confluence-get",
@@ -69,11 +71,17 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     )
     parser.add_argument("target", help="issue key, JQL query, page id or URL, space key or search words, by command")
     parser.add_argument("text", nargs="?", default="", help="text to write, or - to read it from stdin")
-    parser.add_argument("why", nargs="?", default="", help="jira-flow: why, posted as the comment")
+    parser.add_argument(
+        "why", nargs="?", default="", help="jira-flow: why, posted as the comment; jira-create: summary"
+    )
+    parser.add_argument("description", nargs="?", default="", help="jira-create: the description, or - for stdin")
     parser.add_argument("--mention", action="append", default=[], help="account id to @mention (repeatable)")
     parser.add_argument("--reason", choices=CLOSE_REASONS, help="jira-dismiss: why the issue is closed")
     parser.add_argument("--title", default="", help="confluence-create, confluence-edit: the page title")
-    parser.add_argument("--parent", default="", help="confluence-create: the parent page's id or URL")
+    parser.add_argument(
+        "--parent", default="", help="confluence-create: the parent page's id or URL; jira-create: the parent issue"
+    )
+    parser.add_argument("--label", action="append", default=[], help="jira-create: a label (repeatable)")
     parser.add_argument("--storage", action="store_true", help="the text is Confluence storage format")
     parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. sherif")
     parser.add_argument("--cloud-id", default=default_cloud_id())
@@ -99,7 +107,30 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             return 1
         return 0
 
-    if args.why and args.command != "jira-flow":
+    if args.command == "jira-create":
+        description = sys.stdin.read() if args.description == "-" else args.description
+        if not (args.text and args.why.strip() and description.strip()):
+            print('atl: jira-create needs <PROJECT> <Story|Task|Bug> "summary" "description"', file=sys.stderr)
+            return 2
+        try:
+            agent = args.agent.lower()
+            kwargs = {"transport": transport} if transport else {}
+            client = AtlClient(
+                agent,
+                args.cloud_id,
+                token_source(account_for(agent, args.via), "jira"),
+                args.domain,
+                via=args.via,
+                **kwargs,
+            )
+            signed = f"{description.rstrip()}\n\n— {client.signature}"
+            key = client.jira_create(args.target, args.text, args.why, signed, args.parent, tuple(args.label))
+            print(f"{key} created, unassigned, by {client.reader}")
+        except AtlError as error:
+            print(f"atl: {error}", file=sys.stderr)
+            return 1
+        return 0
+    if args.description or (args.why and args.command != "jira-flow"):
         print(f"atl: {args.command} takes one text", file=sys.stderr)
         return 2
     flow_action = args.text if args.command == "jira-flow" else ""

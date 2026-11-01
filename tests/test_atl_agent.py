@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import subprocess
 from pathlib import Path
@@ -127,7 +128,7 @@ def test_cli_reports_errors_without_the_token(capsys):
 
 
 def test_cli_rejects_empty_text(monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("  "))
+    monkeypatch.setattr("sys.stdin", io.StringIO("  "))
     assert main(["salma", "jira-comment", "BASITA-1", "-", "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN) == 2
 
 
@@ -943,5 +944,111 @@ def test_cli_flow_needs_a_reason_and_moves_nothing(capsys):
 def test_only_jira_flow_takes_two_texts(capsys):
     transport = FakeTransport()
     args = ["salma", "jira-comment", "DFP-1", "one", "two", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 2
+    assert transport.calls == []
+
+
+def _created(key="DFP-9"):
+    return (201, json.dumps({"id": "1", "key": key}))
+
+
+def _create_body(transport):
+    method, url, _, body = transport.calls[0]
+    assert method == "POST" and url.endswith("/rest/api/3/issue")
+    return body["fields"]
+
+
+@pytest.mark.parametrize("project", ["BASITA", "DFP", "ELB"])
+@pytest.mark.parametrize("issue_type", ["Story", "Task", "Bug"])
+def test_create_is_unassigned_and_returns_the_key(project, issue_type):
+    transport = FakeTransport(_created(f"{project}-9"))
+    assert client(transport, "salma").jira_create(project, issue_type, "A bug", "Steps") == f"{project}-9"
+    fields = _create_body(transport)
+    assert fields["project"] == {"key": project} and fields["issuetype"] == {"name": issue_type}
+    assert fields["summary"] == "A bug" and fields["assignee"] is None
+    assert "parent" not in fields and "labels" not in fields
+
+
+def test_create_sets_the_parent_and_labels():
+    transport = FakeTransport(_created())
+    client(transport, "adam").jira_create("DFP", "Story", "S", "D", "DFP-1", ("a", "b"))
+    fields = _create_body(transport)
+    assert fields["parent"] == {"key": "DFP-1"} and fields["labels"] == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (("OTHER", "Task", "S", "D"), "not a project"),
+        (("DFP", "Epic", "S", "D"), "does not create"),
+        (("DFP", "Sub-task", "S", "D"), "does not create"),
+        (("DFP", "task", "S", "D"), "does not create"),
+        (("DFP", "Task", "  ", "D"), "one line"),
+        (("DFP", "Task", "two\nlines", "D"), "one line"),
+        (("DFP", "Task", "x" * 256, "D"), "one line"),
+        (("DFP", "Task", "S", "D", "ELB-1"), "not an issue in DFP"),
+        (("DFP", "Task", "S", "D", "not a key"), "not an issue in DFP"),
+        (("DFP", "Task", "S", "D", "", ("human-reviewed",)), "does not set the label"),
+        (("DFP", "Task", "S", "D", "", ("reviewed-by-ahmed",)), "does not set the label"),
+        (("DFP", "Task", "S", "D", "", ("needs-ahmed",)), "does not set the label"),
+        (("DFP", "Task", "S", "D", "", ("two words",)), "does not set the label"),
+    ],
+)
+def test_create_refuses_before_any_call(args, message):
+    transport = FakeTransport()
+    with pytest.raises(AtlError, match=message):
+        client(transport, "salma").jira_create(*args)
+    assert transport.calls == []
+
+
+def test_cli_create_signs_the_description_and_prints_the_key(capsys):
+    transport = FakeTransport(_created())
+    args = ["salma", "jira-create", "DFP", "Bug", "Login fails", "Steps here", "--label", "ui", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert "DFP-9 created, unassigned, by Salma" in capsys.readouterr().out
+    body = json.dumps(_create_body(transport)["description"], ensure_ascii=False)
+    assert "Steps here" in body and "— Salma (Basita AI)" in body
+
+
+def test_cli_create_via_uses_that_token_and_signs_as_the_agent(capsys):
+    seen = []
+
+    def token(agent, product):
+        seen.append((agent, product))
+        return TOKEN
+
+    transport = FakeTransport(_created())
+    args = ["maya", "--via", "sherif", "jira-create", "DFP", "Task", "S", "D", "--cloud-id", CLOUD]
+    assert main(args, token_source=token, transport=transport) == 0
+    assert seen == [("sherif", "jira")]
+    assert base64.b64decode(transport.calls[0][2]["Authorization"].split()[1]).decode().startswith("sherif@")
+    assert "— Maya (Basita AI, via Sherif)" in json.dumps(_create_body(transport)["description"], ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "extra", [[], ["DFP"], ["DFP", "Task"], ["DFP", "Task", "S"], ["DFP", "Task", "  ", "D"], ["DFP", "Task", "S", " "]]
+)
+def test_cli_create_needs_all_its_parts(extra, capsys):
+    transport = FakeTransport()
+    if not extra:
+        with pytest.raises(SystemExit):
+            main(["salma", "jira-create", "--cloud-id", CLOUD], token_source=lambda a, p: TOKEN, transport=transport)
+    else:
+        args = ["salma", "jira-create", *extra, "--cloud-id", CLOUD]
+        assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 2
+    assert transport.calls == []
+
+
+def test_cli_create_reads_the_description_from_stdin(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO("From stdin"))
+    transport = FakeTransport(_created())
+    args = ["salma", "jira-create", "DFP", "Bug", "S", "-", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert "From stdin" in json.dumps(_create_body(transport)["description"])
+
+
+def test_other_commands_refuse_a_fourth_text(capsys):
+    transport = FakeTransport()
+    args = ["salma", "jira-flow", "DFP-1", "pass", "why", "more", "--cloud-id", CLOUD]
     assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 2
     assert transport.calls == []

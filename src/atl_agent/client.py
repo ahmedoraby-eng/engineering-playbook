@@ -165,6 +165,9 @@ ENGINEER_ACCOUNTS = (
     "712020:dd45049f-7336-4c37-9f99-e8665102ed92",  # Haya
 )
 LAST_ENGINEER = "last engineer"
+CREATE_PROJECTS = ("BASITA", "DFP", "ELB")
+CREATE_TYPES = ("Story", "Task", "Bug")
+AHMED_ONLY_LABELS = ("reviewed-by-ahmed", "human-reviewed", "needs-ahmed")
 # DFP's moves between queues (Ahmed, 01/11/2026): action -> who may run it, from, to, and the next assignee.
 # A step in the flow is a row here; `jira-flow` refuses everything else. `Released` stays with the merge (close.py).
 FLOW = {
@@ -249,6 +252,36 @@ class AtlClient:
     def jira_comment(self, issue: str, text: str, mentions: tuple[str, ...] = ()) -> dict:
         """Add a comment to a Jira issue, @mentioning the given account ids. Needs write:comment:jira."""
         return self._call("POST", "jira", f"/rest/api/3/issue/{issue}/comment", {"body": _adf(text, mentions)})
+
+    def jira_create(
+        self, project: str, issue_type: str, summary: str, description: str, parent: str = "", labels: tuple = ()
+    ) -> str:
+        """Create a Story, Task or Bug and return its key. It is created unassigned, so it starts no pickup.
+        Needs write:jira-work."""
+        if project not in CREATE_PROJECTS:
+            raise AtlError(f"'{project}' is not a project an agent creates in (known: {', '.join(CREATE_PROJECTS)})")
+        if issue_type not in CREATE_TYPES:
+            raise AtlError(f"an agent does not create a '{issue_type}' (known: {', '.join(CREATE_TYPES)})")
+        summary = summary.strip()
+        if not summary or "\n" in summary or len(summary) > 255:
+            raise AtlError("the summary must be one line of 1 to 255 characters")
+        if parent and not (ISSUE_KEY.match(parent) and parent.startswith(f"{project}-")):
+            raise AtlError(f"'{parent}' is not an issue in {project}")
+        for label in labels:
+            if label in AHMED_ONLY_LABELS or not label or re.search(r"\s", label):
+                raise AtlError(f"an agent does not set the label '{label}'")
+        fields = {
+            "project": {"key": project},
+            "issuetype": {"name": issue_type},
+            "summary": summary,
+            "description": _adf(description),
+            "assignee": None,
+        }
+        if parent:
+            fields["parent"] = {"key": parent}
+        if labels:
+            fields["labels"] = list(labels)
+        return self._call("POST", "jira", "/rest/api/3/issue", {"fields": fields})["key"]
 
     def jira_status(self, issue: str) -> dict:
         """The issue's status: {"name": ..., "category": "new" | "indeterminate" | "done"}.
