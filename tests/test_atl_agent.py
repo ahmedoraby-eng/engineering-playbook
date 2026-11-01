@@ -364,6 +364,32 @@ def test_every_agent_pulls_a_simple_workflow_to_do_issue_into_in_progress(agent)
     assert client(transport, agent).jira_start("ELB-9") == "In Progress"
 
 
+def test_a_handoff_in_a_queue_starts_although_the_previous_agent_left_the_label():
+    transport = FakeTransport(
+        _status_issue("Ready for Testing", "indeterminate", ["agent-picked"]),
+        _to(("In Testing", "indeterminate")),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(transport, "salma").jira_start("DFP-5") == "In Testing"
+
+
+def test_a_handoff_through_another_user_starts_too():
+    transport = FakeTransport(
+        _status_issue("Ready for Development", "new", ["agent-picked"]),
+        _to(("In Development", "indeterminate")),
+        (204, ""),
+        (204, ""),
+    )
+    assert AtlClient("maya", CLOUD, TOKEN, transport=transport, via="sherif").jira_start("DFP-7") == "In Development"
+
+
+def test_the_label_still_stops_a_second_pickup_outside_a_queue():
+    transport = FakeTransport(_status_issue("To Do", "new", ["agent-picked"]))
+    with pytest.raises(AtlError, match="already has"):
+        client(transport, "malek").jira_start("BASITA-5")
+
+
 def _read_responses():
     fields = {
         "summary": "S",
