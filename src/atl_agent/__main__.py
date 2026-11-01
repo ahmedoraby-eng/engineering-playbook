@@ -132,7 +132,8 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             key = client.jira_create(
                 args.target, args.text, args.why, signed, args.parent, tuple(args.label), args.assignee
             )
-            to = f"assigned to {args.assignee.capitalize()}" if args.assignee else "unassigned"
+            assignee = client.create_assignee(args.target, args.text, args.assignee)
+            to = f"assigned to {assignee.capitalize()}" if assignee else "unassigned"
             print(f"{key} created, {to}, by {client.reader}")
             if args.link:
                 try:

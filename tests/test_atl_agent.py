@@ -1162,3 +1162,52 @@ def test_cli_create_names_the_issue_when_the_link_fails(capsys):
     assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 1
     captured = capsys.readouterr()
     assert "DFP-9 created" in captured.out and "DFP-9 was created, but not linked to DFP-404" in captured.err
+
+
+@pytest.mark.parametrize("assignee", ["", "adam", "Adam"])
+def test_a_dfp_bug_from_salma_goes_to_adam(assignee):
+    transport = FakeTransport(_created())
+    client(transport, "salma").jira_create("DFP", "Bug", "S", "D", assignee=assignee)
+    assert _create_body(transport)["assignee"] == {"accountId": ADAM_ACCOUNT}
+
+
+@pytest.mark.parametrize("assignee", ["malek", "haya", "ahmed", "salma"])
+def test_a_dfp_bug_from_salma_refuses_any_other_assignee(assignee):
+    transport = FakeTransport()
+    with pytest.raises(AtlError, match="goes to Adam"):
+        client(transport, "salma").jira_create("DFP", "Bug", "S", "D", assignee=assignee)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    "agent, project, issue_type, parent",
+    [
+        ("salma", "BASITA", "Bug", ""),
+        ("salma", "ELB", "Bug", ""),
+        ("salma", "DFP", "Task", ""),
+        ("salma", "DFP", "Story", ""),
+        ("salma", "DFP", "Sub-task", "DFP-1"),
+        ("sherif", "DFP", "Bug", ""),
+        ("malek", "DFP", "Bug", ""),
+    ],
+)
+def test_everything_else_stays_unassigned(agent, project, issue_type, parent):
+    transport = FakeTransport(_created(f"{project}-9"))
+    client(transport, agent).jira_create(project, issue_type, "S", "D", parent)
+    assert _create_body(transport)["assignee"] is None
+
+
+@pytest.mark.parametrize(
+    "project, issue_type, parent", [("ELB", "Bug", ""), ("BASITA", "Bug", ""), ("DFP", "Task", "")]
+)
+def test_salma_still_assigns_freely_elsewhere(project, issue_type, parent):
+    transport = FakeTransport(_created(f"{project}-9"))
+    client(transport, "salma").jira_create(project, issue_type, "S", "D", parent, assignee="malek")
+    assert _create_body(transport)["assignee"] == {"accountId": MALEK_ID}
+
+
+def test_cli_says_a_dfp_bug_from_salma_is_assigned_to_adam(capsys):
+    transport = FakeTransport(_created())
+    args = ["salma", "jira-create", "DFP", "Bug", "S", "D", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert "DFP-9 created, assigned to Adam, by Salma" in capsys.readouterr().out

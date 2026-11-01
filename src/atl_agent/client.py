@@ -284,6 +284,15 @@ class AtlClient:
             raise AtlError("a Sub-task needs --parent")
         return CREATE_TYPES[issue_type]
 
+    def create_assignee(self, project: str, issue_type: str, assignee: str) -> str:
+        """Who a new issue goes to. A bug Salma finds in DFP goes to Adam first, to validate (operating model 4.3
+        item 11)."""
+        if self.agent == "salma" and project == "DFP" and issue_type == "Bug":
+            if assignee and assignee.lower() != "adam":
+                raise AtlError(f"a DFP Bug from Salma goes to Adam to validate, not to '{assignee}'")
+            return "adam"
+        return assignee
+
     def _assignee_account(self, assignee: str) -> str:
         if self.agent not in ASSIGNERS:
             raise AtlError(f"{self.display} does not assign on create (only {', '.join(ASSIGNERS)})")
@@ -302,11 +311,13 @@ class AtlClient:
         labels: tuple = (),
         assignee: str = "",
     ) -> str:
-        """Create an issue and return its key. Unassigned unless `assignee` is given, so it starts no pickup.
+        """Create an issue and return its key. Unassigned unless `assignee` is given, so it starts no pickup. The
+        exception is a DFP Bug from Salma, which always goes to Adam.
         Needs write:jira-work."""
         if project not in CREATE_PROJECTS:
             raise AtlError(f"'{project}' is not a project an agent creates in (known: {', '.join(CREATE_PROJECTS)})")
         type_name = self._create_type(project, issue_type, parent)
+        assignee = self.create_assignee(project, issue_type, assignee)
         account = self._assignee_account(assignee) if assignee else None
         summary = summary.strip()
         if not summary or "\n" in summary or len(summary) > 255:
