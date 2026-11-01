@@ -5,8 +5,8 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 ## 2026-11-02
 
 ### Added
-- `standards/dfp-flow.md`: a picture of DFP's flow (statuses, arrows, who owns each step), generated from the `jira-flow` table by `python -m atl_agent.flowchart --write`. A test fails when the picture and the table differ (BASITA-69).
-- `python -m atl_agent.flowchart check`: reads Jira's `GET /transitions` on one live issue per status and confirms the table's moves exist. It makes GET calls only. It reports that every DFP transition is global instead of failing on it (BASITA-69).
+- `standards/dfp-flow.md`: a picture of DFP's flow (statuses, arrows, who owns each step), generated from the `jira-flow` table by `python -m atl_agent.flowchart --write`. It says plainly that Jira enforces nothing yet. A test fails when the picture and the table differ, and one test per non-`jira-flow` step runs the real command and checks its from and to (BASITA-69).
+- `python -m atl_agent.flowchart check`: read-only. Per status and work type, reads Jira's `GET /transitions` on one live issue. A status whose moves are all global prints "allows any move" and does not fail; once Jira is narrowed, any difference from the table exits 1. No issue means "not checked", never a pass (BASITA-69).
 
 ## 2026-11-01
 
