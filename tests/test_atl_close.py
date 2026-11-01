@@ -6,7 +6,7 @@ import pytest
 
 from atl_agent import AtlClient, AtlError
 from atl_agent.__main__ import main as cli
-from atl_agent.close import close_issues, closing_keys, main
+from atl_agent.close import DEPLOY_WAIT_TRIES, close_issues, closing_keys, deploy_state, main, wait_for_deploy
 
 TOKEN = "tok-" + "x" * 12  # assembled at runtime; not a real credential
 
@@ -262,3 +262,119 @@ def test_cli_signs_comments_and_starts_issues(capsys):
     )
     assert code == 0 and "DFP-12 -> In Progress" in capsys.readouterr().out
     assert transport.calls[-1][2]["body"]["content"][0]["content"][0]["text"] == "Picked up; working on it now."
+
+
+CHECK = "Workers Builds: app"
+
+
+def fake_api(later=(), **checks):
+    """GitHub answers: `later` commits after the merge, and each commit's check as (status, conclusion)."""
+
+    def api(path):
+        if "/compare/" in path:
+            return {"commits": [{"sha": sha} for sha in later]}
+        commit = path.split("/commits/")[1].split("/")[0]
+        assert "check_name=Workers%20Builds%3A%20app" in path
+        return {"check_runs": [{"status": s, "conclusion": c} for s, c in checks.get(commit, [])]}
+
+    return api
+
+
+@pytest.mark.parametrize(
+    ("later", "checks", "expected"),
+    [
+        ((), {"m": [("completed", "success")]}, "success"),
+        ((), {"m": [("completed", "failure")]}, "failed"),
+        ((), {"m": [("completed", "skipped")]}, "failed"),
+        ((), {"m": [("in_progress", None)]}, "pending"),
+        ((), {}, "pending"),  # no check yet, or none at all
+        (("n",), {"n": [("completed", "success")]}, "success"),  # Cloudflare built only the newest of quick merges
+        (("n",), {"m": [("completed", "failure")], "n": [("completed", "success")]}, "success"),
+        (("n",), {"m": [("completed", "failure")]}, "pending"),  # the next build may still contain it
+        (("n",), {"m": [("completed", "failure")], "n": [("completed", "failure")]}, "pending"),
+    ],
+)
+def test_deploy_state(later, checks, expected):
+    assert deploy_state(fake_api(later, **checks), "o/r", "m", "main", CHECK) == expected
+
+
+def test_wait_stops_at_a_result_and_gives_up_when_nothing_comes():
+    naps = []
+    answers = iter(["pending", "pending", "success"])
+    assert wait_for_deploy(lambda: next(answers), naps.append) is True
+    assert len(naps) == 2
+    assert wait_for_deploy(lambda: "failed", naps.append) is False
+    assert len(naps) == 2
+    assert wait_for_deploy(lambda: "pending", naps.append) is False
+    assert len(naps) == 2 + DEPLOY_WAIT_TRIES - 1
+
+
+def test_a_guarded_issue_stays_when_the_deploy_is_not_confirmed():
+    transport = FakeTransport(status("Ready for Release", "indeterminate"), (201, "{}"))
+    lines = close_issues(client(transport), ["DFP-1"], "u", deployed=lambda: False, deploy_check=CHECK)
+    assert lines == ["DFP-1: left in Ready for Release, deploy not confirmed"]
+    assert [call[0] for call in transport.calls] == ["GET", "POST"]  # a comment, no transition
+    assert "/comment" in transport.calls[1][1]
+
+
+def test_a_guarded_issue_moves_once_the_deploy_is_confirmed():
+    transport = FakeTransport(
+        status("Ready for Release", "indeterminate"),
+        transitions(("9", "Released", "done")),
+        (204, ""),
+        (201, "{}"),
+    )
+    lines = close_issues(client(transport), ["DFP-1"], "u", deployed=lambda: True, deploy_check=CHECK)
+    assert lines == ["DFP-1: Ready for Release -> Released"]
+
+
+def test_the_wait_is_skipped_for_an_issue_the_guard_would_not_move_and_for_others():
+    asked = []
+    transport = FakeTransport(
+        status("In Testing", "indeterminate"),
+        (201, "{}"),
+        status("To Do", "new"),
+        transitions(("9", "Done", "done")),
+        (204, ""),
+        (201, "{}"),
+    )
+    deployed = lambda: asked.append(1) or True  # noqa: E731
+    close_issues(client(transport), ["DFP-1", "ELB-2"], "u", deployed=deployed, deploy_check=CHECK)
+    assert asked == []
+
+
+def test_two_issues_ask_about_the_deploy_once():
+    asked = []
+    transport = FakeTransport(
+        status("Ready for Release", "indeterminate"),
+        (201, "{}"),
+        status("Ready for Release", "indeterminate"),
+        (201, "{}"),
+    )
+    deployed = lambda: asked.append(1) or False  # noqa: E731
+    close_issues(client(transport), ["DFP-1", "DFP-2"], "u", deployed=deployed, deploy_check=CHECK)
+    assert asked == [1]
+
+
+def test_main_fails_the_job_when_the_deploy_is_not_confirmed(capsys):
+    transport = FakeTransport(status("Ready for Release", "indeterminate"), (201, "{}"))
+    env = {"ATL_TOKEN": TOKEN, "ATL_CLOUD_ID": "cloud-1"}
+    argv = ["--pr-url", "u", "--deploy-check", CHECK, "--repo", "o/r", "--sha", "m"]
+    api = fake_api(m=[("completed", "failure")])
+    assert main(argv, stdin=io.StringIO("Closes DFP-1"), environ=env, transport=transport, api=api) == 1
+    assert "deploy not confirmed" in capsys.readouterr().out
+
+
+def test_main_without_a_deploy_check_never_asks_github():
+    transport = FakeTransport(
+        status("Ready for Release", "indeterminate"),
+        transitions(("9", "Released", "done")),
+        (204, ""),
+        (201, "{}"),
+    )
+    env = {"ATL_TOKEN": TOKEN, "ATL_CLOUD_ID": "cloud-1"}
+
+    def no_api(path):
+        raise AssertionError(path)
+
+    assert main(["--pr-url", "u"], stdin=io.StringIO("Closes DFP-1"), environ=env, transport=transport, api=no_api) == 0
