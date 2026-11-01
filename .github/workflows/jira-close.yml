@@ -14,6 +14,7 @@ jobs:
     if: github.event.pull_request.merged == true
     uses: ./.github/workflows/reusable-jira-close.yml
     with:
+      agent: sherif
       repos: ahmedoraby-eng/engineering-playbook,basitasolutions/basita-ops,basitasolutions/elbayoumy-farm-nutrition-platform
     secrets:
       ATL_TOKEN: ${{ secrets.ATL_TOKEN }}

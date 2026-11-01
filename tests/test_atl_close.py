@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 
@@ -83,6 +84,91 @@ def test_no_done_transition_is_an_error(capsys):
     )
     assert code == 1
     assert "no transition to a Done status" in capsys.readouterr().err
+
+
+DFP_MOVES = (
+    ("31", "Released", "done"),
+    ("41", "Closed", "done"),
+    ("7", "Ready for Release", "indeterminate"),
+)
+
+
+def test_dfp_moves_from_ready_for_release_to_released():
+    transport = FakeTransport(
+        status("Ready for Release", "indeterminate"),
+        transitions(*DFP_MOVES),
+        (204, ""),
+        (201, json.dumps({"id": "5"})),
+    )
+    assert close_issues(client(transport), ["DFP-1"], "http://pr/1") == ["DFP-1: Ready for Release -> Released"]
+    assert transport.calls[2][1].endswith("/transitions") and transport.calls[2][2] == {"transition": {"id": "31"}}
+    assert "Moved to Released automatically" in json.dumps(transport.calls[3][2])
+
+
+def test_dfp_never_picks_closed_even_when_it_comes_first():
+    transport = FakeTransport(
+        status("Ready for Release", "indeterminate"),
+        transitions(("41", "Closed", "done"), ("31", "Released", "done")),
+        (204, ""),
+        (201, json.dumps({"id": "5"})),
+    )
+    close_issues(client(transport), ["DFP-1"], "http://pr/1")
+    assert transport.calls[2][2] == {"transition": {"id": "31"}}
+
+
+def test_dfp_with_no_released_transition_is_an_error_and_moves_nothing():
+    transport = FakeTransport(status("Ready for Release", "indeterminate"), transitions(("41", "Closed", "done")))
+    with pytest.raises(AtlError, match="'Released'"):
+        close_issues(client(transport), ["DFP-1"], "http://pr/1")
+    assert all(method == "GET" for method, _, _ in transport.calls)
+
+
+@pytest.mark.parametrize(
+    "name, category",
+    [
+        ("Refinement", "new"),
+        ("Ready for Development", "new"),
+        ("In Development", "indeterminate"),
+        ("Ready for Testing", "indeterminate"),
+        ("In Testing", "indeterminate"),
+        ("Ready for Acceptance", "indeterminate"),
+    ],
+)
+def test_dfp_from_any_other_status_only_comments(name, category):
+    transport = FakeTransport(status(name, category), (201, json.dumps({"id": "5"})))
+    lines = close_issues(client(transport), ["DFP-1"], "http://pr/1")
+    assert lines == [f"DFP-1: left in {name}, a merge moves it only from Ready for Release"]
+    assert len(transport.calls) == 2 and transport.calls[1][0] == "POST" and transport.calls[1][1].endswith("/comment")
+    text = json.dumps(transport.calls[1][2])
+    assert name in text and "http://pr/1" in text and "Not moved automatically" in text
+
+
+@pytest.mark.parametrize("name", ["Released", "Closed"])
+def test_dfp_already_done_is_left_alone(name):
+    transport = FakeTransport(status(name, "done"))
+    assert close_issues(client(transport), ["DFP-1"], "http://pr/1") == [f"DFP-1: already {name}, nothing to do"]
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("key", ["BASITA-1", "ELB-1"])
+def test_basita_and_elb_still_close_from_any_status(key):
+    transport = FakeTransport(
+        status("In Progress", "indeterminate"), transitions(("31", "Done", "done")), (204, ""), (201, "{}")
+    )
+    assert close_issues(client(transport), [key], "http://pr/1") == [f"{key}: In Progress -> Done"]
+    assert "Closed automatically" in json.dumps(transport.calls[3][2])
+
+
+def test_the_default_account_is_sherifs():
+    logins = []
+
+    def transport(method, url, headers, body):
+        logins.append(base64.b64decode(headers["Authorization"].split()[1]).decode())
+        return status("Done", "done")
+
+    env = {"ATL_TOKEN": TOKEN, "ATL_CLOUD_ID": "cloud-1"}
+    assert main(["--pr-url", "u"], stdin=io.StringIO("Closes ELB-1"), environ=env, transport=transport) == 0
+    assert logins[0].startswith("sherif@")
 
 
 def test_main_without_keys_or_dry_run_touches_nothing(capsys):

@@ -164,13 +164,18 @@ class AtlClient:
         status = data["fields"]["status"]
         return {"name": status["name"], "category": status["statusCategory"]["key"]}
 
-    def jira_close(self, issue: str) -> str:
-        """Move the issue to a status in the Done category and return that status's name.
-        Needs read:jira-work and write:jira-work."""
+    def jira_close(self, issue: str, to: str = "") -> str:
+        """Move the issue to a status in the Done category and return that status's name. With `to`, only to
+        the status of that name. Needs read:jira-work and write:jira-work."""
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions")
-        options = [t for t in data.get("transitions", []) if t["to"]["statusCategory"]["key"] == "done"]
+        options = [
+            t
+            for t in data.get("transitions", [])
+            if t["to"]["statusCategory"]["key"] == "done" and (not to or t["to"]["name"].lower() == to.lower())
+        ]
         if not options:
-            raise AtlError(f"{issue}: no transition to a Done status is available from its current status")
+            target = f"'{to}'" if to else "a Done status"
+            raise AtlError(f"{issue}: no transition to {target} is available from its current status")
         chosen = next((t for t in options if t["to"]["name"] == "Done"), options[0])
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]

@@ -33,7 +33,7 @@ on:
       agent:
         description: Agent whose Atlassian account the token belongs to (its email is <agent>@<domain>)
         type: string
-        default: talia
+        default: sherif
       repos:
         description: Comma-separated owner/repo list searched for the other PRs that mention the issue
         type: string

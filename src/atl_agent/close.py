@@ -4,6 +4,10 @@ Convention (Basita, 29/10/2026): an intermediate PR says `Refs <KEY>` in its des
 final PR, the one that completes the acceptance criteria, says `Closes <KEY>`. When a PR whose
 description has `Closes <KEY>` is merged, the issue moves to Done and gets a comment with the PR links.
 
+DFP is guarded (Ahmed, 01/11/2026; operating model 4.1 item 7): there the merge comes after acceptance, so an issue
+moves only from `Ready for Release`, and only to `Released`. From any other status it stays and the issue gets a
+comment with the reason. Its workflow allows every status from every other, so this check is the only limit.
+
     python -m atl_agent.close --pr-url URL [--links-file FILE] < description
 
 The description comes from stdin, the agent's token from ATL_TOKEN, the cloud id from ATL_CLOUD_ID.
@@ -19,6 +23,8 @@ import sys
 from .client import AtlClient, AtlError, default_cloud_id
 
 PROJECTS = ("BASITA", "DFP", "ELB")
+# Project -> (the only status a merge moves an issue from, the only status it moves it to).
+GUARDED = {"DFP": ("Ready for Release", "Released")}
 
 
 def closing_keys(description: str, projects: tuple[str, ...] = PROJECTS) -> list[str]:
@@ -46,8 +52,18 @@ def close_issues(client: AtlClient, keys: list[str], pr_url: str, links: str = "
         if status["category"] == "done":
             lines.append(f"{key}: already {status['name']}, nothing to do")
             continue
-        new_status = client.jira_close(key)
-        comment = f"Closed automatically: {pr_url} was merged and its description says 'Closes {key}'."
+        guard = GUARDED.get(key.split("-")[0])
+        if guard and status["name"].lower() != guard[0].lower():
+            client.jira_comment(
+                key,
+                f"Not moved automatically: {pr_url} was merged and its description says 'Closes {key}', but the "
+                f"issue is in '{status['name']}'. A merge moves it to '{guard[1]}' only from '{guard[0]}'.",
+            )
+            lines.append(f"{key}: left in {status['name']}, a merge moves it only from {guard[0]}")
+            continue
+        new_status = client.jira_close(key, guard[1]) if guard else client.jira_close(key)
+        action = f"Moved to {new_status} automatically" if guard else "Closed automatically"
+        comment = f"{action}: {pr_url} was merged and its description says 'Closes {key}'."
         if links.strip():
             comment += f"\n\nPull requests that mention {key}:\n{links.strip()}"
         client.jira_comment(key, comment)
@@ -59,7 +75,7 @@ def main(argv: list[str] | None = None, stdin=None, environ=None, transport=None
     parser = argparse.ArgumentParser(prog="atl-close", description=__doc__.splitlines()[0])
     parser.add_argument("--pr-url", required=True)
     parser.add_argument("--links-file", help="file with one line per PR that mentions the issue")
-    parser.add_argument("--agent", default="talia", help="whose Atlassian account the token belongs to")
+    parser.add_argument("--agent", default="sherif", help="whose Atlassian account the token belongs to")
     parser.add_argument("--dry-run", action="store_true", help="only print the keys that would be closed")
     args = parser.parse_args(argv)
     environ = os.environ if environ is None else environ
