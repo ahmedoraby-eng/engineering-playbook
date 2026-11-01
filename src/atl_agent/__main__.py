@@ -20,7 +20,8 @@ Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CL
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
 recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and
 comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments.
-`jira-create <PROJECT> <Story|Task|Bug> "summary" "description"` creates an unassigned issue, signed in its description.
+`jira-create <PROJECT> <Story|Task|Bug|Sub-task|Epic> "summary" "description"` creates an issue, signed in its
+description and unassigned unless --assignee says otherwise.
 `jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject): the table in
 client.py gives who may, the next status and the next assignee. The read commands print
 JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
@@ -37,7 +38,7 @@ import json
 import os
 import sys
 
-from .client import CLOSE_REASONS, AtlClient, AtlError, account_for, default_cloud_id, keychain_token
+from .client import CLOSE_REASONS, ISSUE_KEY, AtlClient, AtlError, account_for, default_cloud_id, keychain_token
 
 READS = {
     "jira-get": lambda c: c.jira_get,
@@ -82,6 +83,8 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         "--parent", default="", help="confluence-create: the parent page's id or URL; jira-create: the parent issue"
     )
     parser.add_argument("--label", action="append", default=[], help="jira-create: a label (repeatable)")
+    parser.add_argument("--assignee", default="", help="jira-create: Adam, Nora, Sherif or Salma assign on create")
+    parser.add_argument("--link", default="", help="jira-create: an issue this one relates to")
     parser.add_argument("--storage", action="store_true", help="the text is Confluence storage format")
     parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. sherif")
     parser.add_argument("--cloud-id", default=default_cloud_id())
@@ -110,7 +113,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     if args.command == "jira-create":
         description = sys.stdin.read() if args.description == "-" else args.description
         if not (args.text and args.why.strip() and description.strip()):
-            print('atl: jira-create needs <PROJECT> <Story|Task|Bug> "summary" "description"', file=sys.stderr)
+            print('atl: jira-create needs <PROJECT> <type> "summary" "description"', file=sys.stderr)
             return 2
         try:
             agent = args.agent.lower()
@@ -124,8 +127,19 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
                 **kwargs,
             )
             signed = f"{description.rstrip()}\n\n— {client.signature}"
-            key = client.jira_create(args.target, args.text, args.why, signed, args.parent, tuple(args.label))
-            print(f"{key} created, unassigned, by {client.reader}")
+            if args.link and not ISSUE_KEY.match(args.link):
+                raise AtlError(f"'{args.link}' is not an issue key")
+            key = client.jira_create(
+                args.target, args.text, args.why, signed, args.parent, tuple(args.label), args.assignee
+            )
+            to = f"assigned to {args.assignee.capitalize()}" if args.assignee else "unassigned"
+            print(f"{key} created, {to}, by {client.reader}")
+            if args.link:
+                try:
+                    client.jira_link(key, args.link)
+                except AtlError as error:
+                    raise AtlError(f"{key} was created, but not linked to {args.link}: {error}") from error
+                print(f"{key} relates to {args.link}")
         except AtlError as error:
             print(f"atl: {error}", file=sys.stderr)
             return 1
