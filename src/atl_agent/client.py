@@ -166,7 +166,26 @@ ENGINEER_ACCOUNTS = (
 )
 LAST_ENGINEER = "last engineer"
 CREATE_PROJECTS = ("BASITA", "DFP", "ELB")
-CREATE_TYPES = ("Story", "Task", "Bug")
+# What an agent writes -> Jira's name for the type. These projects call it Subtask.
+CREATE_TYPES = {"Story": "Story", "Task": "Task", "Bug": "Bug", "Sub-task": "Subtask", "Subtask": "Subtask"}
+BUG_ENGINEERS = ("malek", "haya")
+BUG_DIRECT_STATUS = "Ready for Development"
+EPIC_CREATORS = {"nora": CREATE_PROJECTS, "sherif": ("BASITA",)}
+ASSIGNERS = ("adam", "nora", "sherif", "salma")
+# People and agents with a Jira seat. Maya has none (her work goes to Sherif with the label agent-maya); Basel and Talia
+# have no user.
+JIRA_ACCOUNTS = {
+    "malek": ENGINEER_ACCOUNTS[0],
+    "haya": ENGINEER_ACCOUNTS[1],
+    "salma": SALMA_ACCOUNT,
+    "adam": ADAM_ACCOUNT,
+    "sherif": "712020:06afd42e-fdc7-46be-877f-1f00f3770e81",
+    "nora": "712020:05c4e58f-5b7e-482b-b3b6-01b027fd9e11",
+    "yousef": "712020:b3f8403e-5f97-4351-bd9e-1435a3081131",
+    "ahmed": AHMED_ACCOUNT,
+    "yamen": "712020:135e8ec3-e174-46bf-b4fb-65de538cff2d",
+    "abdelrahman": "712020:6f47dac6-82b6-4fd4-bd86-da7394ffa87d",
+}
 AHMED_ONLY_LABELS = ("reviewed-by-ahmed", "human-reviewed", "needs-ahmed")
 # DFP's moves between queues (Ahmed, 01/11/2026): action -> who may run it, from, to, and the next assignee.
 # A step in the flow is a row here; `jira-flow` refuses everything else. `Released` stays with the merge (close.py).
@@ -253,15 +272,72 @@ class AtlClient:
         """Add a comment to a Jira issue, @mentioning the given account ids. Needs write:comment:jira."""
         return self._call("POST", "jira", f"/rest/api/3/issue/{issue}/comment", {"body": _adf(text, mentions)})
 
+    def _create_type(self, project: str, issue_type: str, parent: str) -> str:
+        """Jira's name for the type, if this agent may create it here."""
+        if issue_type == "Epic":
+            if project not in EPIC_CREATORS.get(self.agent, ()):
+                raise AtlError(f"{self.display} does not create an Epic in {project}")
+            if parent:
+                raise AtlError("an Epic has no parent")
+            return "Epic"
+        if issue_type not in CREATE_TYPES:
+            raise AtlError(f"an agent does not create a '{issue_type}' (known: Epic, {', '.join(CREATE_TYPES)})")
+        if CREATE_TYPES[issue_type] == "Subtask" and not parent:
+            raise AtlError("a Sub-task needs --parent")
+        return CREATE_TYPES[issue_type]
+
+    def create_assignee(self, project: str, issue_type: str, assignee: str) -> str:
+        """Who a new issue goes to. A bug in DFP goes to Adam first, to validate. Only Salma sends a clear technical
+        bug straight to an engineer (operating model 4.3 item 11)."""
+        if project == "DFP" and issue_type == "Bug":
+            name = assignee.lower()
+            if self.agent == "salma" and name in BUG_ENGINEERS:
+                return name
+            if name and name != "adam":
+                raise AtlError(
+                    f"a DFP Bug goes to Adam to validate, not to '{assignee}'; "
+                    f"only Salma sends a clear technical bug to {' or '.join(n.capitalize() for n in BUG_ENGINEERS)}"
+                )
+            return "adam"
+        return assignee
+
+    def _unreleased_versions(self, issue: str) -> list[dict]:
+        """The unreleased Fix Versions of an issue, as ids to set on another."""
+        versions = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=fixVersions")["fields"]["fixVersions"]
+        return [{"id": v["id"]} for v in versions if not v.get("released")]
+
+    def _assignee_account(self, assignee: str) -> str:
+        if self.agent not in ASSIGNERS:
+            raise AtlError(f"{self.display} does not assign on create (only {', '.join(ASSIGNERS)})")
+        account = JIRA_ACCOUNTS.get(assignee.lower())
+        if not account:
+            raise AtlError(f"'{assignee}' has no Jira seat to assign to (known: {', '.join(JIRA_ACCOUNTS)})")
+        return account
+
     def jira_create(
-        self, project: str, issue_type: str, summary: str, description: str, parent: str = "", labels: tuple = ()
+        self,
+        project: str,
+        issue_type: str,
+        summary: str,
+        description: str,
+        parent: str = "",
+        labels: tuple = (),
+        assignee: str = "",
+        link: str = "",
     ) -> str:
-        """Create a Story, Task or Bug and return its key. It is created unassigned, so it starts no pickup.
+        """Create an issue and return its key. Unassigned unless `assignee` is given, so it starts no pickup. A DFP
+        Bug is the exception: it goes to Adam in Refinement. A technical one Salma sends to an engineer goes to
+        Ready for Development instead, with the Fix Version of the issue in `link`, because pickup only starts an
+        engineer there and with a release.
         Needs write:jira-work."""
         if project not in CREATE_PROJECTS:
             raise AtlError(f"'{project}' is not a project an agent creates in (known: {', '.join(CREATE_PROJECTS)})")
-        if issue_type not in CREATE_TYPES:
-            raise AtlError(f"an agent does not create a '{issue_type}' (known: {', '.join(CREATE_TYPES)})")
+        type_name = self._create_type(project, issue_type, parent)
+        chosen = self.create_assignee(project, issue_type, assignee)
+        if project == "DFP" and issue_type == "Bug":  # the rule's choice, not this agent's, so any agent may
+            account = JIRA_ACCOUNTS[chosen]
+        else:
+            account = self._assignee_account(chosen) if chosen else None
         summary = summary.strip()
         if not summary or "\n" in summary or len(summary) > 255:
             raise AtlError("the summary must be one line of 1 to 255 characters")
@@ -272,16 +348,45 @@ class AtlClient:
                 raise AtlError(f"an agent does not set the label '{label}'")
         fields = {
             "project": {"key": project},
-            "issuetype": {"name": issue_type},
+            "issuetype": {"name": type_name},
             "summary": summary,
             "description": _adf(description),
-            "assignee": None,
+            "assignee": {"accountId": account} if account else None,
         }
         if parent:
             fields["parent"] = {"key": parent}
         if labels:
             fields["labels"] = list(labels)
-        return self._call("POST", "jira", "/rest/api/3/issue", {"fields": fields})["key"]
+        direct = project == "DFP" and issue_type == "Bug" and chosen in BUG_ENGINEERS
+        if direct:
+            if not (ISSUE_KEY.match(link) and link.startswith("DFP-")):
+                raise AtlError("a technical Bug sent to an engineer needs --link to the DFP issue it came from")
+            versions = self._unreleased_versions(link)
+            if not versions:
+                raise AtlError(f"{link} has no unreleased Fix Version, so the engineer would never be started")
+            fields["fixVersions"] = versions
+        key = self._call("POST", "jira", "/rest/api/3/issue", {"fields": fields})["key"]
+        if direct:
+            try:
+                moves = self._call("GET", "jira", f"/rest/api/3/issue/{key}/transitions").get("transitions", [])
+                chosen_move = next((t for t in moves if t["to"]["name"].lower() == BUG_DIRECT_STATUS.lower()), None)
+                if not chosen_move:
+                    raise AtlError("no such transition is available")
+                move = {"transition": {"id": chosen_move["id"]}}
+                self._call("POST", "jira", f"/rest/api/3/issue/{key}/transitions", move)
+            except AtlError as error:
+                raise AtlError(
+                    f"{key} was created and assigned to {chosen.capitalize()}, but not moved to "
+                    f"{BUG_DIRECT_STATUS} or linked to {link}: {error}"
+                ) from error
+        return key
+
+    def jira_link(self, issue: str, other: str) -> None:
+        """Link two issues with `relates to`. Needs write:jira-work."""
+        if not ISSUE_KEY.match(other):
+            raise AtlError(f"'{other}' is not an issue key")
+        link = {"type": {"name": "Relates"}, "outwardIssue": {"key": issue}, "inwardIssue": {"key": other}}
+        self._call("POST", "jira", "/rest/api/3/issueLink", link)
 
     def jira_status(self, issue: str) -> dict:
         """The issue's status: {"name": ..., "category": "new" | "indeterminate" | "done"}.
