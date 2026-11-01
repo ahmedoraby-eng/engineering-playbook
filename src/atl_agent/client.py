@@ -551,9 +551,14 @@ class AtlClient:
             if not options:
                 raise AtlError(f"{issue}: no transition to an In Progress status is available")
             chosen = next((t for t in options if t["to"]["name"] in ("In Progress", "In Development")), options[0])
-        self._call("PUT", "jira", f"/rest/api/3/issue/{issue}", {"update": {"labels": [{"add": PICKED_LABEL}]}})
+        # Move first: a failed move then leaves nothing behind, and the label is only ever on a started issue.
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
-        return chosen["to"]["name"]
+        moved_to = chosen["to"]["name"]
+        try:
+            self._call("PUT", "jira", f"/rest/api/3/issue/{issue}", {"update": {"labels": [{"add": PICKED_LABEL}]}})
+        except AtlError as e:
+            raise AtlError(f"{issue}: moved to '{moved_to}', but the '{PICKED_LABEL}' label failed: {e}") from e
+        return moved_to
 
     def jira_ready(self, issue: str) -> str:
         """Refinement -> Ready (or Ready for Development in DFP), the one transition an agent makes on a

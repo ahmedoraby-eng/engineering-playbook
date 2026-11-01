@@ -252,7 +252,7 @@ def test_salma_pulls_from_ready_for_testing_into_in_testing():
         (204, ""),
     )
     assert client(transport, "salma").jira_start("DFP-5") == "In Testing"
-    assert transport.calls[-1][3] == {"transition": {"id": "2"}}
+    assert transport.calls[-2][3] == {"transition": {"id": "2"}}
 
 
 def test_no_other_agent_pulls_from_salmas_queue():
@@ -363,6 +363,23 @@ def test_every_agent_pulls_a_simple_workflow_to_do_issue_into_in_progress(agent)
     """ELB and BASITA only have To Do / In Progress / Done: no refinement or testing-queue rules there."""
     transport = FakeTransport(_status_issue("To Do"), _to(("In Progress", "indeterminate")), (204, ""), (204, ""))
     assert client(transport, agent).jira_start("ELB-9") == "In Progress"
+
+
+def test_a_failed_move_leaves_no_label_on_the_queued_issue():
+    transport = FakeTransport(
+        _status_issue("To Do"), _to(("In Progress", "indeterminate")), (403, '{"errorMessages":["no"]}')
+    )
+    with pytest.raises(AtlError):
+        client(transport, "malek").jira_start("ELB-9")
+    assert [c[0] for c in transport.calls] == ["GET", "GET", "POST"]
+
+
+def test_a_failed_label_says_the_issue_already_moved():
+    transport = FakeTransport(
+        _status_issue("To Do"), _to(("In Progress", "indeterminate")), (204, ""), (403, '{"errorMessages":["no"]}')
+    )
+    with pytest.raises(AtlError, match="moved to 'In Progress'.*label failed"):
+        client(transport, "malek").jira_start("ELB-9")
 
 
 def test_a_handoff_in_a_queue_starts_although_the_previous_agent_left_the_label():
