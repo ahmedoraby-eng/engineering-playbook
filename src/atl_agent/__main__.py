@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             if args.link and not ISSUE_KEY.match(args.link):
                 raise AtlError(f"'{args.link}' is not an issue key")
             key = client.jira_create(
-                args.target, args.text, args.why, signed, args.parent, tuple(args.label), args.assignee
+                args.target, args.text, args.why, signed, args.parent, tuple(args.label), args.assignee, args.link
             )
             assignee = client.create_assignee(args.target, args.text, args.assignee)
             to = f"assigned to {assignee.capitalize()}" if assignee else "unassigned"

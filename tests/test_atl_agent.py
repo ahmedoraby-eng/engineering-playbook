@@ -1173,13 +1173,103 @@ def test_a_dfp_bug_goes_to_adam_from_any_agent(agent, assignee):
     assert _create_body(transport)["assignee"] == {"accountId": ADAM_ACCOUNT}
 
 
-@pytest.mark.parametrize("agent", ["salma", "malek", "sherif"])
-@pytest.mark.parametrize("assignee", ["malek", "haya", "ahmed", "salma", "maya"])
+@pytest.mark.parametrize(
+    "agent, assignee",
+    [
+        ("salma", "ahmed"),
+        ("salma", "salma"),
+        ("salma", "maya"),
+        ("malek", "malek"),
+        ("malek", "haya"),
+        ("sherif", "malek"),
+        ("adam", "haya"),
+        ("nora", "malek"),
+    ],
+)
 def test_a_dfp_bug_refuses_any_other_assignee(agent, assignee):
     transport = FakeTransport()
     with pytest.raises(AtlError, match="goes to Adam"):
-        client(transport, agent).jira_create("DFP", "Bug", "S", "D", assignee=assignee)
+        client(transport, agent).jira_create("DFP", "Bug", "S", "D", assignee=assignee, link="DFP-1")
     assert transport.calls == []
+
+
+def _versions(*versions):
+    return (200, json.dumps({"fields": {"fixVersions": list(versions)}}))
+
+
+@pytest.mark.parametrize("engineer, account", [("malek", MALEK_ID), ("Haya", HAYA_ID)])
+def test_a_technical_bug_from_salma_goes_to_the_engineer_ready_to_start(engineer, account):
+    transport = FakeTransport(
+        _versions({"id": "1", "released": True}, {"id": "2", "released": False}),
+        _created(),
+        _to(("In Development", "indeterminate"), ("Ready for Development", "new")),
+        (204, ""),
+    )
+    key = client(transport, "salma").jira_create("DFP", "Bug", "S", "D", assignee=engineer, link="DFP-1")
+    assert key == "DFP-9"
+    assert transport.calls[0][1].endswith("/issue/DFP-1?fields=fixVersions")
+    fields = transport.calls[1][3]["fields"]
+    assert fields["assignee"] == {"accountId": account} and fields["fixVersions"] == [{"id": "2"}]
+    assert transport.calls[3][1].endswith("/DFP-9/transitions")
+
+
+@pytest.mark.parametrize("link", ["", "nope", "ELB-1"])
+def test_a_technical_bug_needs_a_dfp_link(link):
+    transport = FakeTransport()
+    with pytest.raises(AtlError, match="needs --link"):
+        client(transport, "salma").jira_create("DFP", "Bug", "S", "D", assignee="malek", link=link)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("versions", [[], [{"id": "1", "released": True}]])
+def test_a_technical_bug_needs_an_unreleased_version_and_creates_nothing(versions):
+    transport = FakeTransport(_versions(*versions))
+    with pytest.raises(AtlError, match="no unreleased Fix Version"):
+        client(transport, "salma").jira_create("DFP", "Bug", "S", "D", assignee="malek", link="DFP-1")
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "after",
+    [[_to(("Closed", "done"))], [_to(("Ready for Development", "new")), (500, "{}")], [(500, "{}")]],
+)
+def test_a_technical_bug_names_the_new_key_when_the_move_fails(after):
+    transport = FakeTransport(_versions({"id": "2", "released": False}), _created(), *after)
+    with pytest.raises(AtlError, match="DFP-9 was created and assigned to Malek, but not moved"):
+        client(transport, "salma").jira_create("DFP", "Bug", "S", "D", assignee="malek", link="DFP-1")
+
+
+def test_cli_technical_bug_moves_links_and_says_so(capsys):
+    transport = FakeTransport(
+        _versions({"id": "2", "released": False}),
+        _created(),
+        _to(("Ready for Development", "new")),
+        (204, ""),
+        (201, ""),
+    )
+    args = [
+        "salma",
+        "jira-create",
+        "DFP",
+        "Bug",
+        "S",
+        "D",
+        "--assignee",
+        "malek",
+        "--link",
+        "DFP-1",
+        "--cloud-id",
+        CLOUD,
+    ]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    out = capsys.readouterr().out
+    assert "DFP-9 created, assigned to Malek, by Salma" in out and "DFP-9 relates to DFP-1" in out
+
+
+def test_an_ordinary_dfp_bug_is_not_moved_and_takes_no_version():
+    transport = FakeTransport(_created())
+    client(transport, "salma").jira_create("DFP", "Bug", "S", "D", link="DFP-1")
+    assert len(transport.calls) == 1 and "fixVersions" not in _create_body(transport)
 
 
 def test_a_dfp_bug_from_maya_through_sherif_goes_to_adam(capsys):

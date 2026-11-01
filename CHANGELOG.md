@@ -5,7 +5,7 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 ## 2026-11-01
 
 ### Added
-- `atl <agent> jira-create <PROJECT> <type> "summary" "description"`: any agent can create a signed Story, Task, Bug or Sub-task in BASITA, DFP or ELB; Nora and Sherif create Epics; Adam, Nora, Sherif and Salma can assign on create; `--link` adds `relates to`; a DFP Bug always goes to Adam (BASITA-41).
+- `atl <agent> jira-create <PROJECT> <type> "summary" "description"`: any agent can create a signed Story, Task, Bug or Sub-task in BASITA, DFP or ELB; Nora and Sherif create Epics; Adam, Nora, Sherif and Salma can assign on create; `--link` adds `relates to`; a DFP Bug goes to Adam, unless Salma sends a clear technical one to an engineer (BASITA-41).
 - `atl <agent> jira-flow <KEY> <action> "why"`: one table for DFP's moves between queues (submit, pass, fail, accept, reject), with the next assignee. Anything else is refused (BASITA-41).
 
 ### Changed
