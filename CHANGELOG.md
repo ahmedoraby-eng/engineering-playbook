@@ -4,6 +4,9 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## 2026-11-01
 
+### Added
+- `atl <agent> jira-flow <KEY> <action> "why"`: one table for DFP's moves between queues (submit, pass, fail, accept, reject), with the next assignee. Anything else is refused (BASITA-41).
+
 ### Changed
 - Jira close on merge: `Closes DFP-x` moves an issue to `Released` only from `Ready for Release`, and otherwise comments the reason. BASITA and ELB are unchanged. The default account is Sherif's (BASITA-41).
 

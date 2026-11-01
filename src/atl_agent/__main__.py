@@ -19,7 +19,9 @@ no Jira seat, so her Jira commands take --via sherif; her Confluence commands do
 Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CLOUD_ID, and defaults to Basita's
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
 recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and
-comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments. The read commands print
+comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments.
+`jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject): the table in
+client.py gives who may, the next status and the next assignee. The read commands print
 JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
 JQL query; `confluence-get` gives a page with its body, comments, attachments and children; `confluence-search` finds
 pages by words or CQL. Each result names the agent whose token answered (`read_by`). `confluence-create` and
@@ -55,6 +57,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "jira-comment",
             "jira-start",
             "jira-ready",
+            "jira-flow",
             "jira-return",
             "jira-dismiss",
             "confluence-get",
@@ -66,6 +69,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     )
     parser.add_argument("target", help="issue key, JQL query, page id or URL, space key or search words, by command")
     parser.add_argument("text", nargs="?", default="", help="text to write, or - to read it from stdin")
+    parser.add_argument("why", nargs="?", default="", help="jira-flow: why, posted as the comment")
     parser.add_argument("--mention", action="append", default=[], help="account id to @mention (repeatable)")
     parser.add_argument("--reason", choices=CLOSE_REASONS, help="jira-dismiss: why the issue is closed")
     parser.add_argument("--title", default="", help="confluence-create, confluence-edit: the page title")
@@ -95,7 +99,12 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             return 1
         return 0
 
-    text = sys.stdin.read() if args.text == "-" else args.text
+    if args.why and args.command != "jira-flow":
+        print(f"atl: {args.command} takes one text", file=sys.stderr)
+        return 2
+    flow_action = args.text if args.command == "jira-flow" else ""
+    text = args.why if args.command == "jira-flow" else args.text
+    text = sys.stdin.read() if text == "-" else text
     if args.command in ("confluence-create", "confluence-edit"):
         if args.command == "confluence-create" and not (args.title.strip() and text.strip()):
             print("atl: confluence-create needs --title and the text", file=sys.stderr)
@@ -133,7 +142,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             return 2
         text = f"Closed: {args.reason}." + (f" {text.strip()}" if text.strip() else "")
     if not text.strip():
-        print("atl: empty text (jira-return needs the reason)", file=sys.stderr)
+        print("atl: empty text (jira-return and jira-flow need the reason)", file=sys.stderr)
         return 2
     try:
         agent = args.agent.lower()
@@ -156,6 +165,10 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             status = client.jira_ready(args.target)
             client.jira_comment(args.target, signed)
             print(f"{args.target} -> {status}, by {client.display}")
+        elif args.command == "jira-flow":
+            status = client.jira_flow(args.target, flow_action)
+            client.jira_comment(args.target, f"{flow_action}: moved to {status}. {signed}")
+            print(f"{args.target} -> {status}, {flow_action}, by {client.display}")
         elif args.command == "jira-return":
             status = client.jira_return(args.target)
             client.jira_comment(args.target, signed)
