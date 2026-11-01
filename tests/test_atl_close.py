@@ -206,8 +206,8 @@ def test_start_moves_to_do_to_in_progress_and_labels_it():
         (204, ""),
     )
     assert client(transport).jira_start("DFP-12") == "In Progress"
-    assert transport.calls[2] == ("PUT", "/rest/api/3/issue/DFP-12", {"update": {"labels": [{"add": "agent-picked"}]}})
-    assert transport.calls[3] == ("POST", "/rest/api/3/issue/DFP-12/transitions", {"transition": {"id": "21"}})
+    assert transport.calls[2] == ("POST", "/rest/api/3/issue/DFP-12/transitions", {"transition": {"id": "21"}})
+    assert transport.calls[3] == ("PUT", "/rest/api/3/issue/DFP-12", {"update": {"labels": [{"add": "agent-picked"}]}})
 
 
 @pytest.mark.parametrize(
