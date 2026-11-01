@@ -962,7 +962,7 @@ def _create_body(transport):
 @pytest.mark.parametrize("issue_type", ["Story", "Task", "Bug"])
 def test_create_is_unassigned_and_returns_the_key(project, issue_type):
     transport = FakeTransport(_created(f"{project}-9"))
-    assert client(transport, "salma").jira_create(project, issue_type, "A bug", "Steps") == f"{project}-9"
+    assert client(transport, "malek").jira_create(project, issue_type, "A bug", "Steps") == f"{project}-9"
     fields = _create_body(transport)
     assert fields["project"] == {"key": project} and fields["issuetype"] == {"name": issue_type}
     assert fields["summary"] == "A bug" and fields["assignee"] is None
@@ -1007,7 +1007,7 @@ def test_cli_create_signs_the_description_and_prints_the_key(capsys):
     transport = FakeTransport(_created())
     args = ["salma", "jira-create", "DFP", "Bug", "Login fails", "Steps here", "--label", "ui", "--cloud-id", CLOUD]
     assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
-    assert "DFP-9 created, unassigned, by Salma" in capsys.readouterr().out
+    assert "DFP-9 created, assigned to Adam, by Salma" in capsys.readouterr().out
     body = json.dumps(_create_body(transport)["description"], ensure_ascii=False)
     assert "Steps here" in body and "— Salma (Basita AI)" in body
 
