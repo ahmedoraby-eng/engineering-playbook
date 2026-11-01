@@ -960,12 +960,13 @@ def _create_body(transport):
 
 @pytest.mark.parametrize("project", ["BASITA", "DFP", "ELB"])
 @pytest.mark.parametrize("issue_type", ["Story", "Task", "Bug"])
-def test_create_is_unassigned_and_returns_the_key(project, issue_type):
+def test_create_returns_the_key_and_is_unassigned_except_a_dfp_bug(project, issue_type):
     transport = FakeTransport(_created(f"{project}-9"))
     assert client(transport, "malek").jira_create(project, issue_type, "A bug", "Steps") == f"{project}-9"
     fields = _create_body(transport)
     assert fields["project"] == {"key": project} and fields["issuetype"] == {"name": issue_type}
-    assert fields["summary"] == "A bug" and fields["assignee"] is None
+    expected = {"accountId": ADAM_ACCOUNT} if (project, issue_type) == ("DFP", "Bug") else None
+    assert fields["summary"] == "A bug" and fields["assignee"] == expected
     assert "parent" not in fields and "labels" not in fields
 
 
@@ -1164,19 +1165,35 @@ def test_cli_create_names_the_issue_when_the_link_fails(capsys):
     assert "DFP-9 created" in captured.out and "DFP-9 was created, but not linked to DFP-404" in captured.err
 
 
+@pytest.mark.parametrize("agent", ["salma", "malek", "haya", "adam", "sherif", "nora", "yousef"])
 @pytest.mark.parametrize("assignee", ["", "adam", "Adam"])
-def test_a_dfp_bug_from_salma_goes_to_adam(assignee):
+def test_a_dfp_bug_goes_to_adam_from_any_agent(agent, assignee):
     transport = FakeTransport(_created())
-    client(transport, "salma").jira_create("DFP", "Bug", "S", "D", assignee=assignee)
+    client(transport, agent).jira_create("DFP", "Bug", "S", "D", assignee=assignee)
     assert _create_body(transport)["assignee"] == {"accountId": ADAM_ACCOUNT}
 
 
-@pytest.mark.parametrize("assignee", ["malek", "haya", "ahmed", "salma"])
-def test_a_dfp_bug_from_salma_refuses_any_other_assignee(assignee):
+@pytest.mark.parametrize("agent", ["salma", "malek", "sherif"])
+@pytest.mark.parametrize("assignee", ["malek", "haya", "ahmed", "salma", "maya"])
+def test_a_dfp_bug_refuses_any_other_assignee(agent, assignee):
     transport = FakeTransport()
     with pytest.raises(AtlError, match="goes to Adam"):
-        client(transport, "salma").jira_create("DFP", "Bug", "S", "D", assignee=assignee)
+        client(transport, agent).jira_create("DFP", "Bug", "S", "D", assignee=assignee)
     assert transport.calls == []
+
+
+def test_a_dfp_bug_from_maya_through_sherif_goes_to_adam(capsys):
+    seen = []
+
+    def token(agent, product):
+        seen.append(agent)
+        return TOKEN
+
+    transport = FakeTransport(_created())
+    args = ["maya", "--via", "sherif", "jira-create", "DFP", "Bug", "S", "D", "--cloud-id", CLOUD]
+    assert main(args, token_source=token, transport=transport) == 0
+    assert seen == ["sherif"] and _create_body(transport)["assignee"] == {"accountId": ADAM_ACCOUNT}
+    assert "assigned to Adam, by Maya (via Sherif)" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -1184,11 +1201,11 @@ def test_a_dfp_bug_from_salma_refuses_any_other_assignee(assignee):
     [
         ("salma", "BASITA", "Bug", ""),
         ("salma", "ELB", "Bug", ""),
+        ("malek", "ELB", "Bug", ""),
         ("salma", "DFP", "Task", ""),
         ("salma", "DFP", "Story", ""),
         ("salma", "DFP", "Sub-task", "DFP-1"),
-        ("sherif", "DFP", "Bug", ""),
-        ("malek", "DFP", "Bug", ""),
+        ("sherif", "DFP", "Task", ""),
     ],
 )
 def test_everything_else_stays_unassigned(agent, project, issue_type, parent):
@@ -1197,16 +1214,16 @@ def test_everything_else_stays_unassigned(agent, project, issue_type, parent):
     assert _create_body(transport)["assignee"] is None
 
 
-@pytest.mark.parametrize(
-    "project, issue_type, parent", [("ELB", "Bug", ""), ("BASITA", "Bug", ""), ("DFP", "Task", "")]
-)
-def test_salma_still_assigns_freely_elsewhere(project, issue_type, parent):
+@pytest.mark.parametrize("project, issue_type", [("ELB", "Bug"), ("BASITA", "Bug"), ("DFP", "Task")])
+def test_only_the_four_still_assign_elsewhere(project, issue_type):
     transport = FakeTransport(_created(f"{project}-9"))
-    client(transport, "salma").jira_create(project, issue_type, "S", "D", parent, assignee="malek")
+    client(transport, "salma").jira_create(project, issue_type, "S", "D", assignee="malek")
     assert _create_body(transport)["assignee"] == {"accountId": MALEK_ID}
+    with pytest.raises(AtlError, match="does not assign"):
+        client(FakeTransport(), "malek").jira_create(project, issue_type, "S", "D", assignee="salma")
 
 
-def test_cli_says_a_dfp_bug_from_salma_is_assigned_to_adam(capsys):
+def test_cli_says_a_dfp_bug_is_assigned_to_adam(capsys):
     transport = FakeTransport(_created())
     args = ["salma", "jira-create", "DFP", "Bug", "S", "D", "--cloud-id", CLOUD]
     assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0

@@ -285,11 +285,10 @@ class AtlClient:
         return CREATE_TYPES[issue_type]
 
     def create_assignee(self, project: str, issue_type: str, assignee: str) -> str:
-        """Who a new issue goes to. A bug Salma finds in DFP goes to Adam first, to validate (operating model 4.3
-        item 11)."""
-        if self.agent == "salma" and project == "DFP" and issue_type == "Bug":
+        """Who a new issue goes to. Any bug in DFP goes to Adam first, to validate (operating model 4.3 item 11)."""
+        if project == "DFP" and issue_type == "Bug":
             if assignee and assignee.lower() != "adam":
-                raise AtlError(f"a DFP Bug from Salma goes to Adam to validate, not to '{assignee}'")
+                raise AtlError(f"a DFP Bug goes to Adam to validate, not to '{assignee}'")
             return "adam"
         return assignee
 
@@ -312,13 +311,16 @@ class AtlClient:
         assignee: str = "",
     ) -> str:
         """Create an issue and return its key. Unassigned unless `assignee` is given, so it starts no pickup. The
-        exception is a DFP Bug from Salma, which always goes to Adam.
+        exception is a DFP Bug, which always goes to Adam.
         Needs write:jira-work."""
         if project not in CREATE_PROJECTS:
             raise AtlError(f"'{project}' is not a project an agent creates in (known: {', '.join(CREATE_PROJECTS)})")
         type_name = self._create_type(project, issue_type, parent)
-        assignee = self.create_assignee(project, issue_type, assignee)
-        account = self._assignee_account(assignee) if assignee else None
+        chosen = self.create_assignee(project, issue_type, assignee)
+        if project == "DFP" and issue_type == "Bug":  # the rule's choice, not this agent's, so any agent may
+            account = ADAM_ACCOUNT
+        else:
+            account = self._assignee_account(chosen) if chosen else None
         summary = summary.strip()
         if not summary or "\n" in summary or len(summary) > 255:
             raise AtlError("the summary must be one line of 1 to 255 characters")
