@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         "--parent", default="", help="confluence-create: the parent page's id or URL; jira-create: the parent issue"
     )
     parser.add_argument("--label", action="append", default=[], help="jira-create: a label (repeatable)")
-    parser.add_argument("--assignee", default="", help="jira-create: Adam, Nora, Sherif or Salma assign on create")
+    parser.add_argument("--assignee", default="", help="jira-create, jira-ready: who gets the issue")
     parser.add_argument("--link", default="", help="jira-create: an issue this one relates to")
     parser.add_argument("--storage", action="store_true", help="the text is Confluence storage format")
     parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. sherif")
@@ -208,9 +208,10 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             client.jira_comment(args.target, signed)
             print(f"{args.target} -> {status}, labelled agent-picked, by {client.display}")
         elif args.command == "jira-ready":
-            status = client.jira_ready(args.target)
+            status = client.jira_ready(args.target, args.assignee)
             client.jira_comment(args.target, signed)
-            print(f"{args.target} -> {status}, by {client.display}")
+            to = f", assigned to {args.assignee.capitalize()}" if args.assignee else ""
+            print(f"{args.target} -> {status}{to}, by {client.display}")
         elif args.command == "jira-flow":
             status = client.jira_flow(args.target, flow_action)
             client.jira_comment(args.target, f"{flow_action}: moved to {status}. {signed}")

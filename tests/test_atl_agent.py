@@ -8,10 +8,12 @@ import pytest
 
 from atl_agent import AtlClient, AtlError, keychain_token
 from atl_agent.__main__ import main
-from atl_agent.client import ADAM_ACCOUNT, AHMED_ACCOUNT, SALMA_ACCOUNT, _adf, _adf_text
+from atl_agent.client import ADAM_ACCOUNT, AHMED_ACCOUNT, JIRA_ACCOUNTS, SALMA_ACCOUNT, _adf, _adf_text
 
 TOKEN = "tok-" + "x" * 12  # assembled at runtime; not a real credential
 CLOUD = "cloud-1"
+MALEK_ID = "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
+HAYA_ID = "712020:dd45049f-7336-4c37-9f99-e8665102ed92"
 
 
 class FakeTransport:
@@ -186,10 +188,82 @@ def test_cli_jira_ready_transitions_and_comments(capsys):
     assert "BASITA-5 -> Ready, by Haya" in capsys.readouterr().out
 
 
-def test_jira_ready_lands_on_ready_for_development_in_dfp():
-    transport = FakeTransport(_issue("Refinement"), _moves("In Development", "Ready for Development"), (204, ""))
-    assert client(transport, "adam").jira_ready("DFP-88") == "Ready for Development"
-    assert transport.calls[-1][3] == {"transition": {"id": "2"}}
+def _refining(versions=({"id": "2", "released": False},), status="Refinement"):
+    fields = {"status": {"name": status}, "issuetype": {"name": "Task"}, "fixVersions": list(versions)}
+    return (200, json.dumps({"fields": fields}))
+
+
+@pytest.mark.parametrize(
+    "name, account",
+    [("malek", MALEK_ID), ("Haya", HAYA_ID), ("sherif", JIRA_ACCOUNTS["sherif"]), ("ahmed", AHMED_ACCOUNT)],
+)
+def test_jira_ready_in_dfp_assigns_then_moves(name, account):
+    transport = FakeTransport(_refining(), _moves("In Development", "Ready for Development"), (204, ""), (204, ""))
+    assert client(transport, "adam").jira_ready("DFP-88", name) == "Ready for Development"
+    assert transport.calls[2][0] == "PUT" and transport.calls[2][1].endswith("/assignee")
+    assert transport.calls[2][3] == {"accountId": account}
+    assert transport.calls[3][3] == {"transition": {"id": "2"}}
+
+
+def test_jira_ready_in_dfp_needs_a_name_and_changes_nothing():
+    transport = FakeTransport(_refining())
+    with pytest.raises(AtlError, match="--assignee"):
+        client(transport, "adam").jira_ready("DFP-88")
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("name", ["adam", "Salma"])
+def test_jira_ready_refuses_who_pickup_would_not_start(name):
+    transport = FakeTransport(_refining())
+    with pytest.raises(AtlError, match="never starts"):
+        client(transport, "adam").jira_ready("DFP-88", name)
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("name", ["maya", "basel", "talia", "mallory"])
+def test_jira_ready_refuses_a_name_with_no_seat(name):
+    transport = FakeTransport(_refining())
+    with pytest.raises(AtlError, match="no Jira seat"):
+        client(transport, "adam").jira_ready("DFP-88", name)
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("versions", [(), ({"id": "1", "released": True},)])
+def test_jira_ready_with_no_unreleased_version_stays_and_says_who_acts(versions):
+    transport = FakeTransport(_refining(versions))
+    with pytest.raises(AtlError) as error:
+        client(transport, "adam").jira_ready("DFP-88", "malek")
+    assert "no unreleased Fix Version" in str(error.value) and "assign it to Adam again" in str(error.value)
+    assert len(transport.calls) == 1
+
+
+def test_jira_ready_run_again_after_a_failed_move_finishes():
+    failing = FakeTransport(_refining(), _moves("Ready for Development"), (204, ""), (500, "{}"))
+    with pytest.raises(AtlError):
+        client(failing, "adam").jira_ready("DFP-88", "malek")
+    again = FakeTransport(_refining(), _moves("Ready for Development"), (204, ""), (204, ""))
+    assert client(again, "adam").jira_ready("DFP-88", "malek") == "Ready for Development"
+
+
+def test_jira_ready_elsewhere_needs_no_name_or_version():
+    transport = FakeTransport(_issue("Refinement"), _moves("Ready"), (204, ""))
+    assert client(transport, "adam").jira_ready("ELB-1") == "Ready"
+    assert len(transport.calls) == 3
+
+
+def test_jira_ready_elsewhere_can_name_one():
+    transport = FakeTransport(_issue("Refinement"), _moves("Ready"), (204, ""), (204, ""))
+    assert client(transport, "adam").jira_ready("BASITA-1", "malek") == "Ready"
+    assert transport.calls[2][3] == {"accountId": MALEK_ID}
+
+
+def test_cli_jira_ready_assigns_and_says_so(capsys):
+    transport = FakeTransport(
+        _refining(), _moves("Ready for Development"), (204, ""), (204, ""), (201, json.dumps({"id": "5"}))
+    )
+    args = ["adam", "jira-ready", "DFP-88", "Refined.", "--assignee", "malek", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert "DFP-88 -> Ready for Development, assigned to Malek, by Adam" in capsys.readouterr().out
 
 
 def test_jira_ready_in_a_project_without_a_ready_status_changes_nothing():
@@ -762,10 +836,6 @@ def test_a_page_edit_through_another_user_names_the_agent():
     transport = FakeTransport((200, json.dumps(page)), (200, json.dumps({"id": "123"})))
     AtlClient("maya", CLOUD, TOKEN, transport=transport, via="sherif").confluence_edit("123", "new")
     assert transport.calls[1][3]["version"]["message"] == "[Maya (via Sherif)] new"
-
-
-MALEK_ID = "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
-HAYA_ID = "712020:dd45049f-7336-4c37-9f99-e8665102ed92"
 
 
 def _changelog(*changes):
