@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Run after storing a token: scripts/atl-check <agent> jira|confluence
+# Checks the stored value's shape without printing it, then reads as the agent. Changes nothing.
+# A read that works shows the token logs in; read_by only names the agent atl was asked to use.
+set -euo pipefail
+agent="${1:-}"; product="${2:-}"
+case "$product" in jira | confluence) ;; *) echo "usage: atl-check <agent> jira|confluence" >&2; exit 2 ;; esac
+[[ -n "$agent" ]] || { echo "usage: atl-check <agent> jira|confluence" >&2; exit 2; }
+atl="${ATL_BIN:-$(cd "$(dirname "$0")" && pwd)/atl}"
+service="basita-atl-$agent-$product"
+
+value="$(security find-generic-password -s "$service" -a basita -w 2>/dev/null)" || { echo "FAIL no Keychain item $service"; exit 1; }
+if [[ "$value" != ATATT* || "$value" == *[[:space:]]* ]]; then
+  unset value; echo "FAIL $service does not hold a token"; exit 1
+fi
+unset value
+echo "ok shape: $service"
+
+read_as() { # label, then the atl command
+  local label="$1" out by; shift
+  out="$("$atl" "$agent" "$@" 2>&1)" || { echo "FAIL $label: $out"; exit 1; }
+  by="$(jq -r .read_by <<<"$out")"
+  [[ "$by" == "$(tr '[:lower:]' '[:upper:]' <<<"${agent:0:1}")${agent:1}" ]] || { echo "FAIL $label: read_by is $by"; exit 1; }
+  echo "ok $label: read_by $by"
+}
+if [[ "$product" == jira ]]; then
+  read_as "read" jira-get "${ATL_CHECK_ISSUE:-BASITA-41}"
+  read_as "search" jira-jql "project = BASITA"
+else
+  page="${ATL_CHECK_PAGE:-1835010}"
+  read_as "read" confluence-get "$page"
+  read_as "search" confluence-search "id = $page"
+fi
