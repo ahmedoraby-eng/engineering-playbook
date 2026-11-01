@@ -2,6 +2,11 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## 2026-11-01
+
+### Changed
+- Jira close on merge: `Closes DFP-x` moves an issue to `Released` only from `Ready for Release`, and otherwise comments the reason. BASITA and ELB are unchanged. The default account is Sherif's (BASITA-41).
+
 ## 2026-10-31
 
 ### Added
