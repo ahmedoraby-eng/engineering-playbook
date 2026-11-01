@@ -7,7 +7,7 @@ import pytest
 
 from atl_agent import AtlClient, AtlError, keychain_token
 from atl_agent.__main__ import main
-from atl_agent.client import _adf_text
+from atl_agent.client import ADAM_ACCOUNT, AHMED_ACCOUNT, SALMA_ACCOUNT, _adf_text
 
 TOKEN = "tok-" + "x" * 12  # assembled at runtime; not a real credential
 CLOUD = "cloud-1"
@@ -761,3 +761,187 @@ def test_a_page_edit_through_another_user_names_the_agent():
     transport = FakeTransport((200, json.dumps(page)), (200, json.dumps({"id": "123"})))
     AtlClient("maya", CLOUD, TOKEN, transport=transport, via="sherif").confluence_edit("123", "new")
     assert transport.calls[1][3]["version"]["message"] == "[Maya (via Sherif)] new"
+
+
+MALEK_ID = "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
+HAYA_ID = "712020:dd45049f-7336-4c37-9f99-e8665102ed92"
+
+
+def _changelog(*changes):
+    values = [{"items": [{"field": "assignee", "from": old, "to": new}]} for old, new in changes]
+    return (200, json.dumps({"values": values, "isLast": True}))
+
+
+FLOW_CASES = [
+    ("malek", "submit", "In Development", "Ready for Testing", SALMA_ACCOUNT),
+    ("haya", "submit", "In Development", "Ready for Testing", SALMA_ACCOUNT),
+    ("salma", "pass", "In Testing", "Ready for Acceptance", ADAM_ACCOUNT),
+    ("adam", "accept", "Ready for Acceptance", "Ready for Release", AHMED_ACCOUNT),
+]
+
+
+@pytest.mark.parametrize("agent, action, start, end, assignee", FLOW_CASES)
+def test_flow_moves_and_assigns_the_next_person(agent, action, start, end, assignee):
+    transport = FakeTransport(_status_issue(start, "indeterminate"), _to((end, "indeterminate")), (204, ""), (204, ""))
+    assert client(transport, agent).jira_flow("DFP-1", action) == end
+    assert transport.calls[2][0] == "PUT" and transport.calls[2][1].endswith("/assignee")
+    assert transport.calls[2][3] == {"accountId": assignee}
+    assert transport.calls[3][0] == "POST" and transport.calls[3][1].endswith("/transitions")
+
+
+@pytest.mark.parametrize(
+    "agent, action, start", [("salma", "fail", "In Testing"), ("adam", "reject", "Ready for Acceptance")]
+)
+def test_flow_goes_back_to_the_last_engineer(agent, action, start):
+    transport = FakeTransport(
+        _status_issue(start, "indeterminate"),
+        _changelog(("x", MALEK_ID), (MALEK_ID, HAYA_ID), (HAYA_ID, SALMA_ACCOUNT), (SALMA_ACCOUNT, ADAM_ACCOUNT)),
+        _to(("Ready for Development", "new")),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(transport, agent).jira_flow("DFP-1", action) == "Ready for Development"
+    assert transport.calls[3][3] == {"accountId": HAYA_ID}
+
+
+def test_flow_finds_an_engineer_who_was_assigned_from_the_start():
+    transport = FakeTransport(
+        _status_issue("In Testing", "indeterminate"),
+        _changelog((MALEK_ID, SALMA_ACCOUNT)),
+        _to(("Ready for Development", "new")),
+        (204, ""),
+        (204, ""),
+    )
+    client(transport, "salma").jira_flow("DFP-1", "fail")
+    assert transport.calls[3][3] == {"accountId": MALEK_ID}
+
+
+def test_flow_reads_every_page_of_the_history():
+    first = (200, json.dumps({"values": [{"items": [{"field": "assignee", "to": MALEK_ID}]}], "isLast": False}))
+    second = (200, json.dumps({"values": [{"items": [{"field": "assignee", "to": HAYA_ID}]}], "isLast": True}))
+    transport = FakeTransport(
+        _status_issue("In Testing", "indeterminate"),
+        first,
+        second,
+        _to(("Ready for Development", "new")),
+        (204, ""),
+        (204, ""),
+    )
+    client(transport, "salma").jira_flow("DFP-1", "fail")
+    assert "startAt=1" in transport.calls[2][1] and transport.calls[4][3] == {"accountId": HAYA_ID}
+
+
+def test_flow_with_no_engineer_in_the_history_changes_nothing():
+    transport = FakeTransport(_status_issue("In Testing", "indeterminate"), _changelog(("x", SALMA_ACCOUNT)))
+    with pytest.raises(AtlError, match="no engineer"):
+        client(transport, "salma").jira_flow("DFP-1", "fail")
+    assert all(call[0] == "GET" for call in transport.calls)
+
+
+@pytest.mark.parametrize(
+    "agent, action",
+    [
+        ("salma", "submit"),
+        ("adam", "submit"),
+        ("malek", "pass"),
+        ("adam", "pass"),
+        ("malek", "fail"),
+        ("malek", "accept"),
+        ("salma", "accept"),
+        ("haya", "reject"),
+        ("yousef", "submit"),
+    ],
+)
+def test_flow_refuses_the_wrong_agent_before_any_call(agent, action):
+    transport = FakeTransport()
+    with pytest.raises(AtlError, match=f"{action} is for"):
+        client(transport, agent).jira_flow("DFP-1", action)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    "agent, action, status",
+    [
+        ("malek", "submit", "Ready for Development"),
+        ("malek", "submit", "Ready for Testing"),
+        ("salma", "pass", "Ready for Testing"),
+        ("salma", "fail", "In Development"),
+        ("adam", "accept", "In Testing"),
+        ("adam", "reject", "Ready for Release"),
+        ("adam", "accept", "Released"),
+    ],
+)
+def test_flow_refuses_any_other_status_and_writes_nothing(agent, action, status):
+    transport = FakeTransport(_status_issue(status, "indeterminate"))
+    with pytest.raises(AtlError, match="only leaves"):
+        client(transport, agent).jira_flow("DFP-1", action)
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("key", ["BASITA-1", "ELB-1"])
+def test_flow_is_for_dfp_only(key):
+    transport = FakeTransport()
+    with pytest.raises(AtlError, match="DFP only"):
+        client(transport, "malek").jira_flow(key, "submit")
+    assert transport.calls == []
+
+
+def test_flow_refuses_an_unknown_action_such_as_a_status_name():
+    transport = FakeTransport()
+    with pytest.raises(AtlError, match="unknown action"):
+        client(transport, "adam").jira_flow("DFP-1", "Released")
+    assert transport.calls == []
+
+
+def test_flow_with_no_transition_writes_nothing():
+    transport = FakeTransport(_status_issue("In Development", "indeterminate"), _to(("Released", "done")))
+    with pytest.raises(AtlError, match="no transition"):
+        client(transport, "malek").jira_flow("DFP-1", "submit")
+    assert all(call[0] == "GET" for call in transport.calls)
+
+
+def test_flow_run_again_after_a_failed_move_finishes_the_step():
+    failing = FakeTransport(
+        _status_issue("In Development", "indeterminate"),
+        _to(("Ready for Testing", "indeterminate")),
+        (204, ""),
+        (500, "{}"),
+    )
+    with pytest.raises(AtlError):
+        client(failing, "malek").jira_flow("DFP-1", "submit")
+    again = FakeTransport(
+        _status_issue("In Development", "indeterminate"),
+        _to(("Ready for Testing", "indeterminate")),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(again, "malek").jira_flow("DFP-1", "submit") == "Ready for Testing"
+
+
+def test_cli_flow_comments_why_and_signs(capsys):
+    transport = FakeTransport(
+        _status_issue("In Testing", "indeterminate"),
+        _to(("Ready for Acceptance", "indeterminate")),
+        (204, ""),
+        (204, ""),
+        (201, json.dumps({"id": "5"})),
+    )
+    args = ["salma", "jira-flow", "DFP-1", "pass", "All criteria hold on the preview", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert "DFP-1 -> Ready for Acceptance" in capsys.readouterr().out
+    body = json.dumps(transport.calls[4][3])
+    assert "All criteria hold on the preview" in body and "Ready for Acceptance" in body and "Salma (Basita AI)" in body
+
+
+def test_cli_flow_needs_a_reason_and_moves_nothing(capsys):
+    transport = FakeTransport()
+    args = ["salma", "jira-flow", "DFP-1", "pass", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 2
+    assert transport.calls == []
+
+
+def test_only_jira_flow_takes_two_texts(capsys):
+    transport = FakeTransport()
+    args = ["salma", "jira-comment", "DFP-1", "one", "two", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 2
+    assert transport.calls == []

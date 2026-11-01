@@ -158,6 +158,32 @@ READY_STATUSES = ("ready", "ready for development")
 TESTING_QUEUE = "ready for testing"
 CLOSE_REASONS = ("Not a Bug", "Already Fixed", "Duplicate", "Business Requirement")
 SALMA_ACCOUNT = "712020:a11d40c9-5c21-4caf-8743-b118b75cd9d2"
+ADAM_ACCOUNT = "712020:74556401-e243-4c53-9f59-75f28fdf6cec"
+AHMED_ACCOUNT = "712020:710281c6-e4c2-44fd-b72a-81091935ae21"
+ENGINEER_ACCOUNTS = (
+    "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3",  # Malek
+    "712020:dd45049f-7336-4c37-9f99-e8665102ed92",  # Haya
+)
+LAST_ENGINEER = "last engineer"
+# DFP's moves between queues (Ahmed, 01/11/2026): action -> who may run it, from, to, and the next assignee.
+# A step in the flow is a row here; `jira-flow` refuses everything else. `Released` stays with the merge (close.py).
+FLOW = {
+    "submit": {
+        "agents": ("malek", "haya"),
+        "from": "In Development",
+        "to": "Ready for Testing",
+        "assign": SALMA_ACCOUNT,
+    },
+    "pass": {"agents": ("salma",), "from": "In Testing", "to": "Ready for Acceptance", "assign": ADAM_ACCOUNT},
+    "fail": {"agents": ("salma",), "from": "In Testing", "to": "Ready for Development", "assign": LAST_ENGINEER},
+    "accept": {"agents": ("adam",), "from": "Ready for Acceptance", "to": "Ready for Release", "assign": AHMED_ACCOUNT},
+    "reject": {
+        "agents": ("adam",),
+        "from": "Ready for Acceptance",
+        "to": "Ready for Development",
+        "assign": LAST_ENGINEER,
+    },
+}
 
 
 def account_for(agent: str, via: str = "") -> str:
@@ -412,6 +438,49 @@ class AtlClient:
             raise AtlError(f"{issue}: no transition to Ready for Testing is available from Refinement")
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         self._call("PUT", "jira", f"/rest/api/3/issue/{issue}/assignee", {"accountId": SALMA_ACCOUNT})
+        return chosen["to"]["name"]
+
+    def _last_engineer(self, issue: str) -> str:
+        """The account of the engineer who last held the issue, from its assignee history."""
+        found = ""
+        start = 0
+        while True:
+            page = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/changelog?startAt={start}&maxResults=100")
+            entries = page.get("values", [])
+            for entry in entries:  # oldest first
+                for item in entry.get("items", []):
+                    if item.get("field") == "assignee":
+                        for account in (item.get("from"), item.get("to")):
+                            if account in ENGINEER_ACCOUNTS:
+                                found = account
+            start += len(entries)
+            if not entries or page.get("isLast", True):
+                break
+        if not found:
+            raise AtlError(f"{issue}: no engineer in its assignee history, so it has no one to go back to")
+        return found
+
+    def jira_flow(self, issue: str, action: str) -> str:
+        """One step of DFP's flow, from FLOW: checks the agent and the status, assigns the next person, moves the
+        issue and returns the new status. It assigns first, so running it again after a failure finishes the step.
+        Needs read:jira-work and write:jira-work."""
+        step = FLOW.get(action)
+        if not step:
+            raise AtlError(f"unknown action '{action}' (known: {', '.join(FLOW)})")
+        if not issue.startswith("DFP-"):
+            raise AtlError(f"{issue}: jira-flow is for DFP only")
+        if self.agent not in step["agents"]:
+            raise AtlError(f"{action} is for {' or '.join(a.capitalize() for a in step['agents'])}, not {self.display}")
+        status = self.jira_status(issue)["name"]
+        if status.lower() != step["from"].lower():
+            raise AtlError(f"{issue}: status is '{status}', {action} only leaves '{step['from']}'")
+        assignee = self._last_engineer(issue) if step["assign"] == LAST_ENGINEER else step["assign"]
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        chosen = next((t for t in moves if t["to"]["name"].lower() == step["to"].lower()), None)
+        if not chosen:
+            raise AtlError(f"{issue}: no transition to '{step['to']}' is available from '{status}'")
+        self._call("PUT", "jira", f"/rest/api/3/issue/{issue}/assignee", {"accountId": assignee})
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
     def jira_dismiss(self, issue: str, reason: str) -> str:
