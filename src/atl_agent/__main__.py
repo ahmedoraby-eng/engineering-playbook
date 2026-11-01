@@ -20,8 +20,8 @@ Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CL
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
 recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and
 comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments.
-`jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject): the table in client.py gives who may, the next status and the
-next assignee. The read commands print
+`jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject): the table in
+client.py gives who may, the next status and the next assignee. The read commands print
 JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
 JQL query; `confluence-get` gives a page with its body, comments, attachments and children; `confluence-search` finds
 pages by words or CQL. Each result names the agent whose token answered (`read_by`). `confluence-create` and
