@@ -170,6 +170,7 @@ def default_cloud_id(environ: dict | None = None) -> str:
 
 # The status a refined issue moves to: BASITA/ELB call it Ready, DFP calls it Ready for Development.
 READY_STATUSES = ("ready", "ready for development")
+READY_NOT_FOR = ("adam", "salma")  # pickup doesn't start them on Ready for Development
 # DFP queues (operating model 4.3 items 11 and 12): a `Ready for ...` status is a queue, an `In ...` status
 # means someone is working. Salma pulls only from Ready for Testing, into In Testing, and no other agent
 # pulls from it; in DFP she pulls from nothing else.
@@ -555,23 +556,41 @@ class AtlClient:
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
-    def jira_ready(self, issue: str) -> str:
+    def jira_ready(self, issue: str, assignee: str = "") -> str:
         """Refinement -> Ready (or Ready for Development in DFP), the one transition an agent makes on a
         refined issue (Ahmed, 30/10/2026).
 
         Refuses an Epic (never worked as a ticket) and any issue that is not in Refinement, and only ever
-        takes a transition that lands on one of READY_STATUSES. Needs read:jira-work and write:jira-work."""
-        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype")
+        takes a transition that lands on one of READY_STATUSES. In DFP it also names who gets the issue and needs
+        an unreleased Fix Version, because pickup starts no one without them (Ahmed, 01/11/2026). It assigns before it
+        moves, so running it again after a failure finishes the step. Needs read:jira-work and write:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype,fixVersions")
         fields = data["fields"]
         if fields["issuetype"]["name"] == "Epic":
             raise AtlError(f"{issue}: an Epic is never worked as a ticket")
         if fields["status"]["name"].lower() != "refinement":
             current = fields["status"]["name"]
             raise AtlError(f"{issue}: status is '{current}', an agent only readies issues in Refinement")
+        account = ""
+        if issue.startswith("DFP-"):
+            if not assignee:
+                raise AtlError(f"{issue}: name who gets it, with --assignee, or it waits on {self.display}")
+            if assignee.lower() in READY_NOT_FOR:
+                raise AtlError(f"{issue}: pickup never starts {assignee.capitalize()} on Ready for Development")
+            if not [v for v in fields.get("fixVersions") or [] if not v.get("released")]:
+                raise AtlError(
+                    f"{issue}: no unreleased Fix Version, so no one would ever be started on it. It stays in "
+                    "Refinement. Say so in a comment with @ to whoever owns the release: they set the version and "
+                    f"assign it to {self.display} again."
+                )
+        if assignee:
+            account = self._assignee_account(assignee)
         moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
         chosen = next((t for t in moves if t["to"]["name"].lower() in READY_STATUSES), None)
         if not chosen:
             raise AtlError(f"{issue}: no transition to Ready or Ready for Development is available from Refinement")
+        if account:
+            self._call("PUT", "jira", f"/rest/api/3/issue/{issue}/assignee", {"accountId": account})
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
