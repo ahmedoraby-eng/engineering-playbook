@@ -18,6 +18,7 @@
 #       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-jira-close.yml@main
 #       with:
 #         repos: owner/this-repo,owner/other-repo   # where to look for the other PRs that mention the key
+#         deploy-check: "Workers Builds: my-worker"  # optional: needs `checks: read` above
 #       secrets:
 #         ATL_TOKEN: ${{ secrets.ATL_TOKEN }}
 #         GH_SEARCH_TOKEN: ${{ secrets.GH_SEARCH_TOKEN }}   # optional: needed only to see PRs in other private repos
@@ -38,6 +39,12 @@ on:
         description: Comma-separated owner/repo list searched for the other PRs that mention the issue
         type: string
         default: ""
+      deploy-check:
+        description: >-
+          Check run that must succeed on the merge commit or a later one before a guarded issue
+          (DFP) moves to Released. Empty means no wait. The caller needs `checks: read`.
+        type: string
+        default: ""
       playbook-ref:
         description: Version of the playbook's atl_agent to run
         type: string
@@ -50,15 +57,13 @@ on:
         description: Optional GitHub token that can read the other repos, for the PR links in the comment
         required: false
 
-permissions:
-  contents: read
-  pull-requests: read
-
+# No permissions block here: this workflow takes its caller's, so `deploy-check` can read checks without
+# breaking a caller that doesn't grant `checks: read`.
 jobs:
   jira-close:
     name: Close Jira issue
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20 # the deploy wait is up to 12
     steps:
       - name: Check out atl_agent from the playbook
         uses: actions/checkout@v6
@@ -102,6 +107,11 @@ jobs:
           ATL_CLOUD_ID: ${{ inputs.cloud-id }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           AGENT: ${{ inputs.agent }}
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_CHECK: ${{ inputs.deploy-check }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
         run: |
           PYTHONPATH=.playbook/src python -m atl_agent.close --pr-url "$PR_URL" --agent "$AGENT" \
+            --deploy-check "$DEPLOY_CHECK" --repo "$GITHUB_REPOSITORY" --sha "$MERGE_SHA" --branch "$BASE_BRANCH" \
             --links-file "$RUNNER_TEMP/links.txt" < "$RUNNER_TEMP/body.txt"
