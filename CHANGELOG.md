@@ -5,6 +5,7 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 ## 2026-11-01
 
 ### Added
+- `atl <agent> jira-create <PROJECT> <Story|Task|Bug> "summary" "description"`: any agent can create an unassigned, signed issue in BASITA, DFP or ELB (BASITA-41).
 - `atl <agent> jira-flow <KEY> <action> "why"`: one table for DFP's moves between queues (submit, pass, fail, accept, reject), with the next assignee. Anything else is refused (BASITA-41).
 
 ### Changed
