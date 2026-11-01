@@ -2,6 +2,12 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## 2026-11-02
+
+### Added
+- `standards/dfp-flow.md`: a picture of DFP's flow (statuses, arrows, who owns each step), generated from the `jira-flow` table by `python -m atl_agent.flowchart --write`. A test fails when the picture and the table differ (BASITA-69).
+- `python -m atl_agent.flowchart check`: reads Jira's `GET /transitions` on one live issue per status and confirms the table's moves exist. It makes GET calls only. It reports that every DFP transition is global instead of failing on it (BASITA-69).
+
 ## 2026-11-01
 
 ### Added
