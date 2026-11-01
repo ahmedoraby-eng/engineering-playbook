@@ -2,6 +2,11 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## 2026-10-31
+
+### Added
+- `atl` reads and writes as the agent's own identity (BASITA-41): `jira-get <KEY>` (issue, comments, sub-tasks, linked issues), `jira-jql "<JQL>"`, `confluence-get <page id or URL>`, `confluence-search "<words or CQL>"`, `confluence-create <space key> "text" --title "Title"` and `confluence-edit <page id or URL> "text"`. Each read names the agent that read it. Nothing deletes. The Confluence commands need a scoped Confluence token for the agent.
+
 ## 2026-10-29
 
 ### Added
