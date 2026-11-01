@@ -8,7 +8,7 @@ import pytest
 
 from atl_agent import AtlClient, AtlError, keychain_token
 from atl_agent.__main__ import main
-from atl_agent.client import ADAM_ACCOUNT, AHMED_ACCOUNT, SALMA_ACCOUNT, _adf_text
+from atl_agent.client import ADAM_ACCOUNT, AHMED_ACCOUNT, SALMA_ACCOUNT, _adf, _adf_text
 
 TOKEN = "tok-" + "x" * 12  # assembled at runtime; not a real credential
 CLOUD = "cloud-1"
@@ -1318,3 +1318,58 @@ def test_cli_says_a_dfp_bug_is_assigned_to_adam(capsys):
     args = ["salma", "jira-create", "DFP", "Bug", "S", "D", "--cloud-id", CLOUD]
     assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
     assert "DFP-9 created, assigned to Adam, by Salma" in capsys.readouterr().out
+
+
+def _nodes(text):
+    return _adf(text)["content"][0]["content"]
+
+
+def test_at_name_becomes_a_real_mention_in_place():
+    nodes = _nodes("Please check @Malek now")
+    assert nodes[0] == {"type": "text", "text": "Please check "}
+    assert nodes[1] == {"type": "mention", "attrs": {"id": MALEK_ID, "text": "@Malek"}}
+    assert nodes[2] == {"type": "text", "text": " now"}
+
+
+@pytest.mark.parametrize("prefix", ["FYI ", "CC ", "cc: "])
+def test_fyi_and_cc_keep_their_word_and_mention_too(prefix):
+    nodes = _nodes(f"{prefix}@haya")
+    assert nodes[0]["text"] == prefix and nodes[1]["attrs"] == {"id": HAYA_ID, "text": "@Haya"}
+
+
+def test_several_mentions_on_a_line():
+    nodes = _nodes("CC @Malek CC @Haya, @Ahmed")
+    assert [n["attrs"]["text"] for n in nodes if n["type"] == "mention"] == ["@Malek", "@Haya", "@Ahmed"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Malek should look",
+        "mail a@malek.com",
+        "@Talia please",
+        "@Maya please",
+        "@Basel",
+        "@Malekah",
+        "x/@malek",
+        "@@malek",
+    ],
+)
+def test_no_mention_for_a_plain_name_an_address_or_no_seat(text):
+    assert all(node["type"] == "text" for node in _nodes(text))
+
+
+def test_links_and_mentions_on_one_line():
+    nodes = _nodes("@Malek see https://example.com/x and @Haya")
+    kinds = [n["type"] for n in nodes]
+    assert kinds == ["mention", "text", "text", "text", "mention"]
+    assert nodes[2]["marks"][0]["attrs"]["href"] == "https://example.com/x"
+
+
+def test_cli_comment_mentions_and_reads_back(capsys):
+    transport = FakeTransport((201, json.dumps({"id": "5", "author": {"displayName": "Salma"}})))
+    args = ["salma", "jira-comment", "DFP-1", "@Malek please look", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    body = transport.calls[0][3]["body"]
+    assert body["content"][0]["content"][0]["attrs"]["id"] == MALEK_ID
+    assert _adf_text(body["content"][0]).startswith("@Malek please look")

@@ -68,18 +68,36 @@ _SPACE_KEY = re.compile(r"^~?[A-Za-z0-9_-]+$")
 _LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()]+[^\s<>\[\]().,;:!?\"'])")
 
 
+def _with_mentions(text: str) -> list[dict]:
+    """Plain text as ADF nodes in which `@Name` is a real mention of anyone with a Jira seat. Others stay as text:
+    `@Talia` still counts in the comment relay, which reads the text."""
+    pattern = r"(?<![\w.@/])@(" + "|".join(JIRA_ACCOUNTS) + r")\b"
+    nodes: list[dict] = []
+    position = 0
+    for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+        if match.start() > position:
+            nodes.append({"type": "text", "text": text[position : match.start()]})
+        name = match.group(1).lower()
+        nodes.append({"type": "mention", "attrs": {"id": JIRA_ACCOUNTS[name], "text": f"@{name.capitalize()}"}})
+        position = match.end()
+    if position < len(text):
+        nodes.append({"type": "text", "text": text[position:]})
+    return nodes
+
+
 def _inline(line: str) -> list[dict]:
-    """A line as ADF text nodes in which `[label](url)` and bare http(s) URLs are clickable links (§4.4 item 5)."""
+    """A line as ADF nodes in which `[label](url)` and bare http(s) URLs are clickable links (§4.4 item 5), and
+    `@Name` is a mention."""
     nodes: list[dict] = []
     position = 0
     for match in _LINK.finditer(line):
         if match.start() > position:
-            nodes.append({"type": "text", "text": line[position : match.start()]})
+            nodes += _with_mentions(line[position : match.start()])
         label, url = (match.group(1), match.group(2)) if match.group(2) else (match.group(3), match.group(3))
         nodes.append({"type": "text", "text": label, "marks": [{"type": "link", "attrs": {"href": url}}]})
         position = match.end()
     if position < len(line):
-        nodes.append({"type": "text", "text": line[position:]})
+        nodes += _with_mentions(line[position:])
     return nodes
 
 
