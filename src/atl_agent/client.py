@@ -206,11 +206,17 @@ JIRA_ACCOUNTS = {
     "abdelrahman": "712020:6f47dac6-82b6-4fd4-bd86-da7394ffa87d",
 }
 AHMED_ONLY_LABELS = ("reviewed-by-ahmed", "human-reviewed", "needs-ahmed")
+# Who works a DFP issue and submits it to testing (BASITA-147): the engineers, and the leads who take DFP work that
+# isn't code. Only Malek and Haya could on 02/11/2026, so Nora left DFP-97 In Development. Maya has no Jira user and
+# works through Sherif's.
+SUBMITTERS = ("malek", "haya", "nora", "sherif", "maya")
+# A failed test or a rejection goes back to the last of them who held the issue.
+SUBMITTER_ACCOUNTS = tuple(dict.fromkeys(JIRA_ACCOUNTS["sherif" if name == "maya" else name] for name in SUBMITTERS))
 # DFP's moves between queues (Ahmed, 01/11/2026): action -> who may run it, from, to, and the next assignee.
 # A step in the flow is a row here; `jira-flow` refuses everything else. `Released` stays with the merge (close.py).
 FLOW = {
     "submit": {
-        "agents": ("malek", "haya"),
+        "agents": SUBMITTERS,
         "from": "In Development",
         "to": "Ready for Testing",
         "assign": SALMA_ACCOUNT,
@@ -626,7 +632,8 @@ class AtlClient:
         return chosen["to"]["name"]
 
     def _last_engineer(self, issue: str) -> str:
-        """The account of the engineer who last held the issue, from its assignee history."""
+        """The account of whoever last held the issue among SUBMITTER_ACCOUNTS (an engineer, or a lead on DFP work that
+        isn't code), from its assignee history."""
         found = ""
         start = 0
         while True:
@@ -636,13 +643,13 @@ class AtlClient:
                 for item in entry.get("items", []):
                     if item.get("field") == "assignee":
                         for account in (item.get("from"), item.get("to")):
-                            if account in ENGINEER_ACCOUNTS:
+                            if account in SUBMITTER_ACCOUNTS:
                                 found = account
             start += len(entries)
             if not entries or page.get("isLast", True):
                 break
         if not found:
-            raise AtlError(f"{issue}: no engineer in its assignee history, so it has no one to go back to")
+            raise AtlError(f"{issue}: no one who works DFP issues is in its assignee history, so no one to go back to")
         return found
 
     def jira_flow(self, issue: str, action: str) -> str:

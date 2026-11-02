@@ -17,15 +17,15 @@ flowchart TD
     closed["Closed"]
     ready_for_release["Ready for Release"]
     released["Released"]
-    in_development -->|"submit · Malek or Haya<br/>next: Salma"| ready_for_testing
+    in_development -->|"submit · Malek or Haya or Nora or Sherif or Maya<br/>next: Salma"| ready_for_testing
     in_testing -->|"pass · Salma<br/>next: Adam"| ready_for_acceptance
-    in_testing -->|"fail · Salma<br/>next: the last engineer"| ready_for_development
+    in_testing -->|"fail · Salma<br/>next: whoever last worked it"| ready_for_development
     ready_for_acceptance -->|"accept · Adam<br/>next: Ahmed"| ready_for_release
-    ready_for_acceptance -->|"reject · Adam<br/>next: the last engineer"| ready_for_development
+    ready_for_acceptance -->|"reject · Adam<br/>next: whoever last worked it"| ready_for_development
     refinement -.->|"ready · Adam<br/>next: an engineer (--assignee)"| ready_for_development
     refinement -.->|"return · Adam<br/>next: Salma"| ready_for_testing
     refinement -.->|"bug to engineer · Salma<br/>next: Malek or Haya (--assignee)"| ready_for_development
-    ready_for_development -.->|"start (engineer) · Malek or Haya<br/>next: same"| in_development
+    ready_for_development -.->|"start (work) · Malek or Haya or Nora or Sherif or Maya<br/>next: same"| in_development
     ready_for_testing -.->|"start (testing) · Salma<br/>next: same"| in_testing
     in_testing -.->|"dismiss · Salma<br/>next: no one"| closed
     ready_for_release -.->|"merged · merge job (Sherif's account)<br/>next: no one"| released
@@ -33,15 +33,15 @@ flowchart TD
 
 | Action | Command | Who | From | To | Next owner |
 |---|---|---|---|---|---|
-| submit | `jira-flow` | Malek or Haya | In Development | Ready for Testing | Salma |
+| submit | `jira-flow` | Malek or Haya or Nora or Sherif or Maya | In Development | Ready for Testing | Salma |
 | pass | `jira-flow` | Salma | In Testing | Ready for Acceptance | Adam |
-| fail | `jira-flow` | Salma | In Testing | Ready for Development | the last engineer |
+| fail | `jira-flow` | Salma | In Testing | Ready for Development | whoever last worked it |
 | accept | `jira-flow` | Adam | Ready for Acceptance | Ready for Release | Ahmed |
-| reject | `jira-flow` | Adam | Ready for Acceptance | Ready for Development | the last engineer |
+| reject | `jira-flow` | Adam | Ready for Acceptance | Ready for Development | whoever last worked it |
 | ready | `jira-ready` | Adam | Refinement | Ready for Development | an engineer (--assignee) |
 | return | `jira-return` | Adam | Refinement | Ready for Testing | Salma |
 | bug to engineer | `jira-create` | Salma | Refinement | Ready for Development | Malek or Haya (--assignee) |
-| start (engineer) | `jira-start` | Malek or Haya | Ready for Development | In Development | same |
+| start (work) | `jira-start` | Malek or Haya or Nora or Sherif or Maya | Ready for Development | In Development | same |
 | start (testing) | `jira-start` | Salma | Ready for Testing | In Testing | same |
 | dismiss | `jira-dismiss` | Salma | In Testing | Closed | no one |
 | merged | `the merge (close.py)` | merge job (Sherif's account) | Ready for Release | Released | no one |

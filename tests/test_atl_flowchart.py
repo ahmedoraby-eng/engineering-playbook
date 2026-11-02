@@ -70,7 +70,7 @@ def run(action: str, status: str) -> str:
         adam.jira_return("DFP-1")
     elif action == "bug to engineer":
         salma.jira_create("DFP", "Bug", "b", "d", assignee="malek", link="DFP-9")
-    elif action == "start (engineer)":
+    elif action == "start (work)":
         malek.jira_start("DFP-1")
     elif action == "start (testing)":
         salma.jira_start("DFP-1")
@@ -108,7 +108,7 @@ def test_the_picture_has_every_step_and_every_status_once():
         assert f"{_node(step['from'])} " in picture and f"| {_node(step['to'])}\n" in picture
     nodes = re.findall(r'^    (\w+)\["', picture, flags=re.MULTILINE)
     assert len(nodes) == len(set(nodes))
-    assert "the last engineer" in picture and "Ahmed" in picture
+    assert "whoever last worked it" in picture and "Ahmed" in picture
     assert "712020:" not in picture  # names, never account ids
 
 
