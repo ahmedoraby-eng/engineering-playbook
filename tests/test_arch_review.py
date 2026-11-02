@@ -434,6 +434,21 @@ def test_an_unlinked_commit_author_is_named_by_email(tmp_path):
     assert "| Why | 1 changed lines; commits by malek@example.com |" in (tmp_path / "summary.md").read_text()
 
 
+def test_commits_the_api_did_not_list_count_as_outside_the_exempt_list(tmp_path):
+    gh = FakeGitHub(responses(pr={**PR, "commits": 300}, commits=[{"author": {"login": OWNER}}] * 250))
+    assert run(gh, tmp_path=tmp_path) == 1
+    assert "commits not listed by the API" not in (tmp_path / "summary.md").read_text()  # critical wins
+    gh = FakeGitHub(
+        responses(
+            pr={**PR, "commits": 300},
+            commits=[{"author": {"login": OWNER}}] * 250,
+            files=[{"filename": "src/app.ts", "changes": 1}],
+        )
+    )
+    assert run(gh, tmp_path=tmp_path) == 1
+    assert "commits by (50 commits not listed by the API)" in (tmp_path / "summary.md").read_text()
+
+
 def test_not_required_pr_passes_in_on_mode(capsys):
     gh = FakeGitHub(responses(commits=[{"author": {"login": OWNER}}]))
     assert run(gh) == 0

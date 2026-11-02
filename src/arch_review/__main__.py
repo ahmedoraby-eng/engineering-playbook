@@ -88,6 +88,9 @@ def evaluate(
         (c.get("author") or {}).get("login") or ((c.get("commit") or {}).get("author") or {}).get("email") or ""
         for c in commits
     ]
+    # The commits API stops at 250: a commit it didn't list may be anyone's, so it counts as outside the list.
+    if (pr.get("commits") or 0) > len(commits):
+        authors.append(f"({pr['commits'] - len(commits)} commits not listed by the API)")
     files = [ChangedFile.from_github(f) for f in gh.items(f"repos/{repo}/pulls/{pr_number}/files")]
     waived_by = ""
     if rules.waive_label in labels:
