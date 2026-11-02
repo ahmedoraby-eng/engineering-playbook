@@ -25,7 +25,7 @@ from agent_gh.policy import plan_gh, plan_push, repo_from_remote
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = load_config(ROOT / "config" / "github-identities.json")
-SECRET = "ghs_SECRETinstallationtoken"
+MINTED = "ghs_fake-installation-value"  # a stand-in, not a real token
 
 
 @pytest.fixture(scope="module")
@@ -248,11 +248,11 @@ def test_jwt_is_signed_rs256_by_the_key(key, tmp_path):
 def test_app_token_is_for_the_listed_installation_and_one_repo(key):
     pem, _ = key
     github = FakeGitHub(
-        {("POST", "/app/installations/177982765/access_tokens"): (201, {}, {"token": SECRET, "expires_at": "x"})}
+        {("POST", "/app/installations/177982765/access_tokens"): (201, {}, {"token": MINTED, "expires_at": "x"})}
     )
     run = keychain({"basita-gh-malek-app": base64.b64encode(pem).decode()})
     token = token_for("malek", "ahmedoraby-eng/engineering-playbook", PUSH, CONFIG, github, run)
-    assert token == SECRET
+    assert token == MINTED
     method, path, auth, body = github.calls[0]
     assert auth.startswith("Bearer ") and body == {"permissions": PUSH, "repositories": ["engineering-playbook"]}
     with pytest.raises(IdentityError, match="no listed installation for someone"):
@@ -298,7 +298,7 @@ def _app_answers(installations, repos):
         answers[("POST", f"/app/installations/{i['id']}/access_tokens")] = (
             201,
             {},
-            {"token": SECRET, "expires_at": "2026-11-03T21:00:00Z"},
+            {"token": MINTED, "expires_at": "2026-11-03T21:00:00Z"},
         )
     return answers
 
@@ -327,9 +327,9 @@ def test_gh_check_app_ok_and_flags_an_unknown_installation(key):
     assert "ok installation 177981619 on basitasolutions (selected): repos basita-ops, elbayoumy" in text
     assert "attention installation 999 on stranger is not in the config" in text
     bot_call = next(c for c in github.calls if c[1].startswith("/users/"))
-    assert bot_call[2] == f"token {SECRET}"  # GitHub refuses a JWT on /users
+    assert bot_call[2] == f"token {MINTED}"  # GitHub refuses a JWT on /users
     assert lines[3] == "  ok bot: basita-malek[bot] id 351705446"
-    assert SECRET not in text
+    assert MINTED not in text
     token_requests = [c for c in github.calls if c[0] == "POST"]
     assert token_requests == [token_requests[0]] and token_requests[0][3] == {"permissions": {"metadata": "read"}}
 
