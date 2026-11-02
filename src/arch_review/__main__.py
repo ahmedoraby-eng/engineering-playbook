@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .review import Decision, Review, change_set, decide
-from .rules import ChangedFile, Classification, Rules, RulesError, classify
+from .rules import ChangedFile, Classification, Rules, RulesError, classify, commit_author
 
 MODES = ("off", "report", "on")
 
@@ -83,11 +83,7 @@ def evaluate(
         raise FetchError(f"the PR head moved to {(pr.get('head') or {}).get('sha', '?')[:7]}; the run on it decides")
     labels = {(label.get("name") or "") for label in pr.get("labels") or []}
     commits = gh.items(f"repos/{repo}/pulls/{pr_number}/commits")
-    # An unlinked author (an email with no GitHub account) counts as outside the exempt list.
-    authors = [
-        (c.get("author") or {}).get("login") or ((c.get("commit") or {}).get("author") or {}).get("email") or ""
-        for c in commits
-    ]
+    authors = [commit_author(c) for c in commits]
     # The commits API stops at 250: a commit it didn't list may be anyone's, so it counts as outside the list.
     if (pr.get("commits") or 0) > len(commits):
         authors.append(f"({pr['commits'] - len(commits)} commits not listed by the API)")
@@ -192,6 +188,8 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None) -> int:
                 note = "waits for a review" if args.no_request else f"would request {rules.reviewer}"
         except (FetchError, RulesError) as exc:
             error = _one_line(exc)
+        except Exception as exc:  # noqa: BLE001 - an odd API answer must not turn report mode red
+            error = _one_line(f"unexpected {type(exc).__name__}: {exc}")
 
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as out:

@@ -6,9 +6,11 @@ never from the pull request, so a PR cannot change its own rules.
 
 Classes, first match wins:
 - `waived`: the `review-waived` label, counted only if the owner added it.
-- `not-required`: no commit by anyone outside `exempt_authors` (the owner's own PRs).
+- `not-required`: no commit by anyone outside `exempt_authors` (the owner's own PRs). A commit with an
+  `Agent:` trailer or a `Co-Authored-By: Claude` line counts as an agent's, even under the owner's account.
 - `critical`: any file, or the old name of a renamed file, on a critical path. Effort `max`.
-- `not-required`: only docs, or (only when `skip_test_only` is on, decision D8) only tests and docs.
+- `not-required`: only docs (both names of a renamed file), or (only when `skip_test_only` is on,
+  decision D8) only tests and docs.
 - `large`: more than `large_lines` changed lines outside `size_exclude`. Effort `xhigh`.
 - `normal`: everything else. Effort `high`.
 The `needs-yousef` label, which anyone may add, turns `not-required` into a review.
@@ -23,6 +25,26 @@ from dataclasses import dataclass, field
 
 WAIVED, NOT_REQUIRED, CRITICAL, LARGE, NORMAL = "waived", "not-required", "critical", "large", "normal"
 DEFAULT_EFFORT = {CRITICAL: "max", LARGE: "xhigh", NORMAL: "high"}
+
+
+# A commit an agent made, whatever account it was pushed or authored under: `agent-git` adds the trailer,
+# Claude Code adds the co-author line.
+AGENT_COMMIT = re.compile(r"^(?:Agent:[ \t]*\S|Co-Authored-By:[ \t]*Claude\b)", re.IGNORECASE | re.MULTILINE)
+
+
+def commit_author(commit: dict) -> str:
+    """Who a commit counts as, from one item of the `pulls/{n}/commits` response.
+
+    The GitHub login, else the author email (an unlinked author is outside any exempt list). A commit
+    whose message marks it as an agent's counts as the agent's even under the owner's account."""
+    author = (
+        (commit.get("author") or {}).get("login")
+        or ((commit.get("commit") or {}).get("author") or {}).get("email")
+        or ""
+    )
+    if AGENT_COMMIT.search((commit.get("commit") or {}).get("message") or ""):
+        return f"{author or 'unknown'} (agent commit)"
+    return author
 
 
 class RulesError(ValueError):
@@ -151,10 +173,14 @@ def classify(
     if changed_files is not None and changed_files > len(files):
         return done(CRITICAL, f"only {len(files)} of {changed_files} changed files could be read")
 
+    # Both names of a renamed file must match: code renamed to `docs/x.md` is not docs only.
+    def only(*patterns: re.Pattern) -> bool:
+        return all(any(p.search(n) for p in patterns) for f in files for n in f.names())
+
     skip = ""
-    if all(rules.docs.search(f.filename) for f in files):
+    if only(rules.docs):
         skip = "docs only"
-    elif rules.skip_test_only and all(rules.docs.search(f.filename) or rules.tests.search(f.filename) for f in files):
+    elif rules.skip_test_only and only(rules.docs, rules.tests):
         skip = "tests and docs only"
     if skip and not asked:
         return Classification(NOT_REQUIRED, "", (skip, *notes))

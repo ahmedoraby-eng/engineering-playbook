@@ -6,7 +6,7 @@ import pytest
 from arch_review import ChangedFile, Review, Rules, classify, decide
 from arch_review.__main__ import FetchError, GitHub, main
 from arch_review.review import change_set, latest_review
-from arch_review.rules import RulesError
+from arch_review.rules import RulesError, commit_author
 
 OWNER, REVIEWER, AGENT = "owner-login", "arch-bot", "agent-app[bot]"
 HEAD, OLD, BASE = "h" * 40, "o" * 40, "b" * 40
@@ -145,6 +145,43 @@ def test_waiver_counts_only_when_the_owner_added_it():
     assert c.cls == "critical"
     assert any("ignored: added by 'agent-app[bot]'" in r for r in c.reasons)
     assert cls(files, labels=["review-waived"]).reasons[-1].startswith("'review-waived' ignored: added by 'unknown'")
+
+
+def test_a_rename_from_code_to_docs_is_not_docs_only():
+    # Yousef's probe: src/app/x.tsx -> docs/x.md came out not-required.
+    assert cls([f("docs/x.md", previous_filename="src/app/x.tsx")]).cls == "normal"
+    assert cls([f("docs/x.md", previous_filename="docs/old/x.md")]).cls == "not-required"
+    skip = Rules.from_json(
+        {**RULES_JSON, "architecture_review": {**RULES_JSON["architecture_review"], "skip_test_only": True}}
+    )
+    assert cls([f("tests/a.test.ts", previous_filename="src/a.ts")], rules=skip).cls == "normal"
+
+
+def owner_commit(message):
+    return {"author": {"login": OWNER}, "commit": {"author": {"email": "o@x"}, "message": message}}
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "DFP-1: fix\n\nAgent: Malek\nRequested-by: Owner",
+        "fix\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+        "fix\n\nco-authored-by:   claude <x>",
+    ],
+)
+def test_an_agent_commit_under_the_owners_account_still_needs_review(message):
+    # Yousef's probe: an agent commit authored as the owner, touching protected code, came out not-required.
+    author = commit_author(owner_commit(message))
+    assert author == f"{OWNER} (agent commit)"
+    c = cls([f("src/calc/rate.ts")], authors=[author])
+    assert (c.cls, c.effort) == ("critical", "max")
+
+
+def test_commit_author_without_an_agent_mark():
+    assert commit_author(owner_commit("fix\n\nThe agent: none here\nCo-Authored-By: Jane <j@x>")) == OWNER
+    assert commit_author({"author": None, "commit": {"author": {"email": "m@x"}, "message": "x"}}) == "m@x"
+    assert commit_author({"commit": {"message": "Agent: Malek"}}) == "unknown (agent commit)"
+    assert commit_author({}) == ""
 
 
 # --- review state ---------------------------------------------------------------------------------
@@ -447,6 +484,25 @@ def test_commits_the_api_did_not_list_count_as_outside_the_exempt_list(tmp_path)
     )
     assert run(gh, tmp_path=tmp_path) == 1
     assert "commits by (50 commits not listed by the API)" in (tmp_path / "summary.md").read_text()
+
+
+def test_an_unexpected_error_is_red_in_on_and_green_in_report(capsys, tmp_path):
+    # Yousef's probe: an odd API answer (here a commit that isn't an object) gave a traceback and a red report.
+    odd = responses(commits=["not an object"])
+    assert run(FakeGitHub(odd), mode="report", tmp_path=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "state=error" in out
+    assert "this would be red: unexpected AttributeError" in out
+    assert "| Error | unexpected AttributeError:" in (tmp_path / "summary.md").read_text()
+    assert run(FakeGitHub(odd), mode="on") == 1
+    assert "::error title=Architecture review::unexpected AttributeError" in capsys.readouterr().out
+
+
+def test_an_agent_commit_under_the_owners_account_reaches_the_summary(tmp_path):
+    commits = [owner_commit("fix\n\nAgent: Malek")]
+    gh = FakeGitHub(responses(commits=commits, files=[{"filename": "src/app.ts", "changes": 1}]))
+    assert run(gh, mode="report", tmp_path=tmp_path) == 0
+    assert f"commits by {OWNER} (agent commit)" in (tmp_path / "summary.md").read_text()
 
 
 def test_not_required_pr_passes_in_on_mode(capsys):
