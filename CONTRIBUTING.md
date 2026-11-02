@@ -14,6 +14,10 @@ Changes to the standards and to `ai-guard` go through pull requests like any oth
 
 Changes to `.github/workflows/` or `.ai-guard.toml` that were AI-assisted need the `human-reviewed` label.
 
+## Architecture review
+
+`.github/workflows/architecture-review.yml` is a soft check: red until `basita-yousef` approves the PR's latest commit, when the PR has commits by anyone but Ahmed and isn't docs only. The rules are in `.github/review-rules.json`, read from `main`, so changing that file is itself critical. Here Yousef is not a collaborator (a personal repo would give him write access), so the check doesn't request him: it waits for his review. Ahmed sets the repo variable `ARCH_REVIEW_MODE` (`off`, `report`, `on`; unset means `report`). Ahmed's `review-waived` label skips it. On GitHub Free nothing blocks a merge on it; Ahmed watches it.
+
 ## Jira keys and closing issues
 
 Every PR title and branch carries its Jira issue key (`BASITA-1`, `DFP-12`, `ELB-3`), so the GitHub-Jira integration links the PR to the issue. An intermediate PR says `Refs <KEY>` in its description; only the final PR, the one that completes the acceptance criteria, says `Closes <KEY>`. When a PR with `Closes <KEY>` merges, `.github/workflows/jira-close.yml` moves the issue to Done and comments with the PR links. It needs the `ATL_TOKEN` repo secret (a scoped Atlassian API token with `read:jira-work`, `write:jira-work`, `write:comment:jira`) and, to list PRs of other private repos, an optional `GH_SEARCH_TOKEN`. Other repos adopt it with the caller shown at the top of `reusable-jira-close.yml`.

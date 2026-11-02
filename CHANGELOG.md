@@ -2,6 +2,12 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## 2026-11-03
+
+### Added
+- Architecture review (BASITA-150): a soft check that a PR carries the architect's review of its latest commit. `python -m arch_review` classifies the PR from `.github/review-rules.json` read from the base branch (not required, waived by the owner's `review-waived` label, critical = `max`, large = `xhigh`, normal = `high`), requests the reviewer itself, and stays red until the reviewer's latest review approves the head commit. An approval of an older commit carries when the change set is identical. The repo variable `ARCH_REVIEW_MODE` (`off`, `report`, `on`; unset means `report`) decides the effect. Reusable `reusable-architecture-review.yml` on `pull_request_target`, plus `reusable-architecture-review-rerun.yml`, which only re-runs it when the reviewer reviews. On this repo it waits for the review instead of requesting it (plan section 4.1a).
+- Main guard (BASITA-150): reusable `reusable-main-guard.yml` and `python -m main_guard` turn red for any update to `main` by an actor not on the list in the caller's workflow file.
+
 ## 2026-11-02
 
 ### Added
