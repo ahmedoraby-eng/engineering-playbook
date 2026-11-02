@@ -1,0 +1,75 @@
+# Reusable Main guard: turns red for any update to the main branch by an actor not on the allowed
+# list (BASITA-142 plan section 6; built in BASITA-150). On GitHub Free a private repo can't block
+# pushes to main, and an agent's GitHub App with Contents write could push or merge there through
+# the API. This is the detective control; the attention line for Ahmed comes from the Mac's hourly
+# check, which reads the repository's activity on main (a `[skip ci]` commit skips this workflow,
+# but not that).
+#
+# The allowed list is written in the caller's workflow file, never in a file the push itself could
+# change: the agents' Apps have no Workflows permission (decision D4), so they can't edit it.
+#
+#   # .github/workflows/main-guard.yml
+#   on:
+#     push:
+#       branches: [main]
+#   permissions:
+#     contents: read
+#   jobs:
+#     main-guard:
+#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-main-guard.yml@main
+#       with:
+#         allowed-actors: owner-login   # comma-separated GitHub logins
+name: Reusable main guard
+
+on:
+  workflow_call:
+    inputs:
+      allowed-actors:
+        description: Comma-separated GitHub logins allowed to update main
+        type: string
+        required: true
+      playbook-ref:
+        description: Version of the playbook's main_guard to run
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  main-guard:
+    name: Main guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out main_guard from the playbook
+        uses: actions/checkout@v6
+        with:
+          repository: ahmedoraby-eng/engineering-playbook
+          ref: ${{ inputs.playbook-ref }}
+          path: .playbook
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check who updated main
+        env:
+          # Passed through the environment, never interpolated into the script.
+          ALLOWED: ${{ inputs.allowed-actors }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          PUSHER: ${{ github.event.pusher.name }}
+          SENDER: ${{ github.event.sender.login }}
+          FORCED: ${{ github.event.forced }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          if [ "$EVENT" != "push" ]; then
+            echo "::error::Main guard must run on push to main; it ran on '$EVENT'."
+            exit 1
+          fi
+          PYTHONPATH=.playbook/src python -m main_guard --allowed "$ALLOWED" --ref "$REF" \
+            --actor "$ACTOR" --actor "$TRIGGERING_ACTOR" --actor "$PUSHER" --actor "$SENDER" \
+            --forced "$FORCED" --before "$BEFORE" --after "$AFTER" --summary "$GITHUB_STEP_SUMMARY"

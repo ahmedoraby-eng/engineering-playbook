@@ -1,0 +1,108 @@
+# Reusable Architecture review: a soft check that a pull request carries the architect's review of
+# its latest commit (BASITA-142, plan sections 4.3 and 4.4; built in BASITA-150).
+#
+# It classifies the PR from its files with `.github/review-rules.json` read from the base branch:
+# not required, waived (the `review-waived` label, only when the owner added it), critical (effort
+# max), large (xhigh) or normal (high). When a review is needed it requests the reviewer itself and
+# stays red until the reviewer's latest review approves the head commit. An approval of an older
+# commit is carried when the change set is identical (a merge from the base branch that touched
+# none of the PR's files). The repo variable ARCH_REVIEW_MODE decides the effect: `off`, `report`
+# (always green, the summary says what it would require; also when the variable is unset) or `on`.
+# On GitHub Free nothing enforces a check on a private repo: red is a signal, never a merge block.
+#
+# Adopt it with two workflows in the consuming repository, plus `.github/review-rules.json`.
+# pull_request_target runs the caller's workflow from the base branch, so a pull request cannot
+# weaken its own check; this job reads the PR only through the API and never checks out or runs
+# its code (only the playbook's), which keeps pull_request_target safe.
+#
+#   # .github/workflows/architecture-review.yml
+#   on:
+#     pull_request_target:
+#       types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+#   permissions:
+#     contents: read
+#     pull-requests: write   # to request the reviewer
+#     issues: read           # to see who added the waiver label
+#   concurrency:
+#     group: architecture-review-${{ github.event.pull_request.number }}
+#     cancel-in-progress: true
+#   jobs:
+#     architecture-review:   # no job-level `if`: a skipped run would replace a red result
+#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-architecture-review.yml@main
+#       with:
+#         mode: ${{ vars.ARCH_REVIEW_MODE }}
+#         request-reviewer: true   # false where the reviewer can't be requested (a personal repo)
+#
+#   # .github/workflows/architecture-review-rerun.yml: re-runs it when the reviewer reviews
+#   (see reusable-architecture-review-rerun.yml)
+#
+# The check run is named "architecture-review / Architecture review". Its first notice line is
+# machine-readable for the flow guard and pickup:
+#   arch-review mode=on class=critical effort=max state=waiting head=<sha> reviewed=<sha or ->
+# where state is green, waiting (the reviewer's turn), changes (the author's turn) or error.
+name: Reusable architecture review
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: off, report or on; pass vars.ARCH_REVIEW_MODE (empty means report)
+        type: string
+        default: ""
+      request-reviewer:
+        description: Request the reviewer when a review is needed (false = only wait for the review)
+        type: boolean
+        default: true
+      rules-path:
+        description: Path of the rules file, read from the base branch
+        type: string
+        default: .github/review-rules.json
+      playbook-ref:
+        description: Version of the playbook's arch_review to run
+        type: string
+        default: main
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  architecture-review:
+    name: Architecture review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse anything but pull_request_target
+        if: github.event_name != 'pull_request_target'
+        run: |
+          echo "::error::Architecture review must run on pull_request_target, from the base branch; it ran on '$GITHUB_EVENT_NAME'."
+          exit 1
+      - name: Check out arch_review from the playbook
+        uses: actions/checkout@v6
+        with:
+          repository: ahmedoraby-eng/engineering-playbook
+          ref: ${{ inputs.playbook-ref }}
+          path: .playbook
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check the architect's review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # For pull_request_target this is the base branch's commit, the one this workflow runs from.
+          RULES_REF: ${{ github.sha }}
+          RULES_PATH: ${{ inputs.rules-path }}
+          # Passed through the environment, never interpolated into the script.
+          MODE: ${{ inputs.mode }}
+          REQUEST: ${{ inputs.request-reviewer }}
+        run: |
+          extra=()
+          if [ "$REQUEST" != "true" ]; then extra+=(--no-request); fi
+          PYTHONPATH=.playbook/src python -m arch_review --repo "$REPO" --pr "$PR" --head-sha "$HEAD_SHA" \
+            --rules-ref "$RULES_REF" --rules-path "$RULES_PATH" --mode "$MODE" \
+            --summary "$GITHUB_STEP_SUMMARY" "${extra[@]}"

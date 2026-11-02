@@ -1,0 +1,23 @@
+{
+  "$comment": "Review rules for Architecture review (BASITA-150). Read from the base branch, so a PR cannot change its own rules; a change to this file is itself critical. Patterns are Python regular expressions on repo-relative paths, joined with |.",
+  "owner": "ahmedoraby-eng",
+  "critical_paths": [
+    "^\\.github/",
+    "^scripts/",
+    "^src/",
+    "^evals/",
+    "^(pyproject\\.toml|requirements[^/]*\\.txt|\\.ai-guard\\.toml)$",
+    "(^|/)(AGENTS|CLAUDE)\\.md$",
+    "^\\.claude/"
+  ],
+  "size_exclude": ["^(standards|docs|templates|assessments|tests)/", "\\.md$"],
+  "architecture_review": {
+    "reviewer": "basita-yousef",
+    "exempt_authors": ["ahmedoraby-eng"],
+    "docs_paths": ["\\.md$", "^(standards|docs|templates|assessments)/"],
+    "test_paths": ["^tests/"],
+    "skip_test_only": false,
+    "large_lines": 400,
+    "effort": {"critical": "max", "large": "xhigh", "normal": "high"}
+  }
+}

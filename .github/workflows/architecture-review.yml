@@ -1,0 +1,26 @@
+# The playbook's own use of the reusable Architecture review (BASITA-150).
+# The playbook is a personal-account repo: basita-yousef is not a collaborator there (that would
+# give him write access), so he can't be requested. The check waits for his review instead
+# (plan section 4.1a); he reviews as a non-collaborator, which a public repo allows.
+name: Architecture review
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+concurrency:
+  group: architecture-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # No job-level `if`: a skipped run would replace a red result on the same commit.
+  architecture-review:
+    uses: ./.github/workflows/reusable-architecture-review.yml
+    with:
+      mode: ${{ vars.ARCH_REVIEW_MODE }}
+      request-reviewer: false

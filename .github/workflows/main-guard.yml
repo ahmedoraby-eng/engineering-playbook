@@ -1,0 +1,16 @@
+# Main guard (BASITA-150): red for any update to main by someone other than Ahmed.
+# The allowed list stays in this workflow file, which the agents' Apps cannot change (D4).
+name: Main guard
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  main-guard:
+    uses: ./.github/workflows/reusable-main-guard.yml
+    with:
+      allowed-actors: ahmedoraby-eng

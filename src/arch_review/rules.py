@@ -1,0 +1,168 @@
+"""Which pull requests need the architect's review, and at what effort.
+
+The rules live in the consuming repository's `.github/review-rules.json`, the file Owner review
+reads too, so there is one list of critical paths. The check reads that file from the base branch,
+never from the pull request, so a PR cannot change its own rules.
+
+Classes, first match wins:
+- `waived`: the `review-waived` label, counted only if the owner added it.
+- `not-required`: no commit by anyone outside `exempt_authors` (the owner's own PRs).
+- `critical`: any file, or the old name of a renamed file, on a critical path. Effort `max`.
+- `not-required`: only docs, or (only when `skip_test_only` is on, decision D8) only tests and docs.
+- `large`: more than `large_lines` changed lines outside `size_exclude`. Effort `xhigh`.
+- `normal`: everything else. Effort `high`.
+The `needs-yousef` label, which anyone may add, turns `not-required` into a review.
+A docs or test file on a critical path (an agent rule in `CLAUDE.md`, a CI file) is critical, never
+docs or tests. A file list shorter than the PR's `changed_files` (GitHub stops at 3000) is critical.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+WAIVED, NOT_REQUIRED, CRITICAL, LARGE, NORMAL = "waived", "not-required", "critical", "large", "normal"
+DEFAULT_EFFORT = {CRITICAL: "max", LARGE: "xhigh", NORMAL: "high"}
+
+
+class RulesError(ValueError):
+    """The rules file is missing a field or holds a bad pattern."""
+
+
+def _pattern(value, name: str) -> re.Pattern:
+    """One regex from a list of alternatives (or a single string)."""
+    parts = [value] if isinstance(value, str) else value
+    if not isinstance(parts, list) or not parts or not all(isinstance(p, str) and p for p in parts):
+        raise RulesError(f"'{name}' must be a non-empty list of regular expressions")
+    try:
+        return re.compile("|".join(f"(?:{p})" for p in parts))
+    except re.error as exc:
+        raise RulesError(f"'{name}' has a bad regular expression: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class Rules:
+    owner: str
+    reviewer: str
+    critical: re.Pattern
+    size_exclude: re.Pattern
+    docs: re.Pattern
+    tests: re.Pattern
+    exempt_authors: frozenset[str] = field(default_factory=frozenset)
+    large_lines: int = 400
+    skip_test_only: bool = False
+    waive_label: str = "review-waived"
+    needs_label: str = "needs-yousef"
+    effort: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT))
+
+    @classmethod
+    def from_json(cls, data: dict) -> Rules:
+        if not isinstance(data, dict):
+            raise RulesError("the rules file must hold a JSON object")
+        arch = data.get("architecture_review")
+        if not isinstance(arch, dict):
+            raise RulesError("'architecture_review' is missing")
+        owner = data.get("owner")
+        reviewer = arch.get("reviewer")
+        if not isinstance(owner, str) or not owner or not isinstance(reviewer, str) or not reviewer:
+            raise RulesError("'owner' and 'architecture_review.reviewer' must be GitHub logins")
+        large = arch.get("large_lines", 400)
+        if not isinstance(large, int) or isinstance(large, bool) or large < 1:
+            raise RulesError("'architecture_review.large_lines' must be a positive whole number")
+        effort = {**DEFAULT_EFFORT, **(arch.get("effort") or {})}
+        exempt = arch.get("exempt_authors", [owner])
+        return cls(
+            owner=owner,
+            reviewer=reviewer,
+            critical=_pattern(data.get("critical_paths"), "critical_paths"),
+            size_exclude=_pattern(data.get("size_exclude"), "size_exclude"),
+            docs=_pattern(arch.get("docs_paths"), "architecture_review.docs_paths"),
+            tests=_pattern(arch.get("test_paths"), "architecture_review.test_paths"),
+            exempt_authors=frozenset(str(a).lower() for a in exempt),
+            large_lines=large,
+            skip_test_only=arch.get("skip_test_only") is True,
+            waive_label=arch.get("waive_label", "review-waived"),
+            needs_label=arch.get("needs_label", "needs-yousef"),
+            effort=effort,
+        )
+
+
+@dataclass(frozen=True)
+class ChangedFile:
+    filename: str
+    changes: int = 0
+    status: str = "modified"
+    previous_filename: str = ""
+    sha: str = ""
+
+    @classmethod
+    def from_github(cls, data: dict) -> ChangedFile:
+        """Build from one item of the `pulls/{n}/files` or `compare` response."""
+        return cls(
+            filename=data["filename"],
+            changes=int(data.get("changes", (data.get("additions") or 0) + (data.get("deletions") or 0))),
+            status=data.get("status") or "modified",
+            previous_filename=data.get("previous_filename") or "",
+            sha=data.get("sha") or "",
+        )
+
+    def names(self) -> tuple[str, ...]:
+        return (self.filename, self.previous_filename) if self.previous_filename else (self.filename,)
+
+
+@dataclass(frozen=True)
+class Classification:
+    cls: str
+    effort: str
+    reasons: tuple[str, ...]
+
+    @property
+    def required(self) -> bool:
+        return self.cls in (CRITICAL, LARGE, NORMAL)
+
+
+def classify(
+    rules: Rules,
+    commit_authors: list[str],
+    files: list[ChangedFile],
+    labels: set[str],
+    waived_by: str = "",
+    changed_files: int | None = None,
+) -> Classification:
+    """Classify a PR. `commit_authors` are the GitHub logins of its commits ("" when unlinked)."""
+    notes: list[str] = []
+    if rules.waive_label in labels:
+        if waived_by.lower() == rules.owner.lower():
+            return Classification(WAIVED, "", (f"'{rules.waive_label}' added by {rules.owner}",))
+        notes.append(f"'{rules.waive_label}' ignored: added by '{waived_by or 'unknown'}', not {rules.owner}")
+
+    def done(cls: str, *reasons: str) -> Classification:
+        return Classification(cls, rules.effort.get(cls, ""), (*reasons, *notes))
+
+    others = sorted({a or "(unlinked author)" for a in commit_authors if a.lower() not in rules.exempt_authors})
+    asked = rules.needs_label in labels
+    if not others and not asked:
+        exempt = ", ".join(sorted(rules.exempt_authors)) or "nobody"
+        return Classification(NOT_REQUIRED, "", (f"no commits outside {exempt}", *notes))
+
+    critical = sorted({n for f in files for n in f.names() if rules.critical.search(n)})
+    if critical:
+        return done(CRITICAL, f"critical paths: {', '.join(critical)}")
+    if changed_files is not None and changed_files > len(files):
+        return done(CRITICAL, f"only {len(files)} of {changed_files} changed files could be read")
+
+    skip = ""
+    if all(rules.docs.search(f.filename) for f in files):
+        skip = "docs only"
+    elif rules.skip_test_only and all(rules.docs.search(f.filename) or rules.tests.search(f.filename) for f in files):
+        skip = "tests and docs only"
+    if skip and not asked:
+        return Classification(NOT_REQUIRED, "", (skip, *notes))
+
+    size = sum(f.changes for f in files if not rules.size_exclude.search(f.filename))
+    reasons = [f"labelled '{rules.needs_label}'"] if asked else []
+    if others:
+        reasons.append(f"commits by {', '.join(others)}")
+    if size > rules.large_lines:
+        return done(LARGE, f"{size} changed lines outside docs and tests (limit {rules.large_lines})", *reasons)
+    return done(NORMAL, f"{size} changed lines", *reasons)
