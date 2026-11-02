@@ -181,6 +181,10 @@ def test_push_plans_make_the_destination_explicit(args, branch, planned):
         (["--tags"], "x", "tag"),
         (["origin", "refs/tags/v1"], "x", "branches only"),
         (["origin", "refs/*:refs/*"], "x", "wildcard"),
+        # basita-ops sync.sh merges claude/* into main by itself, so an App never pushes one.
+        ([], "claude/basita-149-x", "sync.sh merges claude"),
+        (["origin", "HEAD:claude/x"], "x", "sync.sh merges claude"),
+        (["origin", "x:refs/heads/Claude/x"], "x", "sync.sh merges Claude"),
         (["--receive-pack=x"], "x", "not on agent-git's list"),
         ([], None, "detached"),
     ],

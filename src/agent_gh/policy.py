@@ -331,6 +331,7 @@ def _plan_api(agent: str, entry: dict, rest: list[str], default_repo: str | None
 def plan_push(args: list[str], current_branch: str | None, remote_url: str, config: dict) -> Plan:
     """Refuse or plan one `git push`. The refspecs are made explicit, so the destination is known."""
     protected = {b.lower() for b in config.get("protected_branches", ["main", "master"])}
+    prefixes = tuple(p.lower() for p in config.get("protected_prefixes", ["claude/"]))
     flags, positionals = [], []
     for arg in args:
         if arg.startswith("-"):
@@ -366,6 +367,8 @@ def plan_push(args: list[str], current_branch: str | None, remote_url: str, conf
         name = dst[len("refs/heads/") :] if dst.startswith("refs/heads/") else dst
         if name.lower() in protected:
             raise _refuse(f"pushing to {name}; only Ahmed updates it, by merging")
+        if name.lower().startswith(prefixes):
+            raise _refuse(f"pushing to {name}: sync.sh merges {name.split('/')[0]}/* branches into main by itself")
         if not name:
             raise _refuse("an empty destination")
         planned.append(f"{src}:refs/heads/{name}")

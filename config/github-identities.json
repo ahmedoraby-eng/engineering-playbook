@@ -3,6 +3,8 @@
   "attribution": "warn",
   "ahmed_only_labels": ["reviewed-by-ahmed", "human-reviewed"],
   "protected_branches": ["main", "master"],
+  "_protected_prefixes": "basita-ops sync.sh merges claude/* branches into main by itself, so an App must not push one",
+  "protected_prefixes": ["claude/"],
   "app_permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
   "agents": {
     "malek": {
