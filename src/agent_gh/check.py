@@ -20,6 +20,7 @@ from .identity import (
     keychain_secret,
     mint_installation_token,
     private_key,
+    revoke_installation_token,
     urllib_transport,
 )
 
@@ -62,13 +63,29 @@ def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: 
         lines.append(f"  FAIL App permissions are {_perms(granted)}; the config expects {_perms(expected)}")
     else:
         lines.append(f"  ok App permissions: {_perms(granted)}; events: {', '.join(app.get('events') or []) or 'none'}")
+    # §4.1a: Malek's App is public, so no event data may go anywhere. GitHub answers 404 when there is no webhook.
     try:
-        _, installations = api(transport, "GET", "/app/installations?per_page=100", auth)
+        _, hook = api(transport, "GET", "/app/hook/config", auth)
+        if hook.get("url"):
+            lines.append("  FAIL a webhook is configured; it must be off")
+        else:
+            lines.append("  ok webhook: none")
     except IdentityError as error:
-        return [*lines, f"  FAIL installations: {error}"]
+        lines.append("  ok webhook: none" if " 404 " in str(error) else f"  FAIL webhook: {error}")
+    installations: list = []
+    page = 1
+    while True:
+        try:
+            _, batch = api(transport, "GET", f"/app/installations?per_page=100&page={page}", auth)
+        except IdentityError as error:
+            return [*lines, f"  FAIL installations: {error}"]
+        installations.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
     listed = {int(i["id"]): owner for owner, i in entry.get("installations", {}).items()}
     seen = set()
-    bot_auth = ""  # a public lookup; an installation token, once there is one, avoids the anonymous rate limit
+    bot_check_token = None  # a public lookup; an installation token, once there is one, avoids the anonymous limit
     for installation in installations:
         iid = int(installation["id"])
         account = (installation.get("account") or {}).get("login", "?")
@@ -87,9 +104,17 @@ def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: 
             continue
         try:
             token = mint_installation_token(entry, iid, LIST_ONLY, None, transport, jwt)
-            bot_auth = f"token {token['token']}"
-            _, reached = api(transport, "GET", "/installation/repositories?per_page=100", bot_auth)
         except IdentityError as error:
+            lines.append(f"  FAIL installation {iid} on {account}: {error}")
+            continue
+        try:
+            _, reached = api(transport, "GET", "/installation/repositories?per_page=100", f"token {token['token']}")
+            if bot_check_token is None:
+                bot_check_token = token["token"]  # kept for the bot lookup below, then revoked
+            else:
+                revoke_installation_token(token["token"], transport)
+        except IdentityError as error:
+            revoke_installation_token(token["token"], transport)
             lines.append(f"  FAIL installation {iid} on {account}: {error}")
             continue
         repos = sorted(r["name"] for r in reached.get("repositories", []))
@@ -99,12 +124,13 @@ def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: 
             f"  {state} installation {iid} on {account} ({installation.get('repository_selection')}): "
             f"repos {', '.join(repos) or 'none'}"
             + ("" if state == "ok" else f"; the config says {', '.join(want) or 'none'}")
-            + f"; permissions {_perms(installation.get('permissions'))}; check token expires {token.get('expires_at')}"
+            + f"; permissions {_perms(installation.get('permissions'))}; its check token was revoked"
         )
     for iid, owner in listed.items():
         if iid not in seen:
             lines.append(f"  FAIL installation {iid} ({owner}) from the config is not installed")
     # A JWT can't read /users, so the bot is looked up after the installations.
+    bot_auth = f"token {bot_check_token}" if bot_check_token else ""
     try:
         _, bot = api(transport, "GET", f"/users/{bot_login(entry).replace('[', '%5B').replace(']', '%5D')}", bot_auth)
         if int(bot.get("id", 0)) == int(entry["bot_id"]):
@@ -113,6 +139,8 @@ def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: 
             lines.insert(3, f"  FAIL bot {bot_login(entry)} has id {bot.get('id')}; the config says {entry['bot_id']}")
     except IdentityError as error:
         lines.insert(3, f"  FAIL bot {bot_login(entry)}: {error}")
+    if bot_check_token:
+        revoke_installation_token(bot_check_token, transport)
     return lines
 
 
@@ -142,20 +170,21 @@ def check_user(agent: str, entry: dict, transport: Transport, run: Callable, tod
             if scopes != want:
                 state = "FAIL"
                 detail += f" (the config says {', '.join(want)})"
-        else:
-            try:
-                _, repos = api(transport, "GET", "/user/repos?per_page=100", auth)
-                mine = sorted(
-                    f"{r['full_name']} ({'push' if (r.get('permissions') or {}).get('push') else 'read'})"
-                    for r in repos
-                    if r.get("owner", {}).get("login", "").lower() == owner.lower()
-                )
-                detail = f"; repos {', '.join(mine) or 'none'}"
-                if any(m.endswith("(push)") for m in mine):
-                    state = "FAIL"
-                    detail += " (Yousef must not push)"
-            except IdentityError as error:
-                state, detail = "FAIL", f"; repos: {error}"
+        # The repos he reaches as a member or collaborator of this owner: push anywhere is a FAIL (on a
+        # personal account a collaborator always has push, so this also catches being added to the playbook).
+        try:
+            _, repos = api(transport, "GET", "/user/repos?per_page=100", auth)
+            mine = sorted(
+                f"{r['full_name']} ({'push' if (r.get('permissions') or {}).get('push') else 'read'})"
+                for r in repos
+                if r.get("owner", {}).get("login", "").lower() == owner.lower()
+            )
+            detail += f"; repos {', '.join(mine) or 'none'}"
+            if any(m.endswith("(push)") for m in mine):
+                state = "FAIL"
+                detail += " (Yousef must not push)"
+        except IdentityError as error:
+            state, detail = "FAIL", f"{detail}; repos: {error}"
         lines.append(f"  {state} {service} ({owner}, {token_entry.get('type')}): login {login}; {when}{detail}")
         if days is not None and days <= EXPIRY_WARNING_DAYS:
             lines.append(f"  attention {service} expires in {days} days: Ahmed makes a new one and stores it")

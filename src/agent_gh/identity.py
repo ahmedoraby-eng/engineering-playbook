@@ -47,7 +47,7 @@ class IdentityError(Exception):
 
 
 def load_config(path: Path | None = None) -> dict:
-    path = Path(os.environ.get("AGENT_GH_CONFIG") or path or CONFIG)
+    path = Path(path or CONFIG)
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
@@ -204,15 +204,25 @@ def token_for(
     transport: Transport = urllib_transport,
     run: Callable = subprocess.run,
     openssl: str = "openssl",
-) -> str:
-    """A token for one command on one repository, as the agent."""
+) -> tuple[str, bool]:
+    """A token for one command on one repository, as the agent, and whether it is an installation token
+    (which the caller revokes when the command ends). Yousef's personal token is never revoked."""
     entry = agent_entry(config, agent)
     owner, name = split_repo(repo)
     if entry["kind"] == "user":
         for listed_owner, token in entry.get("tokens", {}).items():
             if listed_owner.lower() == owner.lower():
-                return keychain_secret(token["keychain"], run)
+                return keychain_secret(token["keychain"], run), False
         raise IdentityError(f"{entry['login']} has no token for {owner} (listed: {', '.join(entry.get('tokens', {}))})")
     installation_id = installation_for(entry, owner)
     jwt = app_jwt(entry, private_key(entry["keychain"], run), openssl=openssl)
-    return mint_installation_token(entry, installation_id, permissions, [name], transport, jwt)["token"]
+    return mint_installation_token(entry, installation_id, permissions, [name], transport, jwt)["token"], True
+
+
+def revoke_installation_token(token: str, transport: Transport = urllib_transport) -> bool:
+    """Ends an installation token before its hour is up. It authenticates with the token itself."""
+    try:
+        api(transport, "DELETE", "/installation/token", f"token {token}")
+        return True
+    except IdentityError:
+        return False

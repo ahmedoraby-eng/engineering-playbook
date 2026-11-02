@@ -252,7 +252,7 @@ def test_app_token_is_for_the_listed_installation_and_one_repo(key):
     )
     run = keychain({"basita-gh-malek-app": base64.b64encode(pem).decode()})
     token = token_for("malek", "ahmedoraby-eng/engineering-playbook", PUSH, CONFIG, github, run)
-    assert token == MINTED
+    assert token == (MINTED, True)
     method, path, auth, body = github.calls[0]
     assert auth.startswith("Bearer ") and body == {"permissions": PUSH, "repositories": ["engineering-playbook"]}
     with pytest.raises(IdentityError, match="no listed installation for someone"):
@@ -274,8 +274,9 @@ def test_github_errors_never_carry_the_token(key):
 
 def test_yousef_token_is_chosen_by_repo_owner():
     run = keychain({"basita-gh-yousef": "github_pat_ORG", "basita-gh-yousef-public": "ghp_PUBLIC"})
-    assert token_for("yousef", "basitasolutions/basita-ops", READ, CONFIG, run=run) == "github_pat_ORG"
-    assert token_for("yousef", "ahmedoraby-eng/engineering-playbook", READ, CONFIG, run=run) == "ghp_PUBLIC"
+    # His personal tokens are never revoked after a command.
+    assert token_for("yousef", "basitasolutions/basita-ops", READ, CONFIG, run=run) == ("github_pat_ORG", False)
+    assert token_for("yousef", "ahmedoraby-eng/engineering-playbook", READ, CONFIG, run=run) == ("ghp_PUBLIC", False)
     with pytest.raises(IdentityError, match="no token for someone"):
         token_for("yousef", "someone/x", READ, CONFIG, run=run)
 
@@ -291,9 +292,10 @@ def _app_answers(installations, repos):
             {"slug": "basita-malek", "id": 5586450, "permissions": CONFIG["app_permissions"], "events": []},
         ),
         ("GET", "/users/basita-malek%5Bbot%5D"): (200, {}, {"id": 351705446}),
-        ("GET", "/app/installations?per_page=100"): (200, {}, installations),
+        ("GET", "/app/installations?per_page=100&page=1"): (200, {}, installations),
         ("GET", "/installation/repositories?per_page=100"): (200, {}, {"repositories": [{"name": r} for r in repos]}),
     }
+    answers[("DELETE", "/installation/token")] = (204, {}, {})
     for i in installations:
         answers[("POST", f"/app/installations/{i['id']}/access_tokens")] = (
             201,
@@ -332,6 +334,9 @@ def test_gh_check_app_ok_and_flags_an_unknown_installation(key):
     assert MINTED not in text
     token_requests = [c for c in github.calls if c[0] == "POST"]
     assert token_requests == [token_requests[0]] and token_requests[0][3] == {"permissions": {"metadata": "read"}}
+    assert "ok webhook: none" in text  # GitHub's 404 means no webhook
+    revokes = [c for c in github.calls if c[0] == "DELETE"]
+    assert revokes == [("DELETE", "/installation/token", f"token {MINTED}", None)]  # the check token is revoked
 
 
 def test_gh_check_app_fails_on_extra_permissions_missing_installation_and_other_repos(key):
@@ -501,19 +506,203 @@ def test_store_keeps_only_a_key_and_never_prints_it(key, tmp_path, monkeypatch, 
 
     def fake_run(cmd, **_):
         if cmd[0] == "security":
-            stored.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+            assert cmd == ["security", "-i"]  # the value goes on stdin, never in the process list
+            stored.append(_["input"].split())
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         if cmd[0] == "pbpaste":
             return subprocess.CompletedProcess(cmd, 0, "ghp_abc" if _.get("text") else b"", "")
         raise AssertionError(cmd)
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
     assert cli.main(["store", "malek", "--file", str(tmp_path / "k.pem")]) == 0
-    assert stored[-1][:6] == ["security", "add-generic-password", "-U", "-s", "basita-gh-malek-app", "-a"]
-    assert base64.b64decode(stored[-1][-1]) == pem
+    assert stored[-1][:5] == ["add-generic-password", "-U", "-s", "basita-gh-malek-app", "-a"]
+    assert base64.b64decode(stored[-1][-1].strip('"')) == pem
     assert cli.main(["store", "malek", "--file", str(tmp_path / "bad.pem")]) == 1
     assert cli.main(["store", "yousef", "ahmedoraby-eng"]) == 0
-    assert stored[-1][4] == "basita-gh-yousef-public" and stored[-1][-1] == "ghp_abc"
+    assert stored[-1][3] == "basita-gh-yousef-public" and stored[-1][-1] == '"ghp_abc"'
     assert cli.main(["store", "yousef", "basitasolutions"]) == 1  # a classic token is not fine-grained
     out = capsys.readouterr().out
     assert "ghp_abc" not in out and "PRIVATE KEY" not in out and len(stored) == 2
+
+
+# --- Yousef's review of #26 ---------------------------------------------------------------------------
+
+
+def _fill(env, host, protocol="https"):
+    return subprocess.run(
+        ["git", "-c", "credential.helper=", "-c", f"credential.helper={cli.HELPER}", "credential", "fill"],
+        input=f"protocol={protocol}\nhost={host}\npath=a/b.git\n\n",
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_the_credential_helper_answers_only_https_github_com(tmp_path):
+    env = _env(tmp_path, AGENT_GH_TOKEN="agent-token", GIT_TERMINAL_PROMPT="0")
+    assert "password=agent-token" in _fill(env, "github.com").stdout
+    for host, protocol in (("evil.example", "https"), ("github.com.evil.example", "https"), ("github.com", "http")):
+        result = _fill(env, host, protocol)
+        assert "agent-token" not in result.stdout and result.returncode != 0
+
+
+def test_a_remote_with_two_push_urls_is_refused(tmp_path, monkeypatch, capsys):
+    repo = _repo(tmp_path)
+    env = _env(tmp_path, AGENT_GH_DRY_RUN="1")
+    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "--add", "--push", "origin", URL], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "set-url", "--add", "--push", "origin", "https://evil.example/x.git"],
+        check=True,
+        env=env,
+    )
+    bad = subprocess.run(
+        [str(ROOT / "scripts" / "agent-git"), "malek", "push"], cwd=repo, env=env, capture_output=True, text=True
+    )
+    assert bad.returncode == 1 and "has 2 push URLs" in bad.stderr
+
+
+def test_trace_and_config_variables_are_cleared(monkeypatch):
+    for name in (
+        "GIT_TRACE",
+        "GIT_TRACE_CURL",
+        "GIT_TRACE_PACKET",
+        "GIT_TRACE_REDACT",
+        "GIT_CURL_VERBOSE",
+        "GH_DEBUG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GITHUB_TOKEN",
+    ):
+        monkeypatch.setenv(name, "1")
+    monkeypatch.setenv("KEEP_ME", "1")
+    env = cli._env()
+    assert not [k for k in env if k.startswith(("GIT_TRACE", "GIT_CURL", "GH_DEBUG", "GIT_CONFIG", "GITHUB_TOKEN"))]
+    assert env["KEEP_ME"] == "1" and env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+class Revocations:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, method, url, headers, body):
+        self.calls.append((method, url.replace("https://api.github.com", ""), headers["Authorization"]))
+        return 204, {}, ""
+
+
+@pytest.mark.parametrize("command, code", [(["true"], 0), (["false"], 1), (["sh", "-c", "exit 7"], 7)])
+def test_an_app_token_is_revoked_after_the_command_even_when_it_fails(command, code):
+    github = Revocations()
+    assert cli.run_with_token(command, {"PATH": os.environ["PATH"]}, MINTED, True, github) == code
+    assert github.calls == [("DELETE", "/installation/token", f"token {MINTED}")]
+
+
+def test_yousef_token_is_not_revoked_and_a_failed_revoke_is_said(capsys):
+    github = Revocations()
+    assert cli.run_with_token(["true"], {"PATH": os.environ["PATH"]}, "ghp_PUBLIC", False, github) == 0
+    assert github.calls == []
+
+    def refuses(method, url, headers, body):
+        return 401, {}, '{"message": "Bad credentials"}'
+
+    assert cli.run_with_token(["true"], {"PATH": os.environ["PATH"]}, MINTED, True, refuses) == 0
+    err = capsys.readouterr().err
+    assert "could not revoke" in err and MINTED not in err
+
+
+def test_cmd_gh_runs_gh_and_revokes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "token_for", lambda *a, **k: (MINTED, True))
+    monkeypatch.setattr(cli, "_default_repo", lambda: "basitasolutions/basita-ops")
+    monkeypatch.setattr(
+        cli, "run_with_token", lambda cmd, env, token, revocable: calls.append((cmd, env, revocable)) or 3
+    )
+    monkeypatch.delenv("AGENT_GH_DRY_RUN", raising=False)
+    assert cli.cmd_gh("malek", ["pr", "view", "3"]) == 3
+    cmd, env, revocable = calls[0]
+    assert cmd == ["gh", "pr", "view", "3"] and revocable
+    assert env["GH_TOKEN"] == MINTED and env["GH_REPO"] == "basitasolutions/basita-ops"
+
+
+def test_cmd_push_never_pushes_submodules(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.chdir(_repo(tmp_path))
+    monkeypatch.setattr(cli, "token_for", lambda *a, **k: (MINTED, True))
+    monkeypatch.setattr(cli, "run_with_token", lambda cmd, env, token, revocable: calls.append((cmd, env)) or 0)
+    monkeypatch.delenv("AGENT_GH_DRY_RUN", raising=False)
+    assert cli.cmd_push("malek", []) == 0
+    cmd, env = calls[0]
+    assert "push.recurseSubmodules=no" in cmd and cmd[-3:] == ["push", "origin", "HEAD:refs/heads/DFP-1-x"]
+    assert env["AGENT_GH_TOKEN"] == MINTED and MINTED not in " ".join(cmd)
+
+
+@pytest.mark.parametrize(
+    "args, why",
+    [
+        (["pr", "review", "3", "--approve=true"], "Yousef reviews"),
+        (["pr", "review", "3", "-ab", "ok"], "Yousef reviews"),
+        (["pr", "edit", "3", "--base", "dev"], "retargeting"),
+        (["pr", "edit", "3", "-B", "dev"], "retargeting"),
+        (["api", "repos/a/b/issues/3/labels", "-F", "labels[]=@labels.txt"], "from a file"),
+        (["api", "repos/a/b/pulls/3/reviews", "-F", "event=@event.txt"], "from a file"),
+    ],
+)
+def test_review_hardening_refusals(args, why):
+    with pytest.raises(IdentityError, match=why):
+        plan("malek", *args)
+
+
+def test_yousef_only_reads_reviews_and_comments():
+    for args in (
+        ["pr", "review", "3", "--request-changes", "-b", "x"],
+        ["pr", "comment", "3", "-b", "x"],
+        ["issue", "comment", "3", "-b", "x"],
+        ["api", "repos/a/b/pulls/3/reviews", "-f", "event=APPROVE"],
+    ):
+        assert plan("yousef", *args).permissions == PR_WRITE
+    for args in (
+        ["pr", "create", "-t", "x"],
+        ["pr", "edit", "3", "-t", "x"],
+        ["pr", "ready", "3"],
+        ["api", "repos/a/b/pulls", "-f", "title=x"],
+        ["api", "repos/a/b/issues/3/labels", "-f", "labels[]=x"],
+    ):
+        with pytest.raises(IdentityError, match="not on agent-gh's list"):
+            plan("yousef", *args)
+
+
+def test_gh_check_flags_a_webhook_and_pages_installations(key):
+    pem, _ = key
+    first = [{"id": 1000 + i, "account": {"login": f"stranger{i}"}} for i in range(100)]
+    answers = _app_answers([], [])
+    answers[("GET", "/app/installations?per_page=100&page=1")] = (200, {}, first)
+    answers[("GET", "/app/installations?per_page=100&page=2")] = (200, {}, [{"id": 7, "account": {"login": "last"}}])
+    answers[("GET", "/app/hook/config")] = (200, {}, {"url": "https://example.com/hook", "content_type": "json"})
+    run = keychain({"basita-gh-malek-app": base64.b64encode(pem).decode()})
+    lines, code = run_check(CONFIG, ["malek"], FakeGitHub(answers), run)
+    text = "\n".join(lines)
+    assert code == 1 and "FAIL a webhook is configured" in text and "example.com" not in text
+    assert "attention installation 7 on last" in text and text.count("attention installation") == 101
+
+
+def test_gh_check_fails_when_yousef_is_a_collaborator_on_the_playbook():
+    run = keychain({"basita-gh-yousef-public": "ghp_PUBLIC"})
+    headers = {"github-authentication-token-expiration": "2027-10-31 00:00:00 UTC", "x-oauth-scopes": "public_repo"}
+    repos = [
+        {
+            "full_name": "ahmedoraby-eng/engineering-playbook",
+            "owner": {"login": "ahmedoraby-eng"},
+            "permissions": {"push": True},
+        }
+    ]
+    github = FakeGitHub(
+        {
+            ("GET", "/user"): (200, headers, {"login": "basita-yousef"}),
+            ("GET", "/user/repos?per_page=100"): (200, {}, repos),
+        }
+    )
+    config = {**CONFIG, "agents": {"yousef": {**CONFIG["agents"]["yousef"]}}}
+    config["agents"]["yousef"]["tokens"] = {"ahmedoraby-eng": CONFIG["agents"]["yousef"]["tokens"]["ahmedoraby-eng"]}
+    lines, code = run_check(config, ["yousef"], github, run, today=dt.date(2026, 11, 3))
+    assert code == 1 and "ahmedoraby-eng/engineering-playbook (push)" in "\n".join(lines)

@@ -31,8 +31,10 @@ READS = {
 }
 WRITES = {
     "pr": {"create", "edit", "comment", "review", "ready"},
-    "issue": {"comment"},
+    "issue": {"comment"},  # the Apps have no issues permission, so this works on pull requests only
 }
+# A user agent (Yousef) reviews: reads, reviews and comments only.
+USER_WRITES = {"pr": {"review", "comment"}, "issue": {"comment"}}
 WHY = {
     ("pr", "merge"): "merging is Ahmed's",
     ("pr", "close"): "closing a pull request is Ahmed's",
@@ -116,18 +118,21 @@ API_VALUE_FLAGS = {
     "--preview",
 }
 API_FIELD_FLAGS = {"-f", "--raw-field", "-F", "--field"}
-# Write calls an agent may make through `gh api`. Everything else that writes is refused.
+# Write calls an agent may make through `gh api`, and whether a user agent (Yousef) may too.
+# Everything else that writes is refused.
 API_WRITES = [
-    ("POST", re.compile(r"^repos/[^/]+/[^/]+/issues/\d+/comments$")),
-    ("PATCH", re.compile(r"^repos/[^/]+/[^/]+/issues/comments/\d+$")),
-    ("POST", re.compile(r"^repos/[^/]+/[^/]+/issues/\d+/labels$")),
-    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls$")),
-    ("PATCH", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+$")),
-    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+/comments$")),
-    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+/comments/\d+/replies$")),
-    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+/reviews$")),
-    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+/requested_reviewers$")),
+    ("POST", re.compile(r"^repos/[^/]+/[^/]+/issues/\d+/comments$"), True),
+    ("PATCH", re.compile(r"^repos/[^/]+/[^/]+/issues/comments/\d+$"), True),
+    ("POST", re.compile(r"^repos/[^/]+/[^/]+/issues/\d+/labels$"), False),
+    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls$"), False),
+    ("PATCH", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+$"), False),
+    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+/comments$"), True),
+    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+/comments/\d+/replies$"), True),
+    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+/reviews$"), True),
+    ("POST", re.compile(r"^repos/[^/]+/[^/]+/pulls/\d+/requested_reviewers$"), False),
 ]
+# Fields whose value must be visible to be checked, so gh may not read them from a file (key=@file).
+CHECKED_FIELDS = ("labels", "state", "base", "event")
 PUSH_FLAGS = {
     "-u",
     "--set-upstream",
@@ -215,6 +220,11 @@ def _check_labels(values: list[str], ahmed_only: list[str]) -> None:
                 raise _refuse(f"the label {label} is set only by Ahmed")
 
 
+def _approves(args: list[str]) -> bool:
+    """--approve in any spelling, including --approve=true and a short cluster such as -ab."""
+    return any(a.startswith("--approve") or (re.fullmatch(r"-[A-Za-z]+", a) and "a" in a[1:]) for a in args)
+
+
 def repo_from_remote(url: str) -> str:
     match = REMOTE.match(url.strip())
     if not match:
@@ -239,15 +249,18 @@ def plan_gh(agent: str, entry: dict, args: list[str], default_repo: str | None, 
         return _plan_api(agent, entry, rest, default_repo, config)
     if "--delete-branch" in rest:
         raise _refuse("deleting a branch")
-    if sub in WRITES.get(command, set()):
+    writes = USER_WRITES if entry["kind"] == "user" else WRITES
+    if sub in writes.get(command, set()):
         permissions = PR_WRITE
     elif sub in READS.get(command, set()):
         permissions = READ
     else:
         raise _refuse(f"`gh {command} {sub}`".replace(" `", "`") + " is not on agent-gh's list")
     _check_labels(_flag_values(rest, LABEL_FLAGS), config.get("ahmed_only_labels", []))
-    if command == "pr" and sub == "review" and entry["kind"] == "app" and {"-a", "--approve"} & set(rest):
+    if command == "pr" and sub == "review" and entry["kind"] == "app" and _approves(rest[1:]):
         raise _refuse("an App does not approve pull requests; Yousef reviews")
+    if command == "pr" and sub == "edit" and _flag_values(rest, {"-B", "--base"}):
+        raise _refuse("retargeting a pull request; open a new one instead")
     repo = _repo_of(rest[1:], default_repo)
     return Plan(repo, permissions, args)
 
@@ -300,8 +313,11 @@ def _plan_api(agent: str, entry: dict, rest: list[str], default_repo: str | None
         return Plan(repo, READ, ["api", *rest])
     if method == "DELETE":
         raise _refuse("deleting on GitHub")
-    if not any(method == m and pattern.match(path) for m, pattern in API_WRITES):
-        raise _refuse(f"{method} {path} is not on agent-gh's list of writes")
+    user = entry["kind"] == "user"
+    if not any(method == m and pattern.match(path) and (ok or not user) for m, pattern, ok in API_WRITES):
+        raise _refuse(f"{method} {path} is not on agent-gh's list of writes for {agent}")
+    if any(f.split("=", 1)[0].startswith(CHECKED_FIELDS) and f.partition("=")[2].startswith("@") for f in fields):
+        raise _refuse("a labels, state, base or event field read from a file; pass the value itself")
     if re.search(r"/pulls/\d+$", path) and any(re.match(r"^(state|base)=", f) for f in fields):
         raise _refuse("closing or retargeting a pull request through the API")
     if path.endswith("/reviews") and entry["kind"] == "app" and any(f.upper() == "EVENT=APPROVE" for f in fields):

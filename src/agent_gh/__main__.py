@@ -7,8 +7,9 @@
     python -m agent_gh bot-email <agent>
 
 The token goes only into the environment of the one gh or git process that needs it (GH_TOKEN, or a
-one-command credential helper for git). It is never printed, and gh's own login is never touched.
-AGENT_GH_DRY_RUN=1 prints what would run, and mints nothing.
+one-command credential helper for git), and an App's token is revoked as soon as that process ends,
+whatever its exit code. It is never printed, and gh's own login is never touched. Trace variables that
+could log it are cleared. AGENT_GH_DRY_RUN=1 prints what would run, and mints nothing.
 """
 
 from __future__ import annotations
@@ -21,12 +22,29 @@ import sys
 from pathlib import Path
 
 from .check import run_check
-from .identity import IdentityError, agent_entry, bot_email, load_config, token_for
+from .identity import IdentityError, agent_entry, bot_email, load_config, revoke_installation_token, token_for
 from .policy import Plan, plan_gh, plan_push, repo_from_remote
 
-# Answers git's `get` with the token from this process's environment, and stores nothing.
-HELPER = '!f() { test "$1" = get && printf "username=x-access-token\\npassword=%s\\n" "$AGENT_GH_TOKEN"; }; f'
+# Answers git's `get` with the token from this process's environment, only for https://github.com, and
+# stores nothing. git sends the request as key=value lines on stdin.
+HELPER = (
+    '!f() { test "$1" = get || return 0; p=; h=; while IFS= read -r l; do [ -z "$l" ] && break; '
+    'case "$l" in protocol=*) p="${l#protocol=}";; host=*) h="${l#host=}";; esac; done; '
+    '[ "$p" = https ] && [ "$h" = github.com ] && '
+    'printf "username=x-access-token\\npassword=%s\\n" "$AGENT_GH_TOKEN"; return 0; }; f'
+)
+GH = "gh"
 CLEARED = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS")
+# Anything that could log the token or slip config in front of git's -c options.
+CLEARED_PREFIXES = (
+    "GIT_TRACE",
+    "GIT_CURL_VERBOSE",
+    "GH_DEBUG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+)
 
 
 def _git(*args: str) -> str:
@@ -45,7 +63,7 @@ def _default_repo() -> str | None:
 
 
 def _env() -> dict:
-    env = {k: v for k, v in os.environ.items() if k not in CLEARED}
+    env = {k: v for k, v in os.environ.items() if k not in CLEARED and not k.startswith(CLEARED_PREFIXES)}
     env.update({"GH_HOST": "github.com", "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"})
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
@@ -57,19 +75,29 @@ def _dry_run(agent: str, tool: str, plan: Plan) -> int:
     return 0
 
 
+def run_with_token(command: list[str], env: dict, token: str, revocable: bool, transport=None) -> int:
+    """Runs the one command, then revokes an App token at once, even when the command failed."""
+    try:
+        return subprocess.run(command, env=env).returncode
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        if revocable:
+            ok = revoke_installation_token(token, transport) if transport else revoke_installation_token(token)
+            if not ok:
+                print("agent-gh: could not revoke the token; it expires within the hour", file=sys.stderr)
+
+
 def cmd_gh(agent: str, args: list[str]) -> int:
     config = load_config()
     entry = agent_entry(config, agent)
     plan = plan_gh(agent, entry, args, _default_repo(), config)
     if os.environ.get("AGENT_GH_DRY_RUN"):
         return _dry_run(agent, "gh", plan)
-    token = token_for(agent, plan.repo, plan.permissions, config)
+    token, revocable = token_for(agent, plan.repo, plan.permissions, config)
     env = _env()
     env.update({"GH_TOKEN": token, "GH_REPO": plan.repo})
-    del token
-    gh = os.environ.get("AGENT_GH_GH_BIN", "gh")
-    os.execvpe(gh, [gh, *plan.args], env)
-    return 0  # not reached
+    return run_with_token([GH, *plan.args], env, token, revocable)
 
 
 def cmd_push(agent: str, args: list[str]) -> int:
@@ -79,27 +107,33 @@ def cmd_push(agent: str, args: list[str]) -> int:
         raise IdentityError(f"refused: {entry.get('login', agent)} reviews and doesn't push")
     positionals = [a for a in args if not a.startswith("-")]
     remote = positionals[0] if positionals else "origin"
-    remote_url = remote if "://" in remote or remote.startswith("git@") else _git("remote", "get-url", "--push", remote)
-    if not remote_url:
-        raise IdentityError(f"no git remote '{remote}' here")
+    if "://" in remote or remote.startswith("git@"):
+        remote_url = remote
+    else:
+        # git pushes to every push URL of a remote, so there must be exactly one, and it is the one checked.
+        urls = _git("remote", "get-url", "--push", "--all", remote).splitlines()
+        if not urls:
+            raise IdentityError(f"no git remote '{remote}' here")
+        if len(urls) > 1:
+            raise IdentityError(f"refused: the remote {remote} has {len(urls)} push URLs; agent-git pushes to one")
+        remote_url = urls[0]
     branch = _git("symbolic-ref", "--short", "-q", "HEAD") or None
     plan = plan_push(args, branch, remote_url, config)
     if os.environ.get("AGENT_GH_DRY_RUN"):
         return _dry_run(agent, "push", plan)
-    token = token_for(agent, plan.repo, plan.permissions, config)
+    token, revocable = token_for(agent, plan.repo, plan.permissions, config)
     env = _env()
     env["AGENT_GH_TOKEN"] = token
-    del token
     git = [
         "git",
         "-c", "credential.helper=",  # drops every helper set before, including gh's and the Keychain's
         "-c", f"credential.helper={HELPER}",
         "-c", "url.https://github.com/.pushInsteadOf=git@github.com:",
         "-c", "url.https://github.com/.pushInsteadOf=ssh://git@github.com/",
+        "-c", "push.recurseSubmodules=no",  # submodules would be pushed to their own remotes with this token
         "push", *plan.args,
     ]  # fmt: skip
-    os.execvpe("git", git, env)
-    return 0  # not reached
+    return run_with_token(git, env, token, revocable)
 
 
 def cmd_store(agent: str, args: list[str]) -> int:
@@ -131,11 +165,15 @@ def cmd_store(agent: str, args: list[str]) -> int:
         if not value.startswith(prefix) or re.search(r"\s", value):
             print(f"Not a {token_entry.get('type')} token (starts with {prefix}): nothing stored in {service}")
             return 1
+    # Through `security -i` on stdin, so the value never appears in the process list.
     result = subprocess.run(
-        ["security", "add-generic-password", "-U", "-s", service, "-a", "basita", "-w", value], capture_output=True
+        ["security", "-i"],
+        input=f'add-generic-password -U -s {service} -a basita -w "{value}"\n',
+        capture_output=True,
+        text=True,
     )
     del value
-    if result.returncode != 0:
+    if result.returncode != 0 or (result.stderr or "").strip():
         print(f"FAIL the Keychain refused {service}")
         return 1
     print(f"stored {service}. Clear the clipboard (pbcopy </dev/null), then run scripts/gh-check {agent}")

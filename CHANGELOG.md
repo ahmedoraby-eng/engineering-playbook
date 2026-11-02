@@ -9,6 +9,7 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 - `scripts/agent-git <agent> push`: pushes with the App's `contents:write` token through a one-command credential helper that replaces the Mac's own login. Never to main or master, never forced, deleting, bulk or tags.
 - `scripts/gh-check [agent]`: read-only. Login, App permissions, bot id, installations (an unlisted one is an attention line), the repos each reaches, and Yousef's token expiry (attention 14 days before). Never prints a token.
 - `scripts/gh-store <agent>`: stores an App key or one of Yousef's tokens in the Keychain, only if it has the right shape.
+- After Yousef's review: an App's token is revoked as soon as its command ends, even after a failure; the git credential helper answers only `https://github.com`; a remote needs exactly one push URL; submodules are never pushed; trace and `GIT_CONFIG_*` variables are cleared; Yousef gets reads, reviews and comments only; `gh-check` checks the webhook is off, pages installations, and fails if Yousef has push anywhere; `gh-store` passes the secret on stdin (BASITA-149).
 
 ### Changed
 - `agent-git <agent> commit` uses the App's bot address (`<bot id>+basita-<agent>[bot]@users.noreply.github.com`) for Malek, Haya and Salma, so GitHub links the commit to the bot. `AGENT_GIT_LEGACY_EMAIL=1` goes back to `<agent>@basitasolutions.com` (BASITA-149).
