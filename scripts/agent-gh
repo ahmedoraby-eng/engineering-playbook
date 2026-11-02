@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Run gh as a named agent's own GitHub identity (an App's 1-hour token, or Yousef's token).
+#
+#   agent-gh malek pr create --title "DFP-1: x" --body-file pr.md
+#   agent-gh yousef pr review 12 --approve --body "..."
+#
+# Mints a token for the one repository and the permissions the command needs, and gives it only to that
+# gh process. Refuses merging, deletes, settings, secrets and the labels only Ahmed sets. See standards/06-agent-identity.md.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m agent_gh gh "$@"

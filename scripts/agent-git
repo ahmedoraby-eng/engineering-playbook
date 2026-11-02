@@ -5,7 +5,11 @@
 #   agent-git malek commit -m "DFP-123: fix the plan total"
 #
 # Sets author and committer to "<Name> (Basita AI) <name@domain>" for this one command only
-# (no shared git config, so parallel sessions in one checkout don't clash). On `commit` it
+# (no shared git config, so parallel sessions in one checkout don't clash). An agent with a GitHub App
+# (config/github-identities.json) uses the App's bot address instead, <bot id>+basita-<agent>[bot]@users.noreply.github.com,
+# so GitHub links the commit to the bot; AGENT_GIT_LEGACY_EMAIL=1 goes back to name@domain.
+# `agent-git <agent> push ...` pushes with that App's 1-hour token (never to main, never forced or
+# deleting; see src/agent_gh/policy.py), not with the Mac's own GitHub login. On `commit` it
 # also adds the trailers that the agent-attribution check reads:
 #   Agent: Malek
 #   Requested-by: <the human the agent works for>
@@ -32,6 +36,26 @@ esac
 display="$(printf '%s' "${agent:0:1}" | tr '[:lower:]' '[:upper:]')${agent:1}"
 name="$display (Basita AI)"
 email="$agent@${BASITA_AGENT_DOMAIN:-basitasolutions.com}"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agent_gh() { PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m agent_gh "$@"; }
+
+if [ "$1" = "push" ]; then
+  shift
+  agent_gh push "$agent" "$@"
+  exit $?
+fi
+# A push hidden behind git options (agent-git malek -C x push) would use the Mac's own login.
+if [ "${1#-}" != "$1" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = "push" ]; then
+      echo "agent-git: put push first (cd into the repository): agent-git $agent push ..." >&2
+      exit 2
+    fi
+  done
+fi
+if [ -z "${AGENT_GIT_LEGACY_EMAIL:-}" ] && bot="$(agent_gh bot-email "$agent" 2>/dev/null)" && [ -n "$bot" ]; then
+  email="$bot"
+fi
 
 if [ "$1" = "commit" ]; then
   shift

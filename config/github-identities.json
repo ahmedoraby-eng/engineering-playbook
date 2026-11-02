@@ -1,0 +1,52 @@
+{
+  "_comment": "GitHub identities of Basita's code-writing agents (BASITA-149). No secrets: the private keys and tokens are in the macOS Keychain, account 'basita', under the names in 'keychain'. See standards/06-agent-identity.md.",
+  "attribution": "warn",
+  "ahmed_only_labels": ["reviewed-by-ahmed", "human-reviewed"],
+  "protected_branches": ["main", "master"],
+  "app_permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
+  "agents": {
+    "malek": {
+      "kind": "app",
+      "slug": "basita-malek",
+      "app_id": 5586450,
+      "client_id": "Iv23lixrAyMveN8xvGIK",
+      "bot_id": 351705446,
+      "keychain": "basita-gh-malek-app",
+      "installations": {
+        "basitasolutions": {"id": 177981619, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
+        "ahmedoraby-eng": {"id": 177982765, "repos": ["engineering-playbook"]}
+      }
+    },
+    "haya": {
+      "kind": "app",
+      "slug": "basita-haya",
+      "app_id": 5586509,
+      "client_id": "Iv23lilUPyDFpb9xrvRG",
+      "bot_id": 351706579,
+      "keychain": "basita-gh-haya-app",
+      "installations": {
+        "basitasolutions": {"id": 177982074, "repos": ["elbayoumy-farm-nutrition-platform"]}
+      }
+    },
+    "salma": {
+      "kind": "app",
+      "slug": "basita-salma",
+      "app_id": 5586535,
+      "client_id": "Iv23liIFJsD9Ub2uKUkh",
+      "bot_id": 351707078,
+      "keychain": "basita-gh-salma-app",
+      "installations": {
+        "basitasolutions": {"id": 177982412, "repos": ["elbayoumy-farm-nutrition-platform"]}
+      }
+    },
+    "yousef": {
+      "kind": "user",
+      "login": "basita-yousef",
+      "user_id": 351697344,
+      "tokens": {
+        "basitasolutions": {"keychain": "basita-gh-yousef", "type": "fine-grained"},
+        "ahmedoraby-eng": {"keychain": "basita-gh-yousef-public", "type": "classic", "scopes": ["public_repo"]}
+      }
+    }
+  }
+}

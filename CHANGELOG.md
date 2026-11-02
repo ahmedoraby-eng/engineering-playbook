@@ -2,6 +2,18 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## 2026-11-03
+
+### Added
+- GitHub identities for the agents that write code (BASITA-149). `config/github-identities.json` lists, without secrets, the Apps of Malek, Haya and Salma (App id, installations, bot id) and Yousef's user. `scripts/agent-gh <agent> <gh args>` runs gh with a token for that command only: an App's 1-hour installation token for the one repository, read-only for reads and `pull_requests:write` with `contents:read` for pull request writes, so it cannot merge or push. Yousef's token is chosen by the repository owner. It refuses merging, closing, deletes, settings, secrets, workflows, `gh auth`, App approvals and the labels only Ahmed sets.
+- `scripts/agent-git <agent> push`: pushes with the App's `contents:write` token through a one-command credential helper that replaces the Mac's own login. Never to main or master, never forced, deleting, bulk or tags.
+- `scripts/gh-check [agent]`: read-only. Login, App permissions, bot id, installations (an unlisted one is an attention line), the repos each reaches, and Yousef's token expiry (attention 14 days before). Never prints a token.
+- `scripts/gh-store <agent>`: stores an App key or one of Yousef's tokens in the Keychain, only if it has the right shape.
+
+### Changed
+- `agent-git <agent> commit` uses the App's bot address (`<bot id>+basita-<agent>[bot]@users.noreply.github.com`) for Malek, Haya and Salma, so GitHub links the commit to the bot. `AGENT_GIT_LEGACY_EMAIL=1` goes back to `<agent>@basitasolutions.com` (BASITA-149).
+- agent-attribution maps the Apps' bots to their agents (from `config/github-identities.json`, so the reusable workflow is unchanged): a bot commit needs the matching `Agent:` trailer, and a pull request opened by a bot must not name another agent. These are warnings while `"attribution"` is `"warn"`, errors once it is `"fail"`. Other bots are still skipped (BASITA-149).
+
 ## 2026-11-02
 
 ### Added
