@@ -414,6 +414,11 @@ class AtlClient:
         status = data["fields"]["status"]
         return {"name": status["name"], "category": status["statusCategory"]["key"]}
 
+    def jira_transitions(self, issue: str) -> list[dict]:
+        """The moves Jira offers on the issue now, as {"to": status name, "global": bool}. Needs read:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions")
+        return [{"to": t["to"]["name"], "global": bool(t.get("isGlobal"))} for t in data.get("transitions", [])]
+
     def jira_get(self, issue: str) -> dict:
         """An issue's fields, comments and linked issues, read as this agent. Only makes GET calls.
         `assigned_to_reader` comes from a currentUser() search, which shows whose token this is, since these
