@@ -863,6 +863,9 @@ def _changelog(*changes):
 FLOW_CASES = [
     ("malek", "submit", "In Development", "Ready for Testing", SALMA_ACCOUNT),
     ("haya", "submit", "In Development", "Ready for Testing", SALMA_ACCOUNT),
+    # BASITA-147: the leads who take DFP work that isn't code hand it to Salma the same way.
+    ("nora", "submit", "In Development", "Ready for Testing", SALMA_ACCOUNT),
+    ("sherif", "submit", "In Development", "Ready for Testing", SALMA_ACCOUNT),
     ("salma", "pass", "In Testing", "Ready for Acceptance", ADAM_ACCOUNT),
     ("adam", "accept", "Ready for Acceptance", "Ready for Release", AHMED_ACCOUNT),
 ]
@@ -919,9 +922,36 @@ def test_flow_reads_every_page_of_the_history():
     assert "startAt=1" in transport.calls[2][1] and transport.calls[4][3] == {"accountId": HAYA_ID}
 
 
-def test_flow_with_no_engineer_in_the_history_changes_nothing():
+def test_maya_submits_through_sherifs_user():
+    transport = FakeTransport(
+        _status_issue("In Development", "indeterminate"),
+        _to(("Ready for Testing", "indeterminate")),
+        (204, ""),
+        (204, ""),
+    )
+    maya = AtlClient("maya", CLOUD, TOKEN, transport=transport, via="sherif")
+    assert maya.jira_flow("DFP-1", "submit") == "Ready for Testing"
+    assert transport.calls[2][3] == {"accountId": SALMA_ACCOUNT}
+
+
+@pytest.mark.parametrize("action, start", [("fail", "In Testing"), ("reject", "Ready for Acceptance")])
+def test_flow_goes_back_to_the_lead_who_submitted_it(action, start):
+    nora = JIRA_ACCOUNTS["nora"]
+    transport = FakeTransport(
+        _status_issue(start, "indeterminate"),
+        _changelog(("x", MALEK_ID), (MALEK_ID, nora), (nora, SALMA_ACCOUNT), (SALMA_ACCOUNT, ADAM_ACCOUNT)),
+        _to(("Ready for Development", "new")),
+        (204, ""),
+        (204, ""),
+    )
+    agent = "salma" if action == "fail" else "adam"
+    client(transport, agent).jira_flow("DFP-1", action)
+    assert transport.calls[3][3] == {"accountId": nora}
+
+
+def test_flow_with_no_one_who_works_dfp_in_the_history_changes_nothing():
     transport = FakeTransport(_status_issue("In Testing", "indeterminate"), _changelog(("x", SALMA_ACCOUNT)))
-    with pytest.raises(AtlError, match="no engineer"):
+    with pytest.raises(AtlError, match="no one who works DFP issues"):
         client(transport, "salma").jira_flow("DFP-1", "fail")
     assert all(call[0] == "GET" for call in transport.calls)
 

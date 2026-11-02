@@ -25,6 +25,7 @@ from .client import (
     FLOW,
     JIRA_ACCOUNTS,
     LAST_ENGINEER,
+    SUBMITTERS,
     AtlClient,
     AtlError,
     default_cloud_id,
@@ -60,9 +61,9 @@ OTHER_STEPS = {
         "to": BUG_DIRECT_STATUS,
         "assign": "Malek or Haya (--assignee)",
     },
-    "start (engineer)": {
+    "start (work)": {
         "command": "jira-start",
-        "agents": ("malek", "haya"),
+        "agents": SUBMITTERS,
         "from": "Ready for Development",
         "to": "In Development",
         "assign": "same",
@@ -108,7 +109,7 @@ def _who(agents: tuple[str, ...]) -> str:
 
 
 def _next(assign: str) -> str:
-    return "the last engineer" if assign == LAST_ENGINEER else _NAMES.get(assign, assign)
+    return "whoever last worked it" if assign == LAST_ENGINEER else _NAMES.get(assign, assign)
 
 
 def _steps() -> list[dict]:
