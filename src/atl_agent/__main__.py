@@ -29,11 +29,12 @@ description and unassigned unless --assignee says otherwise.
 `jira-edit <KEY>` changes the fields named by its options in one request, as the agent's own user (BASITA-169):
 labels and Fix Versions are added, removed or set as a whole list (comma-separated; "" empties it); the labels only
 Ahmed sets (reviewed-by-ahmed, human-reviewed, needs-ahmed, jira-status-waived, any case) are refused in every form,
-and a whole list must keep them as they are. `--assignee` takes a name with a Jira seat or `none`, for the agents that
-assign; `--description` replaces the description and signs it (`-` reads stdin); `--due-date` takes YYYY-MM-DD or
-`none`. `jira-link <KEY> <KEY> --type T` links two issues so that the first one "<T>" the second: T is a link type's
-name or phrase (relates to, blocks, is blocked by, duplicates, clones; default relates to). It reads the link back and
-prints what Jira recorded.
+and a whole list must keep them exactly as they are, case included. Issues are in BASITA, DFP or ELB. `--assignee`
+takes a name with a Jira seat or `none`, for the agents that assign; `--description` replaces the description and
+signs it (`-` reads stdin); `--due-date` takes YYYY-MM-DD or `none`. `jira-link <KEY> <KEY> --type T` links two
+issues so that the first one "<T>" the second: T is a link type's name or phrase (relates to, blocks, is blocked by,
+duplicates, clones; default relates to). It reads the link back and prints what this call recorded, compared with the
+links there before.
 `jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject): the table in
 client.py gives who may, the next status and the next assignee. The read commands print
 JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a

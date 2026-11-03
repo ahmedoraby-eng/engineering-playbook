@@ -206,7 +206,8 @@ JIRA_ACCOUNTS = {
     "yamen": "712020:135e8ec3-e174-46bf-b4fb-65de538cff2d",
     "abdelrahman": "712020:6f47dac6-82b6-4fd4-bd86-da7394ffa87d",
 }
-# Labels only Ahmed sets or removes, compared without case. jira-status-waived lets a PR past elbayoumy's Jira status
+# Labels only Ahmed sets or removes, refused in any case; a whole label list must keep them exactly, case included
+# (BASITA-169). jira-status-waived lets a PR past elbayoumy's Jira status
 # check (BASITA-168).
 AHMED_ONLY_LABELS = ("reviewed-by-ahmed", "human-reviewed", "needs-ahmed", "jira-status-waived")
 PRIORITIES = ("Highest", "High", "Medium", "Low", "Lowest")
@@ -253,6 +254,14 @@ def _check_label(label: str, action: str = "set") -> None:
     """An agent's label: one word, and never one only Ahmed sets."""
     if not label or re.search(r"\s", label) or _ahmed_only(label):
         raise AtlError(f"an agent does not {action} the label '{label}'")
+
+
+def _check_issue(key: str) -> None:
+    """An issue an agent edits or links: a key in one of the projects agents create in."""
+    if not ISSUE_KEY.match(key):
+        raise AtlError(f"'{key}' is not an issue key")
+    if key.split("-")[0] not in CREATE_PROJECTS:
+        raise AtlError(f"'{key}' is not in a project an agent edits (known: {', '.join(CREATE_PROJECTS)})")
 
 
 def _names(values, what: str) -> list[str]:
@@ -456,12 +465,12 @@ class AtlClient:
 
         Labels and Fix Versions can be added, removed, or set as a whole list (not both at once). The labels only
         Ahmed sets (AHMED_ONLY_LABELS, any case) are refused in every form: added, removed, or set. A whole list may
-        only keep the issue's Ahmed-only labels exactly as they are. `assignee` is a name with a Jira seat, or `none`
+        only keep the issue's Ahmed-only labels exactly as they are, case included. The issue is in BASITA, DFP or ELB
+        (CREATE_PROJECTS). `assignee` is a name with a Jira seat, or `none`
         to unassign; only the agents that assign on create may. `duedate` is YYYY-MM-DD or `none`. Every value is
         checked before any call; setting a whole label list first reads the issue's labels. Never deletes anything.
         Needs read:jira-work and write:jira-work."""
-        if not ISSUE_KEY.match(issue):
-            raise AtlError(f"'{issue}' is not an issue key")
+        _check_issue(issue)
         fields: dict = {}
         update: dict = {}
         changes: list[str] = []
@@ -543,8 +552,9 @@ class AtlClient:
         if set_labels is not None:
             data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=labels")
             current = data["fields"].get("labels") or []
-            kept = sorted(x.lower() for x in new if _ahmed_only(x))
-            had = sorted(x.lower() for x in current if _ahmed_only(x))
+            # Exactly, case included: NEEDS-AHMED for needs-ahmed would replace the label Ahmed set.
+            kept = sorted(x for x in new if _ahmed_only(x))
+            had = sorted(x for x in current if _ahmed_only(x))
             if kept != had:
                 raise AtlError(
                     f"the new label list would change the labels only Ahmed sets ({', '.join(had) or 'none'} now); "
@@ -563,12 +573,12 @@ class AtlClient:
     def jira_link_typed(self, issue: str, other: str, link_type: str = "Relates") -> str:
         """Link two issues so that `issue <relation> other` reads as asked, and return the relation as Jira now
         shows it on `issue`. `link_type` is a link type's name (Blocks), its outward phrase (blocks) or its inward
-        phrase (is blocked by), without case; an inward phrase reverses the two issues. The link is read back from
-        Jira, so the result shows what Jira recorded, and an error says so if it reads the other way.
+        phrase (is blocked by), without case; an inward phrase reverses the two issues. Both issues are in BASITA, DFP
+        or ELB. The issue's links are read before and after the call, so the result shows what this call recorded
+        (or the same link, already there), and an error says so if it reads the other way.
         Needs read:jira-work and write:jira-work."""
         for key in (issue, other):
-            if not ISSUE_KEY.match(key):
-                raise AtlError(f"'{key}' is not an issue key")
+            _check_issue(key)
         if issue == other:
             raise AtlError("an issue is not linked to itself")
         wanted = link_type.strip().lower()
@@ -588,18 +598,14 @@ class AtlClient:
         # Jira reads a link as "inwardIssue <outward phrase> outwardIssue": {"inwardIssue": A, "outwardIssue": B}
         # with Blocks shows "A blocks B". The read-back below checks it.
         link = {"type": {"name": chosen["name"]}, "inwardIssue": {"key": subject}, "outwardIssue": {"key": target}}
+        # The links already there are read first, so a link recorded backwards is caught even when the right one
+        # existed before this call.
+        before = self._links_to(issue, other, chosen["name"])
         self._call("POST", "jira", "/rest/api/3/issueLink", link)
         expected = chosen["inward"] if reverse else chosen["outward"]
-        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=issuelinks")["fields"]
-        seen = []
-        for found in data.get("issuelinks", []):
-            if found.get("type", {}).get("name") != chosen["name"]:
-                continue
-            outward = "outwardIssue" in found
-            if (found["outwardIssue"] if outward else found["inwardIssue"])["key"] != other:
-                continue
-            seen.append(found["type"]["outward" if outward else "inward"])
-        if expected in seen:
+        after = self._links_to(issue, other, chosen["name"])
+        seen = [relation for relation in after if relation not in before]
+        if expected in seen or (not seen and expected in before):
             return expected
         if seen:
             raise AtlError(
@@ -607,6 +613,19 @@ class AtlClient:
                 "tell Talia, who has it corrected by hand (atl never deletes a link)"
             )
         raise AtlError(f"the link was sent, but {issue} does not show a {chosen['name']} link to {other} yet")
+
+    def _links_to(self, issue: str, other: str, type_name: str) -> list[str]:
+        """How `issue` shows its links of `type_name` to `other`: the phrases, e.g. ["blocks"]."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=issuelinks")["fields"]
+        relations = []
+        for found in data.get("issuelinks", []):
+            if found.get("type", {}).get("name") != type_name:
+                continue
+            outward = "outwardIssue" in found
+            if (found["outwardIssue"] if outward else found["inwardIssue"])["key"] != other:
+                continue
+            relations.append(found["type"]["outward" if outward else "inward"])
+        return relations
 
     def jira_status(self, issue: str) -> dict:
         """The issue's status: {"name": ..., "category": "new" | "indeterminate" | "done"}.
