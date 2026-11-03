@@ -1,15 +1,17 @@
 {
-  "_comment": "GitHub identities of Basita's code-writing agents (BASITA-149). No secrets: the private keys and tokens are in the macOS Keychain, account 'basita', under the names in 'keychain'. See standards/06-agent-identity.md.",
+  "_comment": "GitHub identities of Basita's agents (BASITA-149, BASITA-157). No secrets: the private keys and tokens are in the macOS Keychain, account 'basita', under the names in 'keychain'. An App whose app_id is null is pending: Ahmed creates it with scripts/gh-app-new (setup S2), and until then agent-gh and agent-git refuse it. See standards/06-agent-identity.md.",
   "attribution": "warn",
   "ahmed_only_labels": ["reviewed-by-ahmed", "human-reviewed"],
   "protected_branches": ["main", "master"],
   "_protected_prefixes": "basita-ops sync.sh merges claude/* branches into main by itself, so an App must not push one",
   "protected_prefixes": ["claude/"],
+  "_branch_prefix": "an App with a branch_prefix pushes only to branches that start with it (BASITA-157)",
   "app_permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
   "agents": {
     "malek": {
       "kind": "app",
       "slug": "basita-malek",
+      "branch_prefix": "malek/",
       "app_id": 5586450,
       "client_id": "Iv23lixrAyMveN8xvGIK",
       "bot_id": 351705446,
@@ -17,38 +19,131 @@
       "installations": {
         "basitasolutions": {"id": 177981619, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
         "ahmedoraby-eng": {"id": 177982765, "repos": ["engineering-playbook"]}
-      }
+      },
+      "manifest": {"name": "basita-malek", "public": true, "description": "Malek (Basita AI): code, pull requests and pushes to malek/* branches"}
     },
     "haya": {
       "kind": "app",
       "slug": "basita-haya",
+      "branch_prefix": "haya/",
       "app_id": 5586509,
       "client_id": "Iv23lilUPyDFpb9xrvRG",
       "bot_id": 351706579,
       "keychain": "basita-gh-haya-app",
       "installations": {
         "basitasolutions": {"id": 177982074, "repos": ["elbayoumy-farm-nutrition-platform"]}
-      }
+      },
+      "manifest": {"name": "basita-haya", "public": false, "description": "Haya (Basita AI): front-end code, pull requests and pushes to haya/* branches"}
     },
     "salma": {
       "kind": "app",
       "slug": "basita-salma",
+      "branch_prefix": "salma/",
       "app_id": 5586535,
       "client_id": "Iv23liIFJsD9Ub2uKUkh",
       "bot_id": 351707078,
       "keychain": "basita-gh-salma-app",
       "installations": {
         "basitasolutions": {"id": 177982412, "repos": ["elbayoumy-farm-nutrition-platform"]}
-      }
+      },
+      "manifest": {"name": "basita-salma", "public": false, "description": "Salma (Basita AI): test code, pull requests and pushes to salma/* branches"}
     },
     "yousef": {
       "kind": "user",
       "login": "basita-yousef",
       "user_id": 351697344,
+      "_push_app": "his documents: agent-git yousef push and agent-gh yousef pr create|edit use this App; reviews and comments keep his user token",
+      "push_app": "yousef-docs",
       "tokens": {
         "basitasolutions": {"keychain": "basita-gh-yousef", "type": "fine-grained"},
         "ahmedoraby-eng": {"keychain": "basita-gh-yousef-public", "type": "classic", "scopes": ["public_repo"]}
       }
+    },
+    "talia": {
+      "kind": "app",
+      "slug": "basita-talia",
+      "branch_prefix": "talia/",
+      "permissions": {"contents": "write", "issues": "read", "metadata": "read", "pull_requests": "write"},
+      "app_id": null,
+      "client_id": null,
+      "bot_id": null,
+      "keychain": "basita-gh-talia-app",
+      "installations": {},
+      "manifest": {"name": "basita-talia", "public": false, "description": "Talia (Basita AI): documents, pull requests and pushes to talia/* branches"}
+    },
+    "sherif": {
+      "kind": "app",
+      "slug": "basita-sherif",
+      "branch_prefix": "sherif/",
+      "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
+      "app_id": null,
+      "client_id": null,
+      "bot_id": null,
+      "keychain": "basita-gh-sherif-app",
+      "installations": {},
+      "manifest": {"name": "basita-sherif", "public": false, "description": "Sherif (Basita AI): documents, pull requests and pushes to sherif/* branches"}
+    },
+    "adam": {
+      "kind": "app",
+      "slug": "basita-adam",
+      "branch_prefix": "adam/",
+      "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
+      "app_id": null,
+      "client_id": null,
+      "bot_id": null,
+      "keychain": "basita-gh-adam-app",
+      "installations": {},
+      "manifest": {"name": "basita-adam", "public": false, "description": "Adam (Basita AI): documents, pull requests and pushes to adam/* branches"}
+    },
+    "nora": {
+      "kind": "app",
+      "slug": "basita-nora",
+      "branch_prefix": "nora/",
+      "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
+      "app_id": null,
+      "client_id": null,
+      "bot_id": null,
+      "keychain": "basita-gh-nora-app",
+      "installations": {},
+      "manifest": {"name": "basita-nora", "public": false, "description": "Nora (Basita AI): documents, pull requests and pushes to nora/* branches"}
+    },
+    "yousef-docs": {
+      "kind": "app",
+      "slug": "basita-yousef-docs",
+      "branch_prefix": "yousef/",
+      "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
+      "app_id": null,
+      "client_id": null,
+      "bot_id": null,
+      "keychain": "basita-gh-yousef-docs-app",
+      "installations": {},
+      "manifest": {"name": "basita-yousef-docs", "public": false, "description": "Yousef (Basita AI): his documents, their pull requests and pushes to yousef/* branches. He reviews as basita-yousef"}
+    },
+    "sync": {
+      "kind": "app",
+      "slug": "basita-sync",
+      "_updates_main": "the one repository whose main this App pushes, fast-forward or merge, never forced; it pushes nothing else and runs no gh command. Issues write waits for D22",
+      "updates_main": "basitasolutions/basita-ops",
+      "permissions": {"contents": "write", "metadata": "read"},
+      "app_id": null,
+      "client_id": null,
+      "bot_id": null,
+      "keychain": "basita-gh-sync-app",
+      "installations": {},
+      "manifest": {"name": "basita-sync", "public": false, "description": "basita-ops sync.sh on Ahmed's Mac: updates main of basita-ops, never forced"}
+    },
+    "reader": {
+      "kind": "app",
+      "slug": "basita-reader",
+      "_read_only": "every write and every push is refused; it is git's read-only credential for github.com (agent-gh reader credential)",
+      "read_only": true,
+      "permissions": {"actions": "read", "checks": "read", "contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read", "statuses": "read"},
+      "app_id": null,
+      "client_id": null,
+      "bot_id": null,
+      "keychain": "basita-gh-reader-app",
+      "installations": {},
+      "manifest": {"name": "basita-reader", "public": true, "description": "Basita's read-only identity on Ahmed's Mac: fetch, clone and API reads, never a write"}
     }
   }
 }

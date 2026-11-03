@@ -5,11 +5,17 @@
     python -m agent_gh check [agent...]                   (scripts/gh-check)
     python -m agent_gh store <agent> [--file key.pem]     (scripts/gh-store)
     python -m agent_gh bot-email <agent>
+    python -m agent_gh credential reader get              (scripts/agent-gh reader credential get)
 
 The token goes only into the environment of the one gh or git process that needs it (GH_TOKEN, or a
 one-command credential helper for git), and an App's token is revoked as soon as that process ends,
 whatever its exit code. It is never printed, and gh's own login is never touched. Trace variables that
 could log it are cleared. AGENT_GH_DRY_RUN=1 prints what would run, and mints nothing.
+
+`credential` is git's credential helper for the read-only App (reader): it answers `get` for
+https://github.com only, with a read-only token for the one repository in the request's path, and
+stores nothing. git doesn't tell a helper whether it fetches or pushes, so what keeps a push off is the
+token itself: it carries read permissions only, and GitHub refuses a push with it.
 """
 
 from __future__ import annotations
@@ -22,8 +28,19 @@ import sys
 from pathlib import Path
 
 from .check import run_check
-from .identity import IdentityError, agent_entry, bot_email, load_config, revoke_installation_token, token_for
-from .policy import Plan, plan_gh, plan_push, repo_from_remote
+from .identity import (
+    IdentityError,
+    acting_identity,
+    agent_entry,
+    bot_email,
+    is_pending,
+    load_config,
+    read_permissions,
+    revoke_installation_token,
+    split_repo,
+    token_for,
+)
+from .policy import Plan, plan_gh, plan_push, repo_from_remote, uses_push_app
 
 # Answers git's `get` with the token from this process's environment, only for https://github.com, and
 # stores nothing. git sends the request as key=value lines on stdin.
@@ -90,11 +107,11 @@ def run_with_token(command: list[str], env: dict, token: str, revocable: bool, t
 
 def cmd_gh(agent: str, args: list[str]) -> int:
     config = load_config()
-    entry = agent_entry(config, agent)
-    plan = plan_gh(agent, entry, args, _default_repo(), config)
+    name, entry = acting_identity(config, agent, uses_push_app(args))
+    plan = plan_gh(name, entry, args, _default_repo(), config)
     if os.environ.get("AGENT_GH_DRY_RUN"):
-        return _dry_run(agent, "gh", plan)
-    token, revocable = token_for(agent, plan.repo, plan.permissions, config)
+        return _dry_run(name, "gh", plan)
+    token, revocable = token_for(name, plan.repo, plan.permissions, config)
     env = _env()
     env.update({"GH_TOKEN": token, "GH_REPO": plan.repo})
     return run_with_token([GH, *plan.args], env, token, revocable)
@@ -102,9 +119,9 @@ def cmd_gh(agent: str, args: list[str]) -> int:
 
 def cmd_push(agent: str, args: list[str]) -> int:
     config = load_config()
-    entry = agent_entry(config, agent)
-    if entry["kind"] != "app":
-        raise IdentityError(f"refused: {entry.get('login', agent)} reviews and doesn't push")
+    name, entry = acting_identity(config, agent, True)
+    if entry.get("read_only"):
+        raise IdentityError(f"refused: {entry['slug']} reads only; it never pushes")
     positionals = [a for a in args if not a.startswith("-")]
     remote = positionals[0] if positionals else "origin"
     if "://" in remote or remote.startswith("git@"):
@@ -118,10 +135,10 @@ def cmd_push(agent: str, args: list[str]) -> int:
             raise IdentityError(f"refused: the remote {remote} has {len(urls)} push URLs; agent-git pushes to one")
         remote_url = urls[0]
     branch = _git("symbolic-ref", "--short", "-q", "HEAD") or None
-    plan = plan_push(args, branch, remote_url, config)
+    plan = plan_push(args, branch, remote_url, config, entry)
     if os.environ.get("AGENT_GH_DRY_RUN"):
-        return _dry_run(agent, "push", plan)
-    token, revocable = token_for(agent, plan.repo, plan.permissions, config)
+        return _dry_run(name, "push", plan)
+    token, revocable = token_for(name, plan.repo, plan.permissions, config)
     env = _env()
     env["AGENT_GH_TOKEN"] = token
     git = [
@@ -134,6 +151,43 @@ def cmd_push(agent: str, args: list[str]) -> int:
         "push", *plan.args,
     ]  # fmt: skip
     return run_with_token(git, env, token, revocable)
+
+
+def credential_answer(agent: str, request: dict, config: dict, **mint) -> str:
+    """git's `get` for the read-only App: username and password lines, or "" when it isn't github.com.
+
+    The repository comes from the request's path (git sends it with credential.useHttpPath=true), so the
+    token reaches that one repository only. It is not revoked: git uses it after the helper has returned,
+    and it expires within the hour. It is minted with read permissions only, whatever the config says."""
+    if request.get("protocol") != "https" or request.get("host") != "github.com":
+        return ""
+    name, entry = acting_identity(config, agent, False)
+    if not entry.get("read_only"):
+        raise IdentityError(
+            f"refused: only a read-only App answers git's credential requests; {name} pushes with agent-git"
+        )
+    parts = [p for p in (request.get("path") or "").split("/") if p]
+    if len(parts) < 2:
+        raise IdentityError("no repository in git's request: set credential.https://github.com.useHttpPath true")
+    owner, repo = split_repo(f"{parts[0]}/{parts[1][:-4] if parts[1].endswith('.git') else parts[1]}")
+    token, _ = token_for(name, f"{owner}/{repo}", read_permissions(entry), config, **mint)
+    return f"username=x-access-token\npassword={token}\n"
+
+
+def cmd_credential(agent: str, args: list[str]) -> int:
+    """git calls the helper with get, store or erase. Only get answers; nothing is ever stored."""
+    if args[:1] != ["get"]:
+        return 0
+    request = {}
+    for line in sys.stdin:
+        line = line.rstrip("\n")
+        if not line:
+            break
+        key, _, value = line.partition("=")
+        request[key] = value
+    answer = credential_answer(agent, request, load_config())
+    sys.stdout.write(answer)
+    return 0
 
 
 def cmd_store(agent: str, args: list[str]) -> int:
@@ -182,7 +236,7 @@ def cmd_store(agent: str, args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    usage = "usage: agent_gh gh|push|store|bot-email <agent> ... | check [agent...]"
+    usage = "usage: agent_gh gh|push|store|bot-email|credential <agent> ... | check [agent...]"
     if not argv:
         print(usage, file=sys.stderr)
         return 2
@@ -196,6 +250,8 @@ def main(argv: list[str] | None = None) -> int:
             print(usage, file=sys.stderr)
             return 2
         agent, args = rest[0].lower(), rest[1:]
+        if command == "credential" or (command == "gh" and args[:1] == ["credential"]):
+            return cmd_credential(agent, args[1:] if command == "gh" else args)
         if command == "gh":
             return cmd_gh(agent, args)
         if command == "push":
@@ -203,8 +259,13 @@ def main(argv: list[str] | None = None) -> int:
         if command == "store":
             return cmd_store(agent, args)
         if command == "bot-email":
-            entry = load_config().get("agents", {}).get(agent)
-            if not entry or entry["kind"] != "app":
+            # A user agent commits as his push App's bot (Yousef as basita-yousef-docs[bot]); a pending App
+            # has no bot yet, so its agent keeps <agent>@<agent domain>.
+            agents = load_config().get("agents", {})
+            entry = agents.get(agent) or {}
+            if entry.get("kind") == "user" and entry.get("push_app"):
+                entry = agents.get(entry["push_app"].lower()) or {}
+            if entry.get("kind") != "app" or is_pending(entry) or not entry.get("bot_id"):
                 return 1
             print(bot_email(entry))
             return 0

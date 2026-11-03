@@ -23,12 +23,18 @@ def _split(value: str) -> frozenset[str]:
 
 
 def load_bots(path: Path, agents: frozenset[str]) -> tuple[dict[str, str], str]:
-    """GitHub App bot logins of the listed agents, and the bot mode ("warn" or "fail"), from the identity config."""
+    """GitHub App bot logins of the listed agents, and the bot mode ("warn" or "fail"), from the identity config.
+
+    A user agent's `push_app` is his too: basita-yousef-docs[bot] maps to Yousef (BASITA-157)."""
     data = json.loads(path.read_text(encoding="utf-8"))
+    identities = {name.strip().lower(): identity for name, identity in (data.get("agents") or {}).items()}
     bots = {}
-    for name, identity in (data.get("agents") or {}).items():
-        agent = name.strip().lower()
-        if agent in agents and identity.get("kind") == "app" and identity.get("slug"):
+    for agent, identity in identities.items():
+        if agent not in agents:
+            continue
+        if identity.get("kind") == "user" and identity.get("push_app"):
+            identity = identities.get(identity["push_app"].strip().lower()) or {}
+        if identity.get("kind") == "app" and identity.get("slug"):
             bots[f"{identity['slug'].strip().lower()}[bot]"] = agent
     return bots, "fail" if data.get("attribution") == "fail" else "warn"
 

@@ -5,6 +5,8 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 ## 2026-11-03
 
 ### Added
+- Every agent's own GitHub identity (BASITA-157, plan section 10). `config/github-identities.json` lists `basita-talia`, `-sherif`, `-adam`, `-nora`, `-yousef-docs`, `-sync` and `-reader`, each with its own `permissions` and a `manifest` for `gh-app-new`. They are pending until Ahmed creates them (S2): `agent-gh` and `agent-git push` refuse them with "not set up yet", and `gh-check` prints a plain `pending <agent>: not created yet` line.
+- `agent-gh reader credential`: a read-only git credential helper for `https://github.com`. It mints a read-only token for the one repository in git's request and stores nothing. A push with it fails at GitHub, because the token can only read.
 - GitHub identities for the agents that write code (BASITA-149). `config/github-identities.json` lists, without secrets, the Apps of Malek, Haya and Salma (App id, installations, bot id) and Yousef's user. `scripts/agent-gh <agent> <gh args>` runs gh with a token for that command only: an App's 1-hour installation token for the one repository, read-only for reads and `pull_requests:write` with `contents:read` for pull request writes, so it cannot merge or push. Yousef's token is chosen by the repository owner. It refuses merging, closing, deletes, settings, secrets, workflows, `gh auth`, App approvals and the labels only Ahmed sets.
 - `scripts/agent-git <agent> push`: pushes with the App's `contents:write` token through a one-command credential helper that replaces the Mac's own login. Never to main or master, never forced, deleting, bulk or tags.
 - `scripts/gh-check [agent]`: read-only. Login, App permissions, bot id, installations (an unlisted one is an attention line), the repos each reaches, and Yousef's token expiry (attention 14 days before). Never prints a token.
@@ -14,6 +16,9 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 - Main guard (BASITA-150): reusable `reusable-main-guard.yml` and `python -m main_guard` turn red for any update to `main` by an actor not on the list in the caller's workflow file.
 
 ### Changed
+- An App pushes only to its own `branch_prefix` (`malek/`, `haya/`, `salma/`, `talia/`, `sherif/`, `adam/`, `nora/`, and `yousef/` for the docs App). Malek, Haya and Salma are now refused outside their prefix. `main`, `master` and `claude/*` stay refused for every App. Only `basita-sync` updates `main`, only of `basitasolutions/basita-ops`, never forced, and it pushes nothing else and runs no `gh` command. `basita-reader` reads only (BASITA-157).
+- Yousef gets a `push_app`: `agent-git yousef push` and `agent-gh yousef pr create|edit` run as `basita-yousef-docs[bot]`; his reviews and comments keep his user token. agent-attribution maps `basita-yousef-docs[bot]` to Yousef, with no workflow change. `gh-check` compares each App with its own `permissions` (BASITA-157).
+- `agent-git` knows `sync`, for `sync.sh` once it commits and pushes as `basita-sync` (BASITA-157).
 - `agent-git <agent> commit` uses the App's bot address (`<bot id>+basita-<agent>[bot]@users.noreply.github.com`) for Malek, Haya and Salma, so GitHub links the commit to the bot. `AGENT_GIT_LEGACY_EMAIL=1` goes back to `<agent>@basitasolutions.com` (BASITA-149).
 - agent-attribution maps the Apps' bots to their agents (from `config/github-identities.json`, so the reusable workflow is unchanged): a bot commit needs the matching `Agent:` trailer, and a pull request opened by a bot must not name another agent. These are warnings while `"attribution"` is `"warn"`, errors once it is `"fail"`. Other bots are still skipped (BASITA-149).
 

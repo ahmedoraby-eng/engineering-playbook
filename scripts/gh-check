@@ -2,7 +2,7 @@
 # Read-only: what each agent's GitHub identity is and reaches (login, installations, repos, permissions,
 # token expiry), without printing a token. Changes nothing.
 #
-#   gh-check            all four identities
+#   gh-check            every identity in the config (one not created yet is a plain `pending` line)
 #   gh-check malek
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

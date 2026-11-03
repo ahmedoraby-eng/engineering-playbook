@@ -1,10 +1,15 @@
 """Who an agent is on GitHub, and a short-lived token for one command.
 
-An App agent (Malek, Haya, Salma) has a private key in the Keychain (`basita-gh-<agent>-app`, base64
-of the PEM on one line, account `basita`). For each command the key is read, signs a JWT through
-`openssl` from a pipe (nothing on disk), and the JWT asks GitHub for an installation token limited to
-the one repository and the permissions that command needs. That token lasts one hour and is kept
-only in memory. A user agent (Yousef) has a personal access token per repository owner.
+An App agent (Malek, Haya, Salma; Talia, Sherif, Adam, Nora, sync and reader once set up) has a
+private key in the Keychain (`basita-gh-<agent>-app`, base64 of the PEM on one line, account `basita`).
+For each command the key is read, signs a JWT through `openssl` from a pipe (nothing on disk), and the
+JWT asks GitHub for an installation token limited to the one repository and the permissions that
+command needs. That token lasts one hour and is kept
+only in memory. A user agent (Yousef) has a personal access token per repository owner, and pushes
+and opens pull requests with his `push_app`.
+
+An App whose `app_id` is null in the config is pending: Ahmed has not created it yet (setup S2), and
+every command with it is refused.
 
 Tokens are only minted for the installations listed in config/github-identities.json, so an App
 installed somewhere else is never used. No message here contains a token.
@@ -60,6 +65,58 @@ def agent_entry(config: dict, agent: str) -> dict:
         known = ", ".join(sorted(config.get("agents", {})))
         raise IdentityError(f"{agent} has no GitHub identity (agents with one: {known}); use gh as before")
     return entry
+
+
+def is_pending(entry: dict) -> bool:
+    """An App listed in the config that Ahmed has not created yet (setup S2)."""
+    return entry.get("kind") == "app" and entry.get("app_id") is None
+
+
+def require_ready(entry: dict) -> None:
+    if is_pending(entry):
+        raise IdentityError(f"refused: {entry.get('slug')} is not set up yet (Ahmed's setup S2)")
+
+
+def push_app_owner(config: dict, agent: str) -> str | None:
+    """The user agent whose `push_app` this App is (yousef-docs is Yousef's), or None."""
+    for name, entry in config.get("agents", {}).items():
+        if entry.get("kind") == "user" and (entry.get("push_app") or "").lower() == agent.lower():
+            return name
+    return None
+
+
+def acting_identity(config: dict, agent: str, writes_branch: bool) -> tuple[str, dict]:
+    """The identity a command runs as, ready to use, or a refusal.
+
+    A user agent (Yousef) reviews and comments with his own token; a push or a pull request he opens or
+    edits (`writes_branch`) goes through his `push_app`, so his user never pushes. That App is reached
+    only through him. A pending App is refused here, before anything is planned or minted."""
+    entry = agent_entry(config, agent)
+    owner = push_app_owner(config, agent)
+    if owner:
+        raise IdentityError(
+            f"refused: {entry.get('slug', agent)} is {owner}'s; use agent-gh {owner} or agent-git {owner}"
+        )
+    if entry["kind"] == "user" and writes_branch:
+        if not entry.get("push_app"):
+            raise IdentityError(f"refused: {entry.get('login', agent)} reviews and doesn't push")
+        name = entry["push_app"].lower()
+        entry = agent_entry(config, name)
+        require_ready(entry)
+        return name, entry
+    require_ready(entry)
+    return agent.lower(), entry
+
+
+def read_permissions(entry: dict) -> dict:
+    """The token for a read. A read-only App (reader) gets its own read permissions, which are checked to
+    be reads only, so a config edit can never turn its token into a writing one. Others get READ."""
+    if not entry.get("read_only"):
+        return READ
+    permissions = dict(entry.get("permissions") or {})
+    if not permissions or any(access != "read" for access in permissions.values()):
+        raise IdentityError(f"refused: {entry.get('slug')} is read-only, but its config permissions are not all read")
+    return permissions
 
 
 def bot_login(entry: dict) -> str:
@@ -208,12 +265,15 @@ def token_for(
     """A token for one command on one repository, as the agent, and whether it is an installation token
     (which the caller revokes when the command ends). Yousef's personal token is never revoked."""
     entry = agent_entry(config, agent)
+    require_ready(entry)
     owner, name = split_repo(repo)
     if entry["kind"] == "user":
         for listed_owner, token in entry.get("tokens", {}).items():
             if listed_owner.lower() == owner.lower():
                 return keychain_secret(token["keychain"], run), False
         raise IdentityError(f"{entry['login']} has no token for {owner} (listed: {', '.join(entry.get('tokens', {}))})")
+    if entry.get("read_only") and any(access != "read" for access in permissions.values()):
+        raise IdentityError(f"refused: {entry['slug']} reads only; it gets no token that writes")
     installation_id = installation_for(entry, owner)
     jwt = app_jwt(entry, private_key(entry["keychain"], run), openssl=openssl)
     return mint_installation_token(entry, installation_id, permissions, [name], transport, jwt)["token"], True
