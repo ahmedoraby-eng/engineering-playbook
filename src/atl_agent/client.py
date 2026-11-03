@@ -13,11 +13,13 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import mimetypes
 import os
 import re
 import subprocess
 import urllib.error
 import urllib.request
+import uuid
 from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -340,6 +342,70 @@ def _names(values, what: str) -> list[str]:
     return names
 
 
+# Jira Cloud's four built-in link types (name, outward phrase, inward phrase). jira_link_typed maps a name or phrase
+# to one of these without reading /rest/api/3/issueLinkType, which the agents' tokens often can't read; any other
+# name still goes through that read.
+BUILTIN_LINK_TYPES = (
+    {"name": "Blocks", "outward": "blocks", "inward": "is blocked by"},
+    {"name": "Relates", "outward": "relates to", "inward": "relates to"},
+    {"name": "Duplicate", "outward": "duplicates", "inward": "is duplicated by"},
+    {"name": "Cloners", "outward": "clones", "inward": "is cloned by"},
+)
+
+
+def _pick_link_type(wanted: str, types) -> tuple[dict | None, bool]:
+    """The link type a name or phrase means, and whether it is the inward phrase (which reverses the two issues)."""
+    for t in types:
+        if wanted in (t.get("name", "").lower(), t.get("outward", "").lower()):
+            return t, False
+        if wanted == t.get("inward", "").lower():
+            return t, True
+    return None, False
+
+
+# Confluence: a label is one lowercase word without these characters, at most 255 long.
+MAX_LABEL = 255
+_BAD_LABEL_CHARS = re.compile(r"[\s&#()*,.?;:@\[\]^/<>\"'\\|]")
+# One attachment: the cap keeps a stray big file from being read into memory and uploaded.
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MOVE_DEPTH_CAP = 50  # how many levels above the new parent a move walks looking for the page itself
+
+
+def _check_confluence_labels(labels) -> list[str]:
+    """Confluence label names, checked before any call: lowercase, no spaces or punctuation Confluence refuses."""
+    names = list(dict.fromkeys(str(x).strip() for x in labels))
+    for name in names:
+        if not name or len(name) > MAX_LABEL or _BAD_LABEL_CHARS.search(name) or name != name.lower():
+            raise AtlError(
+                f"'{name}' is not a Confluence label: use lowercase, no spaces or punctuation "
+                f"(& # ( ) * , . ? ; : @ [ ] ^ / < > quotes), up to {MAX_LABEL} characters"
+            )
+    return names
+
+
+def _multipart(fields: dict[str, str], filename: str, content_type: str, data: bytes) -> tuple[str, bytes]:
+    """A multipart/form-data body with one file part named `file` and the given text fields, in pure stdlib.
+    Returns (Content-Type header, body). The boundary is chosen so it does not occur in the file."""
+    while True:
+        boundary = "atl-" + uuid.uuid4().hex
+        if boundary.encode() not in data:
+            break
+    parts: list[bytes] = []
+    for key, value in fields.items():
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n'
+            f"Content-Type: text/plain; charset=utf-8\r\n\r\n{value}\r\n".encode()
+        )
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n".encode()
+        + data
+        + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+    return f"multipart/form-data; boundary={boundary}", b"".join(parts)
+
+
 class AtlClient:
     def __init__(
         self,
@@ -375,14 +441,27 @@ class AtlClient:
     def __repr__(self) -> str:  # keep the token out of any accidental print
         return f"AtlClient(agent={self.agent!r}, cloud_id={self.cloud_id!r})"
 
-    def _call(self, method: str, product: str, path: str, payload: dict | None = None) -> dict:
+    def _call(
+        self,
+        method: str,
+        product: str,
+        path: str,
+        payload: dict | list | None = None,
+        *,
+        raw: tuple[str, bytes] | None = None,
+        headers: dict | None = None,
+    ) -> dict:
+        """One call through the gateway. `payload` is sent as JSON; `raw` is a (Content-Type, body) pair sent as it is
+        (an upload); `headers` adds to the standard ones."""
         url = f"{GATEWAY}/{product}/{self.cloud_id}{path}"
-        headers = {"Authorization": self._auth, "Accept": "application/json"}
+        sent = {"Authorization": self._auth, "Accept": "application/json", **(headers or {})}
         body = None
-        if payload is not None:
-            headers["Content-Type"] = "application/json"
+        if raw is not None:
+            sent["Content-Type"], body = raw
+        elif payload is not None:
+            sent["Content-Type"] = "application/json"
             body = json.dumps(payload).encode("utf-8")
-        status, text = self._transport(method, url, headers, body)
+        status, text = self._transport(method, url, sent, body)
         if not 200 <= status < 300:
             hint = {
                 401: "token missing, expired or revoked, or the email does not match the token's account",
@@ -642,22 +721,19 @@ class AtlClient:
         shows it on `issue`. `link_type` is a link type's name (Blocks), its outward phrase (blocks) or its inward
         phrase (is blocked by), without case; an inward phrase reverses the two issues. Both issues are in BASITA, DFP
         or ELB. The issue's links are read before and after the call, so the result shows what this call recorded
-        (or the same link, already there), and an error says so if it reads the other way.
+        (or the same link, already there), and an error says so if it reads the other way. Jira's four built-in types
+        (Relates, Blocks, Duplicate, Cloners; BUILTIN_LINK_TYPES) are mapped here, without reading the site's link-type
+        list; any other name reads it.
         Needs read:jira-work and write:jira-work."""
         for key in (issue, other):
             _check_issue(key)
         if issue == other:
             raise AtlError("an issue is not linked to itself")
         wanted = link_type.strip().lower()
-        types = self._call("GET", "jira", "/rest/api/3/issueLinkType").get("issueLinkTypes", [])
-        chosen, reverse = None, False
-        for t in types:
-            if wanted in (t.get("name", "").lower(), t.get("outward", "").lower()):
-                chosen = t
-                break
-            if wanted == t.get("inward", "").lower():
-                chosen, reverse = t, True
-                break
+        chosen, reverse = _pick_link_type(wanted, BUILTIN_LINK_TYPES)
+        if not chosen:  # not one of Jira's four built-in types: read the site's list
+            types = self._call("GET", "jira", "/rest/api/3/issueLinkType").get("issueLinkTypes", [])
+            chosen, reverse = _pick_link_type(wanted, types)
         if not chosen:
             names = ", ".join(f"{t['name']} ({t['outward']} / {t['inward']})" for t in types)
             raise AtlError(f"'{link_type}' is not a link type (known: {names})")
@@ -1140,25 +1216,62 @@ class AtlClient:
         ]
         return {"read_by": self.reader, "cql": cql, "count": len(results), "results": results}
 
-    def confluence_create(self, space: str, title: str, text: str, parent: str = "", storage: bool = False) -> dict:
-        """Create a published page in a space, by its key. Needs read:space and write:page (both :confluence)."""
+    def confluence_create(
+        self, space: str, title: str, text: str, parent: str = "", storage: bool = False, labels: tuple = ()
+    ) -> dict:
+        """Create a published page in a space, by its key, then add the labels (never removed once added). The labels
+        are checked first; if adding them fails, the error names the page that now exists.
+        Needs read:space and write:page (both :confluence), and for labels read:label and write:label."""
         if not _SPACE_KEY.match(space):
             raise AtlError(f"'{space}' is not a space key")
+        names = _check_confluence_labels(labels)
         found = self._results(f"/wiki/api/v2/spaces?keys={quote(space)}")
         if not found:
             raise AtlError(f"no space with the key '{space}', or it is not visible to {self.display}")
         payload = {"spaceId": found[0]["id"], "status": "current", "title": title, "body": _page_body(text, storage)}
         if parent:
             payload["parentId"] = self._page_id(parent)
-        return self._call("POST", "confluence", "/wiki/api/v2/pages", payload)
+        result = self._call("POST", "confluence", "/wiki/api/v2/pages", payload)
+        if names:
+            self._add_labels(result.get("id"), names, "created")
+            result["labels_added"] = names
+        return result
 
-    def confluence_edit(self, page: str, text: str = "", title: str = "", storage: bool = False) -> dict:
-        """Replace a page's body, its title, or both. Confluence keeps every earlier version, and the version note
-        names the agent. Needs read:page and write:page (both :confluence)."""
-        if not text.strip() and not title.strip():
-            raise AtlError("nothing to change: give the new text, a new title, or both")
+    def confluence_edit(
+        self,
+        page: str,
+        text: str = "",
+        title: str = "",
+        storage: bool = False,
+        *,
+        parent: str = "",
+        labels: tuple = (),
+    ) -> dict:
+        """Replace a page's body, its title, or both; move it under another page (`parent`); add labels. Confluence
+        keeps every earlier version, and the version note names the agent. A move keeps the page's id and stays in its
+        space: the page and the new parent must be in the same space, the parent can't be the page or one of its own
+        descendants, and all of that is read before anything is written. With no text, the current body is kept. The
+        labels are only ever added. Labels alone change no version.
+        Needs read:page and write:page (both :confluence), and for labels read:label and write:label."""
+        names = _check_confluence_labels(labels)
+        if not (text.strip() or title.strip() or parent.strip() or names):
+            raise AtlError("nothing to change: give the new text, a new title, a new parent, a label, or several")
         page_id = self._page_id(page)
+        parent_id = self._page_id(parent) if parent.strip() else ""
+        if parent_id and parent_id == page_id:
+            raise AtlError("a page can't be moved under itself")
+        if not (text.strip() or title.strip() or parent_id):  # labels only: no new version of the page
+            self._add_labels(page_id, names, "unchanged")
+            return {"id": page_id, "labels_added": names}
         current = self._call("GET", "confluence", f"/wiki/api/v2/pages/{page_id}?body-format=storage")
+        move = bool(parent_id) and parent_id != str(current.get("parentId") or "")
+        if move:
+            self._check_move(current, page_id, parent_id)
+        if not (text.strip() or title.strip() or move):  # already under that parent
+            if not names:
+                raise AtlError(f"page {page_id} is already under page {parent_id}: nothing to change")
+            self._add_labels(page_id, names, "unchanged")
+            return {"id": page_id, "labels_added": names}
         if text.strip():
             body = _page_body(text, storage)
         else:
@@ -1166,6 +1279,8 @@ class AtlClient:
         note = f"[{self.reader}] " + (
             text.strip()[:150] if text.strip() and not storage else f"edited: {title or 'body'}"
         )
+        if move:
+            note += f" (moved under page {parent_id})"
         payload = {
             "id": current["id"],
             "status": "current",
@@ -1173,7 +1288,83 @@ class AtlClient:
             "body": body,
             "version": {"number": current["version"]["number"] + 1, "message": note},
         }
-        return self._call("PUT", "confluence", f"/wiki/api/v2/pages/{page_id}", payload)
+        if move:
+            payload["parentId"] = parent_id
+        result = self._call("PUT", "confluence", f"/wiki/api/v2/pages/{page_id}", payload)
+        if names:
+            self._add_labels(page_id, names, "edited")
+            result["labels_added"] = names
+        return result
+
+    def _check_move(self, current: dict, page_id: str, parent_id: str) -> None:
+        """Refuses, with reads only, a move to another space or under the page's own descendants. A parent that
+        isn't a page (a folder, say) isn't read by the v2 page endpoint and is refused as not found."""
+        target = self._call("GET", "confluence", f"/wiki/api/v2/pages/{parent_id}")
+        here, there = current.get("spaceId"), target.get("spaceId")
+        if not here or not there:
+            raise AtlError(f"can't tell which space page {page_id} or page {parent_id} is in: not moving it")
+        if str(here) != str(there):
+            raise AtlError(
+                f"page {parent_id} is in another space (id {there}) than page {page_id} (id {here}): "
+                "atl moves a page only within its space"
+            )
+        node = target
+        for _ in range(MOVE_DEPTH_CAP):
+            above = str(node.get("parentId") or "")
+            if not above or node.get("parentType", "page") != "page":
+                return
+            if above == page_id:
+                raise AtlError(f"page {parent_id} is under page {page_id}: a page can't be moved under its own child")
+            node = self._call("GET", "confluence", f"/wiki/api/v2/pages/{above}")
+        raise AtlError(f"page {parent_id} is more than {MOVE_DEPTH_CAP} levels deep: not moving {page_id} under it")
+
+    def _add_labels(self, page_id, names: list[str], state: str) -> None:
+        """Add labels to a page (POST only: a label already there stays, none is ever removed)."""
+        body = [{"prefix": "global", "name": name} for name in names]
+        try:
+            self._call("POST", "confluence", f"/wiki/rest/api/content/{page_id}/label", body)
+        except AtlError as error:
+            raise AtlError(f"page {page_id} was {state}, but the labels were not added: {error}") from error
+
+    def confluence_attach(self, page: str, path: str) -> dict:
+        """Upload a file to a page, or add a new version when the page already has an attachment of that name
+        (Confluence matches by file name). Nothing is deleted. The file is read in binary, must be a file (not a
+        directory) of at most MAX_ATTACHMENT_BYTES, and goes up under its base name. Returns {"id", "name", "version",
+        "ref"}, where `name` is the name to use in `<ri:attachment ri:filename="...">` and `ref` is a ready
+        `<ac:image>` line. Needs read:content-details and write:attachment (both :confluence)."""
+        page_id = self._page_id(page)
+        source = Path(path).expanduser()
+        if not source.exists():
+            raise AtlError(f"no such file: {path}")
+        if not source.is_file():
+            raise AtlError(f"{path} is not a file")
+        name = source.name
+        if not name.strip() or re.search(r'["\r\n\\]', name):
+            raise AtlError(f"the file name '{name}' can't be uploaded: no quotes, backslashes or line breaks")
+        size = source.stat().st_size
+        if size > MAX_ATTACHMENT_BYTES:
+            raise AtlError(
+                f"{name} is {size / 1024 / 1024:.1f} MB; atl uploads at most {MAX_ATTACHMENT_BYTES // 1024 // 1024} MB"
+            )
+        data = source.read_bytes()
+        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        fields = {"minorEdit": "true", "comment": f"[{self.reader}] uploaded with atl"}
+        raw = _multipart(fields, name, content_type, data)
+        found = self._call(
+            "PUT",
+            "confluence",
+            f"/wiki/rest/api/content/{page_id}/child/attachment",
+            raw=raw,
+            headers={"X-Atlassian-Token": "nocheck"},
+        )
+        item = (found.get("results") or [found])[0]
+        used = item.get("title") or name
+        return {
+            "id": item.get("id"),
+            "name": used,
+            "version": (item.get("version") or {}).get("number"),
+            "ref": f'<ac:image><ri:attachment ri:filename="{escape(used, quote=True)}"/></ac:image>',
+        }
 
     def _page_id(self, page: str) -> str:
         match = _PAGE_ID.match(page.strip())

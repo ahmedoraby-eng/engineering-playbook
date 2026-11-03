@@ -14,8 +14,10 @@
     atl <agent> jira-link DFP-1 DFP-2 [--type "blocks"]
     atl <agent> confluence-get <page id or URL>
     atl <agent> confluence-search "words or CQL"
-    atl <agent> confluence-create <space key> "text" --title "Title" [--parent <page id>] [--storage]
-    atl <agent> confluence-edit <page id or URL> "text" [--title "New title"] [--storage]
+    atl <agent> confluence-create <space key> "text" --title "Title" [--parent <page id>] [--storage] [--label L ...]
+    atl <agent> confluence-edit <page id or URL> ["text"] [--title "New title"] [--storage] [--parent <page id>]
+        [--label L ...]
+    atl <agent> confluence-attach <page id or URL> <file>
     atl <agent> confluence-append <page id> "text"
 
 --via <agent> uses that agent's user and token for the command, and signs "— Maya (Basita AI, via Sherif)". Maya has
@@ -47,6 +49,13 @@ JQL query; `confluence-get` gives a page with its body, comments, attachments an
 pages by words or CQL. Each result names the agent whose token answered (`read_by`). `confluence-create` and
 `confluence-edit` take plain text, or Confluence storage format with --storage. `confluence-edit` replaces the body;
 Confluence keeps every earlier version. Nothing here deletes.
+BASITA-188: `confluence-attach <page> <file>` uploads a file (up to 25 MB) under its base name, or adds a new version
+when the page already has an attachment of that name, and prints the name to use in `<ri:attachment ri:filename>`
+and a ready `<ac:image>` line. `--label L` (repeatable) on `confluence-create` and `confluence-edit` adds labels
+(lowercase, no spaces) and never removes any; `confluence-edit` with only labels makes no new page version.
+`confluence-edit --parent <page id>` moves the page under another page of the same space, keeping its id (another
+space, the page itself or its own descendants are refused before any write); with no text it keeps the body.
+`jira-link` maps Relates, Blocks, Duplicate and Cloners (and their phrases) without reading the link-type list.
 """
 
 from __future__ import annotations
@@ -97,6 +106,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "confluence-search",
             "confluence-create",
             "confluence-edit",
+            "confluence-attach",
             "confluence-append",
         ],
     )
@@ -110,9 +120,17 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     parser.add_argument("--reason", choices=CLOSE_REASONS, help="jira-dismiss: why the issue is closed")
     parser.add_argument("--title", default="", help="confluence-create, confluence-edit: the page title")
     parser.add_argument(
-        "--parent", default="", help="confluence-create: the parent page's id or URL; jira-create: the parent issue"
+        "--parent",
+        default="",
+        help="confluence-create: the parent page's id or URL; confluence-edit: move the page under this page "
+        "(same space); jira-create: the parent issue",
     )
-    parser.add_argument("--label", action="append", default=[], help="jira-create: a label (repeatable)")
+    parser.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        help="jira-create, confluence-create, confluence-edit: a label to add (repeatable; Confluence never removes)",
+    )
     parser.add_argument("--assignee", default="", help="jira-create, jira-ready: who gets the issue")
     parser.add_argument("--link", default="", help="jira-create: an issue this one relates to")
     parser.add_argument("--storage", action="store_true", help="the text is Confluence storage format")
@@ -153,6 +171,12 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         return 2
     if args.command != "jira-link" and args.link_type:
         print(f"atl: --type is for jira-link, not {args.command}", file=sys.stderr)
+        return 2
+    if args.label and args.command not in ("jira-create", "jira-edit", "confluence-create", "confluence-edit"):
+        print(
+            f"atl: --label is for jira-create, confluence-create and confluence-edit, not {args.command}",
+            file=sys.stderr,
+        )
         return 2
     if args.command != "jira-done" and args.done_why:
         print(f"atl: --why is for jira-done, not {args.command}", file=sys.stderr)
@@ -221,6 +245,8 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         return 2
     flow_action = args.text if args.command == "jira-flow" else ""
     text = args.why if args.command == "jira-flow" else args.text
+    if args.command == "confluence-attach":
+        return _attach(args, token_source, transport)
     text = sys.stdin.read() if text == "-" else text
     if args.command in ("confluence-create", "confluence-edit"):
         if args.command == "confluence-create" and not (args.title.strip() and text.strip()):
@@ -238,13 +264,20 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
                 **kwargs,
             )
             if args.command == "confluence-create":
-                result = client.confluence_create(args.target, args.title.strip(), text, args.parent, args.storage)
+                result = client.confluence_create(
+                    args.target, args.title.strip(), text, args.parent, args.storage, tuple(args.label)
+                )
             else:
-                result = client.confluence_edit(args.target, text, args.title, args.storage)
+                result = client.confluence_edit(
+                    args.target, text, args.title, args.storage, parent=args.parent, labels=tuple(args.label)
+                )
             links = result.get("_links") or {}
             url = (links.get("base") or "") + (links.get("webui") or "")
             version = (result.get("version") or {}).get("number")
-            print(f"page {result.get('id')} version {version} by {client.display} {url}".rstrip())
+            if version or not result.get("labels_added"):  # labels alone make no new version
+                print(f"page {result.get('id')} version {version} by {client.display} {url}".rstrip())
+            if result.get("labels_added"):
+                print(f"page {result.get('id')} labels added: {', '.join(result['labels_added'])}")
         except AtlError as error:
             print(f"atl: {error}", file=sys.stderr)
             return 1
@@ -312,6 +345,32 @@ def _split(value: str | None) -> tuple | None:
     if value is None:
         return None
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _attach(args, token_source, transport) -> int:
+    others = (args.mention, args.title, args.parent, args.label, args.assignee, args.link, args.storage)
+    if not args.text or args.why or args.description or any(others):
+        print("atl: confluence-attach takes a page and a file: confluence-attach <page> <file>", file=sys.stderr)
+        return 2
+    try:
+        agent = args.agent.lower()
+        kwargs = {"transport": transport} if transport else {}
+        client = AtlClient(
+            agent,
+            args.cloud_id,
+            token_source(account_for(agent, args.via), "confluence"),
+            args.domain,
+            via=args.via,
+            **kwargs,
+        )
+        result = client.confluence_attach(args.target, args.text)
+        shown = f"{result['name']} (id {result['id']}, version {result['version']})"
+        print(f"attachment {shown} on page {args.target}, by {client.display}")
+        print(f"use: {result['ref']}")
+    except AtlError as error:
+        print(f"atl: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _done(args, token_source, transport, pr_source) -> int:
