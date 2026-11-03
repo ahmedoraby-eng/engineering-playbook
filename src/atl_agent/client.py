@@ -238,6 +238,64 @@ FLOW = {
 }
 
 
+# jira-done (BASITA-178; Ahmed, 03/11/2026, operating model 4 "Moving one's own issues"): a lead moves its own issue
+# from In Progress to Done when the work has no PR. DFP keeps jira-flow and the merge (4.1 item 7), so it is not here.
+DONE_PROJECTS = ("BASITA", "ELB")
+# An agent with no Jira seat -> the agent whose user it works through. Its issues are assigned to that user and carry
+# the label agent-<name> (jira-agents.conf FOCAL_AGENT and ROUTED_AGENTS in basita-ops).
+ROUTED_THROUGH = {"maya": "sherif"}
+# Labels that hold an issue for Ahmed: jira-done leaves such an issue as it is.
+WAITS_FOR_AHMED = ("needs-ahmed",)
+# The repositories whose PRs name Basita's issues: the same list as REPOS in basita-ops jira-attention.sh.
+PR_REPOS = (
+    "basitasolutions/basita-ops",
+    "basitasolutions/elbayoumy-farm-nutrition-platform",
+    "ahmedoraby-eng/engineering-playbook",
+)
+# PRs read per repository. A repository that returns this many may have more, so jira-done can't be sure and refuses.
+PR_LIST_LIMIT = 1000
+
+
+def mentions(pr: dict, key: str) -> bool:
+    """Whether a PR mentions an issue, by the rule of basita-ops jira-attention.sh: the key in its title or branch,
+    or after `Closes` or `Refs` in its description, outside HTML comments (the PR template's own instructions)."""
+    named = re.compile(rf"\b{re.escape(key)}\b", re.IGNORECASE)
+    if named.search(pr.get("title") or "") or named.search(pr.get("headRefName") or ""):
+        return True
+    body = re.sub(r"<!--.*?-->", "", pr.get("body") or "", flags=re.DOTALL)
+    return bool(re.search(rf"\b(?:closes|refs):?\s+{re.escape(key)}\b", body, flags=re.IGNORECASE))
+
+
+def github_prs(key: str, run: Callable = subprocess.run, repos: tuple = PR_REPOS) -> list[dict]:
+    """The PRs in PR_REPOS that mention `key`, as {repo, number, state, url}, read with `gh` (a read only).
+    Raises AtlError when any repository can't be read in full, so a caller never takes "can't tell" for "none"."""
+    found: list[dict] = []
+    fields = "number,title,headRefName,body,state,url"
+    for repo in repos:
+        command = ["gh", "pr", "list", "--repo", repo, "--state", "all", "--limit", str(PR_LIST_LIMIT)]
+        try:
+            result = run([*command, "--json", fields], capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise AtlError(f"could not read the pull requests of {repo}: {error}") from None
+        if result.returncode != 0:
+            detail = " ".join((result.stderr or "").split())[:200]
+            raise AtlError(f"could not read the pull requests of {repo}: {detail or f'gh exited {result.returncode}'}")
+        try:
+            prs = json.loads(result.stdout or "")
+        except json.JSONDecodeError:
+            raise AtlError(f"could not read the pull requests of {repo}: gh did not answer with JSON") from None
+        if not isinstance(prs, list):
+            raise AtlError(f"could not read the pull requests of {repo}: gh did not answer with a list")
+        if len(prs) >= PR_LIST_LIMIT:
+            raise AtlError(f"{repo} has {PR_LIST_LIMIT} or more pull requests, more than atl reads")
+        found += [
+            {"repo": repo, "number": pr.get("number"), "state": pr.get("state"), "url": pr.get("url")}
+            for pr in prs
+            if mentions(pr, key)
+        ]
+    return found
+
+
 def account_for(agent: str, via: str = "") -> str:
     """The Atlassian user an agent works through: its own, unless --via names another agent's."""
     account = (via or agent).lower()
@@ -746,8 +804,8 @@ class AtlClient:
     def jira_start(self, issue: str) -> str:
         """Pick up an issue: To Do -> In Progress, add the `agent-picked` label, return the new status.
 
-        The only transition an agent makes on its own (Ahmed, 29/10/2026); Done comes from a merged PR
-        with `Closes <KEY>`, and every other transition stays with Ahmed. Refuses an issue that is not in
+        An agent's own start (Ahmed, 29/10/2026). Done comes from a merged PR with `Closes <KEY>`, or from
+        jira-done for work with no open PR (BASITA-178). Refuses an issue that is not in
         a To Do status or was already picked, so a second pickup can't happen.
         Needs read:jira-work and write:jira-work."""
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels")
@@ -785,6 +843,112 @@ class AtlClient:
         except AtlError as e:
             raise AtlError(f"{issue}: moved to '{moved_to}', but the '{PICKED_LABEL}' label failed: {e}") from e
         return moved_to
+
+    def _done_owner(self) -> tuple[str, str]:
+        """For jira-done: the account the issue must be assigned to, and the agent label it must carry ("" for none).
+        An agent with a Jira seat closes its own issues as itself; Maya closes hers through Sherif's user (2.4)."""
+        routed = ROUTED_THROUGH.get(self.agent)
+        if routed:
+            if self.via.lower() != routed:
+                raise AtlError(f"{self.display} has no Jira seat: run it as atl {self.agent} --via {routed} jira-done")
+            return JIRA_ACCOUNTS[routed], f"agent-{self.agent}"
+        if self.via:
+            raise AtlError(f"jira-done closes {self.display}'s own issue as {self.display}'s own user, without --via")
+        if self.agent not in JIRA_ACCOUNTS:
+            raise AtlError(f"{self.display} has no Jira user, so no issue of {self.display}'s to close")
+        return JIRA_ACCOUNTS[self.agent], ""
+
+    def jira_done(self, issue: str, why: str, prs: Callable[[str], list[dict]] = github_prs) -> tuple[str, list[dict]]:
+        """A lead's own issue from In Progress to Done, for work with no open PR (BASITA-178; Ahmed, 03/11/2026).
+
+        Refuses: a project other than BASITA or ELB (DFP keeps jira-flow and the merge); an Epic; an issue not
+        assigned to this agent (Maya's: assigned to Sherif, with the label agent-maya, run with --via sherif); a
+        status outside the In Progress category; an issue held for Ahmed (needs-ahmed); any open PR that mentions it,
+        since PR work closes through `Closes` on merge; and PRs it can't read (fail closed). An issue with no PR, or
+        whose PRs are all merged, may close. Closed-unmerged PRs are abandoned work and don't count, as in
+        jira-attention.sh. Every check comes before the first write. Then it posts `why` as a signed comment, and only
+        then moves the issue, picking the transition by the Done status category: a Done issue never lacks its
+        comment. It changes no label and deletes nothing. Returns the new status and the merged PRs.
+        Needs read:jira-work, write:jira-work and write:comment:jira."""
+        if not ISSUE_KEY.match(issue):
+            raise AtlError(f"'{issue}' is not an issue key")
+        project = issue.split("-")[0]
+        if project == "DFP":
+            raise AtlError(f"{issue}: DFP issues move through jira-flow and close on the merge, not with jira-done")
+        if project not in DONE_PROJECTS:
+            raise AtlError(f"{issue}: jira-done is for {' and '.join(DONE_PROJECTS)} issues only")
+        why = why.strip()
+        if not why:
+            raise AtlError("say what was delivered, with --why")
+        account, agent_label = self._done_owner()
+        fields = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,assignee,labels,issuetype")[
+            "fields"
+        ]
+        if (fields.get("issuetype") or {}).get("name") == "Epic":
+            raise AtlError(f"{issue}: an Epic is never worked as a ticket, jira-done does not close it")
+        assignee = fields.get("assignee") or {}
+        if assignee.get("accountId") != account:
+            who = assignee.get("displayName") or "no one"
+            raise AtlError(
+                f"{issue}: assigned to {who}, not {self.reader}; jira-done closes only the agent's own issue"
+            )
+        labels = fields.get("labels") or []
+        routed = [f"agent-{name}" for name in ROUTED_THROUGH]
+        if agent_label and agent_label not in labels:
+            raise AtlError(f"{issue}: no '{agent_label}' label, so it is {self.via}'s own issue, not {self.display}'s")
+        if not agent_label and any(label in routed for label in labels):
+            mine = next(label for label in labels if label in routed)
+            name = mine.removeprefix("agent-")
+            raise AtlError(
+                f"{issue}: labelled '{mine}', so it is {name.capitalize()}'s: "
+                f"atl {name} --via {ROUTED_THROUGH[name]} jira-done"
+            )
+        held = [label for label in labels if label.lower() in WAITS_FOR_AHMED]
+        if held:
+            raise AtlError(f"{issue}: labelled '{held[0]}', it waits for Ahmed; jira-done leaves it as it is")
+        status = fields["status"]
+        if status["statusCategory"]["key"] == "done":
+            raise AtlError(f"{issue}: already {status['name']}")
+        if status["statusCategory"]["key"] != "indeterminate":
+            raise AtlError(f"{issue}: status is '{status['name']}', jira-done only closes an issue In Progress")
+        jql = quote(f"key = {issue} AND assignee = currentUser()")
+        if not self._call("GET", "jira", f"/rest/api/3/search/jql?jql={jql}&fields=key").get("issues"):
+            raise AtlError(f"{issue}: not assigned to the user whose token this is ({self.reader})")
+        try:
+            found = prs(issue)
+        except AtlError as error:
+            raise AtlError(
+                f"{issue}: not closed, because atl can't tell whether every PR that mentions it is merged ({error})"
+            ) from None
+        unknown = [p for p in found if p.get("state") not in ("OPEN", "MERGED", "CLOSED")]
+        if unknown:
+            raise AtlError(f"{issue}: a PR that mentions it is in an unknown state: {unknown[0].get('url')}")
+        still_open = [p for p in found if p["state"] == "OPEN"]
+        if still_open:
+            urls = ", ".join(p.get("url") or f"{p.get('repo')}#{p.get('number')}" for p in still_open)
+            raise AtlError(
+                f"{issue}: an open PR mentions it ({urls}); PR work closes through 'Closes {issue}' on its merge"
+            )
+        merged = [p for p in found if p["state"] == "MERGED"]
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        options = [t for t in moves if t["to"]["statusCategory"]["key"] == "done"]
+        if not options:
+            raise AtlError(f"{issue}: no transition to a Done status is available from '{status['name']}'")
+        chosen = next((t for t in options if t["to"]["name"] == "Done"), options[0])
+        if merged:
+            listed = "\n".join(p.get("url") or f"{p.get('repo')}#{p.get('number')}" for p in merged)
+            trail = f"Every pull request that mentions {issue} is merged:\n{listed}"
+        else:
+            trail = f"No pull request mentions {issue}."
+        comment = f"Done: {why}\n\n{trail}\n\n— {self.signature}"
+        self.jira_comment(issue, comment)
+        try:
+            self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        except AtlError as error:
+            raise AtlError(
+                f"{issue}: the comment is posted, but the move to '{chosen['to']['name']}' failed: {error}"
+            ) from error
+        return chosen["to"]["name"], merged
 
     def jira_ready(self, issue: str, assignee: str = "") -> str:
         """Refinement -> Ready (or Ready for Development in DFP), the one transition an agent makes on a

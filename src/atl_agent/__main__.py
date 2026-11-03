@@ -4,6 +4,7 @@
     atl <agent> jira-jql "project = DFP AND status = 'To Do'"
     atl <agent> jira-comment BASITA-1 "text" [--mention <account id> ...]
     atl <agent> jira-start BASITA-1 ["text"]
+    atl <agent> jira-done BASITA-1 --why "what was delivered"
     atl <agent> jira-ready BASITA-1 ["text"]
     atl adam jira-return DFP-1 "reason"
     atl salma jira-dismiss DFP-1 --reason "Not a Bug" ["text"]
@@ -23,7 +24,11 @@ no Jira seat, so her Jira commands take --via sherif; her Confluence commands do
 Text `-` reads the text from stdin. The cloud id comes from --cloud-id or ATL_CLOUD_ID, and defaults to Basita's
 site. Jira comments end with an attribution line, "— <Agent> (Basita AI)", which the comment relay uses to
 recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, labels it `agent-picked` and
-comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments.
+comments. `jira-done <KEY> --why "..."` moves the agent's own BASITA or ELB issue from In Progress to Done
+(BASITA-178), for work with no open PR: it refuses DFP, an Epic, someone else's issue, `needs-ahmed`, any open PR
+that mentions the issue (PR work closes through `Closes` on merge) and PRs it can't read; it comments, then moves,
+and changes no label. Maya's issues (assigned to Sherif, labelled agent-maya) take --via sherif. `jira-ready` moves
+a Refinement issue to Ready (never an Epic) and comments.
 `jira-create <PROJECT> <Story|Task|Bug|Sub-task|Epic> "summary" "description"` creates an issue, signed in its
 description and unassigned unless --assignee says otherwise.
 `jira-edit <KEY>` changes the fields named by its options in one request, as the agent's own user (BASITA-169):
@@ -51,7 +56,16 @@ import json
 import os
 import sys
 
-from .client import CLOSE_REASONS, ISSUE_KEY, AtlClient, AtlError, account_for, default_cloud_id, keychain_token
+from .client import (
+    CLOSE_REASONS,
+    ISSUE_KEY,
+    AtlClient,
+    AtlError,
+    account_for,
+    default_cloud_id,
+    github_prs,
+    keychain_token,
+)
 
 READS = {
     "jira-get": lambda c: c.jira_get,
@@ -61,7 +75,7 @@ READS = {
 }
 
 
-def main(argv: list[str] | None = None, token_source=keychain_token, transport=None) -> int:
+def main(argv: list[str] | None = None, token_source=keychain_token, transport=None, pr_source=github_prs) -> int:
     parser = argparse.ArgumentParser(prog="atl", description="Read and write Jira and Confluence as a named agent.")
     parser.add_argument("agent", help="agent name, e.g. salma")
     parser.add_argument(
@@ -71,6 +85,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "jira-jql",
             "jira-comment",
             "jira-start",
+            "jira-done",
             "jira-ready",
             "jira-flow",
             "jira-create",
@@ -116,6 +131,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     parser.add_argument("--summary", default="", help="jira-edit: the new summary")
     parser.add_argument("--due-date", default="", help="jira-edit: YYYY-MM-DD, or none")
     parser.add_argument("--type", dest="link_type", default="", help="jira-link: the link type or phrase (relates to)")
+    parser.add_argument("--why", dest="done_why", default="", help="jira-done: what was delivered, or - for stdin")
     parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. sherif")
     parser.add_argument("--cloud-id", default=default_cloud_id())
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
@@ -138,8 +154,13 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     if args.command != "jira-link" and args.link_type:
         print(f"atl: --type is for jira-link, not {args.command}", file=sys.stderr)
         return 2
+    if args.command != "jira-done" and args.done_why:
+        print(f"atl: --why is for jira-done, not {args.command}", file=sys.stderr)
+        return 2
     if args.command in ("jira-edit", "jira-link"):
         return _edit_or_link(args, token_source, transport)
+    if args.command == "jira-done":
+        return _done(args, token_source, transport, pr_source)
 
     if args.command in READS:
         try:
@@ -291,6 +312,35 @@ def _split(value: str | None) -> tuple | None:
     if value is None:
         return None
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _done(args, token_source, transport, pr_source) -> int:
+    others = (args.mention, args.reason, args.title, args.parent, args.label, args.assignee, args.link, args.storage)
+    if args.text or args.why or args.description or any(others):
+        print('atl: jira-done takes the issue key and --why "what was delivered" only', file=sys.stderr)
+        return 2
+    why = sys.stdin.read() if args.done_why == "-" else args.done_why
+    if not why.strip():
+        print('atl: jira-done needs --why "what was delivered"', file=sys.stderr)
+        return 2
+    try:
+        agent = args.agent.lower()
+        kwargs = {"transport": transport} if transport else {}
+        client = AtlClient(
+            agent,
+            args.cloud_id,
+            token_source(account_for(agent, args.via), "jira"),
+            args.domain,
+            via=args.via,
+            **kwargs,
+        )
+        status, merged = client.jira_done(args.target, why, pr_source)
+        prs = f", {len(merged)} merged PR(s)" if merged else ", no PR"
+        print(f"{args.target} -> {status}{prs}, by {client.display}")
+    except AtlError as error:
+        print(f"atl: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _edit_or_link(args, token_source, transport) -> int:
