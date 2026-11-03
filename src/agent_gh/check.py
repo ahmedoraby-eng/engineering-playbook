@@ -13,6 +13,7 @@ import datetime as dt
 import subprocess
 from typing import TYPE_CHECKING
 
+from .app_new import HOMEPAGE
 from .identity import (
     LIST_ONLY,
     IdentityError,
@@ -51,6 +52,29 @@ def expected_permissions(entry: dict, config: dict) -> dict:
     return entry.get("permissions") or config.get("app_permissions", {})
 
 
+def _webhook_line(transport: Transport, auth: str) -> str:
+    """§4.1a: no event data may go anywhere. GitHub answers 404 when there is no webhook. gh-app-new's
+    manifest must give a URL, so it gives the placeholder HOMEPAGE with `active: false` (BASITA-155). The
+    API doesn't say whether a hook is active, so the placeholder counts as off only while nothing but
+    GitHub's creation `ping` was ever delivered: an installation or any other event means it is on."""
+    try:
+        _, hook = api(transport, "GET", "/app/hook/config", auth)
+    except IdentityError as error:
+        return "  ok webhook: none" if " 404 " in str(error) else f"  FAIL webhook: {error}"
+    if not hook.get("url"):
+        return "  ok webhook: none"
+    if hook["url"].rstrip("/") != HOMEPAGE:
+        return "  FAIL a webhook is configured; it must be off"
+    try:
+        _, deliveries = api(transport, "GET", "/app/hook/deliveries?per_page=100", auth)
+    except IdentityError as error:
+        return f"  FAIL webhook: the placeholder URL is set and its deliveries can't be read ({error})"
+    events = sorted({d.get("event", "?") for d in deliveries or []} - {"ping"})
+    if events:
+        return f"  FAIL the webhook is active: GitHub delivered {', '.join(events)}; it must be off"
+    return "  ok webhook: inactive (the manifest's placeholder URL; only the creation ping was ever sent)"
+
+
 def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: Callable, today: dt.date) -> list[str]:
     lines = [f"{agent}: App {entry['slug']} (id {entry['app_id']})"]
     expected = expected_permissions(entry, config)
@@ -77,15 +101,7 @@ def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: 
         lines.append(f"  FAIL App permissions are {_perms(granted)}; the config expects {_perms(expected)}")
     else:
         lines.append(f"  ok App permissions: {_perms(granted)}; events: {', '.join(app.get('events') or []) or 'none'}")
-    # §4.1a: Malek's App is public, so no event data may go anywhere. GitHub answers 404 when there is no webhook.
-    try:
-        _, hook = api(transport, "GET", "/app/hook/config", auth)
-        if hook.get("url"):
-            lines.append("  FAIL a webhook is configured; it must be off")
-        else:
-            lines.append("  ok webhook: none")
-    except IdentityError as error:
-        lines.append("  ok webhook: none" if " 404 " in str(error) else f"  FAIL webhook: {error}")
+    lines.append(_webhook_line(transport, auth))
     installations: list = []
     page = 1
     while True:

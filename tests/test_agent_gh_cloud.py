@@ -51,6 +51,9 @@ def ready(*names):
 
 
 READY = ready("talia", "sync", "reader", "yousef-docs")
+# Talia's App as before S2 (BASITA-155 gave the real config its ids), for the "not set up yet" refusal.
+PENDING_TALIA = copy.deepcopy(CONFIG)
+PENDING_TALIA["agents"]["talia"].update({"app_id": None, "client_id": None, "bot_id": None, "installations": {}})
 
 
 @pytest.fixture(scope="module")
@@ -583,7 +586,7 @@ def test_gh_cloud_key_refuses_the_wrong_app_the_macs_key_and_a_non_key(pem, tmp_
         ("sync", READY, "never has a key in the cloud"),
         ("reader", READY, "never has a key in the cloud"),
         ("yousef", CONFIG, "is a user"),
-        ("talia", CONFIG, "not set up yet"),
+        ("talia", PENDING_TALIA, "not set up yet"),
     ],
 )
 def test_gh_cloud_key_refusals_before_the_file_is_read(agent, config, why, tmp_path):
