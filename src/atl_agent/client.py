@@ -13,7 +13,6 @@ from __future__ import annotations
 import base64
 import datetime
 import json
-import mimetypes
 import os
 import re
 import subprocess
@@ -365,10 +364,55 @@ def _pick_link_type(wanted: str, types) -> tuple[dict | None, bool]:
 
 # Confluence: a label is one lowercase word without these characters, at most 255 long.
 MAX_LABEL = 255
-_BAD_LABEL_CHARS = re.compile(r"[\s&#()*,.?;:@\[\]^/<>\"'\\|]")
+_BAD_LABEL_CHARS = re.compile(r"[\s&#()*,.?;:@\[\]^/<>\"'\\|!]")
 # One attachment: the cap keeps a stray big file from being read into memory and uploaded.
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 MOVE_DEPTH_CAP = 50  # how many levels above the new parent a move walks looking for the page itself
+# What confluence-attach may send (Yousef's review of #41): images and documents for the WoW pages, nothing else, so a
+# session can't publish a Mac-local secret (a .pem, an .env, a token file) to a page in one command. Each type has a
+# fixed content type rather than a guess. Add a type here, and say so in its PR, before attaching it.
+ATTACH_TYPES = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "svg": "image/svg+xml",
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "csv": "text/csv",
+}
+# Folders in the home folder where keys, tokens and app data live; nothing under them is attached, whatever its name.
+ATTACH_REFUSED_HOME = (".config", ".ssh", ".gnupg", ".aws", ".claude", "Library")
+
+
+def attach_refusal(path: str, home: Path | None = None) -> str:
+    """Why `path` may not be attached, or "" when it may. Only the path is looked at, never the contents, and every
+    reason names the rule. The path is resolved, so a symlink is judged by what it points to, and both the name given
+    and the resolved one must pass: no folder or file whose name starts with "." (a dotfile, ~/.ssh), nothing under
+    the ATTACH_REFUSED_HOME folders, and an extension in ATTACH_TYPES (which rules out .pem, .key, .p12, .env, .json,
+    .conf, .txt and no extension at all)."""
+    home = Path(home or Path.home()).resolve()
+    given = Path(os.path.abspath(Path(path).expanduser()))
+    resolved = given.resolve()
+    allowed = ", ".join(ATTACH_TYPES)
+    for candidate in (given, resolved):
+        dotted = next((part for part in candidate.parts if part.startswith(".")), "")
+        if dotted:
+            return f"refused: atl attaches no dotfile and nothing in a dot folder ('{dotted}' in {candidate})"
+        try:
+            inside = candidate.relative_to(home).parts
+        except ValueError:
+            inside = ()
+        if inside and inside[0] in ATTACH_REFUSED_HOME:
+            return f"refused: atl attaches nothing under ~/{inside[0]}, where keys, tokens and app data live"
+        ext = candidate.suffix.lower().lstrip(".")
+        if ext not in ATTACH_TYPES:
+            what = f".{ext}" if ext else "no extension"
+            return f"refused: atl attaches only {allowed} files ({candidate.name} has {what})"
+    return ""
 
 
 def _check_confluence_labels(labels) -> list[str]:
@@ -378,7 +422,7 @@ def _check_confluence_labels(labels) -> list[str]:
         if not name or len(name) > MAX_LABEL or _BAD_LABEL_CHARS.search(name) or name != name.lower():
             raise AtlError(
                 f"'{name}' is not a Confluence label: use lowercase, no spaces or punctuation "
-                f"(& # ( ) * , . ? ; : @ [ ] ^ / < > quotes), up to {MAX_LABEL} characters"
+                f"(& # ( ) * , . ? ! ; : @ [ ] ^ / < > quotes), up to {MAX_LABEL} characters"
             )
     return names
 
@@ -1328,11 +1372,15 @@ class AtlClient:
 
     def confluence_attach(self, page: str, path: str) -> dict:
         """Upload a file to a page, or add a new version when the page already has an attachment of that name
-        (Confluence matches by file name). Nothing is deleted. The file is read in binary, must be a file (not a
-        directory) of at most MAX_ATTACHMENT_BYTES, and goes up under its base name. Returns {"id", "name", "version",
-        "ref"}, where `name` is the name to use in `<ri:attachment ri:filename="...">` and `ref` is a ready
+        (Confluence matches by file name). Nothing is deleted. attach_refusal decides first, from the path alone, so
+        only an image or document outside the secret folders is ever read. The file is read in binary, must be a file
+        (not a directory) of at most MAX_ATTACHMENT_BYTES, and goes up under its base name. Returns {"id", "name",
+        "version", "ref"}, where `name` is the name to use in `<ri:attachment ri:filename="...">` and `ref` is a ready
         `<ac:image>` line. Needs read:content-details and write:attachment (both :confluence)."""
         page_id = self._page_id(page)
+        refusal = attach_refusal(path)  # before the file is touched (Yousef's review of #41)
+        if refusal:
+            raise AtlError(refusal)
         source = Path(path).expanduser()
         if not source.exists():
             raise AtlError(f"no such file: {path}")
@@ -1347,7 +1395,7 @@ class AtlClient:
                 f"{name} is {size / 1024 / 1024:.1f} MB; atl uploads at most {MAX_ATTACHMENT_BYTES // 1024 // 1024} MB"
             )
         data = source.read_bytes()
-        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        content_type = ATTACH_TYPES[Path(name).suffix.lower().lstrip(".")]
         fields = {"minorEdit": "true", "comment": f"[{self.reader}] uploaded with atl"}
         raw = _multipart(fields, name, content_type, data)
         found = self._call(

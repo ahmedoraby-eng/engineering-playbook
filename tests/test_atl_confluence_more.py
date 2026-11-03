@@ -147,7 +147,7 @@ def test_cli_jira_link_without_type_reads_no_link_type_list(capsys):
 
 
 @pytest.mark.parametrize(
-    "bad", ["", " ", "Has Space", "two words", "UPPER", "Mixed", "a,b", "a.b", "a&b", "a/b", "a(b)", "x" * 256]
+    "bad", ["", " ", "Has Space", "two words", "UPPER", "Mixed", "a,b", "a.b", "a&b", "a/b", "a(b)", "a!", "x" * 256]
 )
 def test_bad_labels_are_refused(bad):
     with pytest.raises(AtlError, match="is not a Confluence label"):
@@ -411,14 +411,14 @@ def test_attach_uploads_the_file_as_multipart_with_the_nocheck_header(tmp_path):
     }
 
 
-def test_attach_sends_only_the_base_name_and_a_file_type_it_can_guess(tmp_path):
+def test_attach_sends_only_the_base_name_and_the_types_own_content_type(tmp_path):
     folder = tmp_path / "deep" / "dir"
     folder.mkdir(parents=True)
-    path, _ = make_file(folder, "notes.unknownext", b"abc")
-    transport = Recorder(attached("notes.unknownext"))
+    path, _ = make_file(folder, "Notes.CSV", b"a,b")
+    transport = Recorder(attached("Notes.CSV"))
     client(transport).confluence_attach("123", str(path))
     body = transport.calls[0][3]
-    assert b'filename="notes.unknownext"\r\nContent-Type: application/octet-stream' in body
+    assert b'filename="Notes.CSV"\r\nContent-Type: text/csv' in body
     assert b"deep" not in body
 
 
@@ -458,11 +458,12 @@ def test_attach_refuses_a_missing_file_a_directory_and_a_big_file_before_any_cal
     transport = Recorder()
     with pytest.raises(AtlError, match="no such file"):
         client(transport).confluence_attach("123", str(tmp_path / "nope.png"))
+    (tmp_path / "folder.png").mkdir()
     with pytest.raises(AtlError, match="is not a file"):
-        client(transport).confluence_attach("123", str(tmp_path))
-    path, _ = make_file(tmp_path, "big.bin", b"x" * 2048)
+        client(transport).confluence_attach("123", str(tmp_path / "folder.png"))
+    path, _ = make_file(tmp_path, "big.pdf", b"x" * 2048)
     monkeypatch.setattr("atl_agent.client.MAX_ATTACHMENT_BYTES", 1024)
-    with pytest.raises(AtlError, match="big.bin is 0.0 MB; atl uploads at most 0 MB"):
+    with pytest.raises(AtlError, match="big.pdf is 0.0 MB; atl uploads at most 0 MB"):
         client(transport).confluence_attach("123", str(path))
     assert transport.calls == []
 
@@ -471,7 +472,7 @@ def test_attach_cap_is_25_mb_and_the_message_says_so(tmp_path, monkeypatch):
     from atl_agent import client as module
 
     assert module.MAX_ATTACHMENT_BYTES == 25 * 1024 * 1024
-    path, _ = make_file(tmp_path, "big.bin", b"x" * 4096)
+    path, _ = make_file(tmp_path, "big.pdf", b"x" * 4096)
     monkeypatch.setattr(module, "MAX_ATTACHMENT_BYTES", 2048)
     with pytest.raises(AtlError, match="at most"):
         client(Recorder()).confluence_attach("123", str(path))
@@ -555,3 +556,131 @@ def test_none_of_the_new_paths_sends_a_delete(tmp_path):
     c.confluence_attach("123", str(path))
     c.confluence_edit("123", "t", parent="456", labels=("wow",))
     assert set(transport.methods) <= {"GET", "POST", "PUT"}
+
+
+# ---------- what confluence-attach may send (Yousef's review of #41) ----------
+
+SECRET = b"-----" + b"BEGIN SECRET-----\nSECRET-VALUE-123\n"  # assembled at runtime; a stand-in, not a real key
+
+
+@pytest.fixture
+def never_read(monkeypatch):
+    """A refusal must come from the path alone: reading any file fails the test."""
+
+    def boom(self):
+        raise AssertionError(f"{self} was read")
+
+    monkeypatch.setattr("pathlib.Path.read_bytes", boom)
+
+
+def refused(path, why):
+    transport = Recorder()
+    with pytest.raises(AtlError, match=why) as caught:
+        client(transport).confluence_attach("123", str(path))
+    assert transport.calls == []
+    assert "SECRET-VALUE-123" not in str(caught.value)  # the reason names the rule, never the contents
+    return str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "server.pem",
+        "id_ed25519.key",
+        "cert.p12",
+        "prod.env",
+        "creds.json",
+        "app.conf",
+        "notes.txt",
+        "README",  # no extension
+        "id_rsa",  # no extension
+        "backup.zip",
+        "deploy.sh",
+        "shot.png.pem",  # only the last extension counts
+    ],
+)
+def test_attach_refuses_every_type_not_on_the_list(tmp_path, name):
+    path = tmp_path / name
+    path.write_bytes(SECRET)
+    message = refused(path, r"refused: atl attaches only png, jpg, jpeg, gif, webp, svg, pdf, docx, xlsx, pptx, csv")
+    assert name in message
+
+
+@pytest.mark.parametrize("name", [".env", ".shot.png", ".netrc"])
+def test_attach_refuses_a_dotfile(tmp_path, name, never_read):
+    path = tmp_path / name
+    path.write_text("SECRET-VALUE-123")
+    refused(path, "refused: atl attaches no dotfile and nothing in a dot folder")
+
+
+def test_attach_refuses_an_image_in_a_dot_folder(tmp_path, never_read):
+    folder = tmp_path / "work" / ".secrets"
+    folder.mkdir(parents=True)
+    path, _ = make_file(folder, "shot.png")
+    refused(path, r"'\.secrets'")
+
+
+@pytest.mark.parametrize(
+    "folder", [".config/basita", ".ssh", ".gnupg", ".aws", ".claude/projects", "Library/Keychains"]
+)
+def test_attach_refuses_anything_in_the_secret_home_folders(tmp_path, monkeypatch, folder, never_read):
+    home = tmp_path / "home"
+    (home / folder).mkdir(parents=True)
+    path, _ = make_file(home / folder, "shot.png")
+    monkeypatch.setenv("HOME", str(home))
+    why = "under ~/Library" if folder.startswith("Library") else "dot folder"
+    refused(path, why)
+
+
+def test_attach_follows_a_symlink_to_what_it_points_to(tmp_path, monkeypatch, never_read):
+    home = tmp_path / "home"
+    (home / "Library").mkdir(parents=True)
+    (home / ".ssh").mkdir()
+    (home / "Library" / "real.png").write_bytes(b"x")
+    (home / ".ssh" / "id.png").write_bytes(b"x")
+    (tmp_path / "secret.pem").write_bytes(SECRET)
+    monkeypatch.setenv("HOME", str(home))
+    links = {"to-pem.png": tmp_path / "secret.pem", "to-library.png": home / "Library" / "real.png"}
+    links["to-ssh.png"] = home / ".ssh" / "id.png"
+    expected = {"to-pem.png": r"secret\.pem has \.pem", "to-library.png": "under ~/Library", "to-ssh.png": "dot folder"}
+    for name, target in links.items():
+        (tmp_path / name).symlink_to(target)
+        refused(tmp_path / name, expected[name])
+
+
+def test_attach_refuses_a_pem_named_like_an_image_by_its_link_but_not_a_real_image(tmp_path):
+    """The given name and the resolved one must both pass: an image linked as .pem is refused too."""
+    image, _ = make_file(tmp_path, "real.png")
+    (tmp_path / "looks.pem").symlink_to(image)
+    refused(tmp_path / "looks.pem", r"looks\.pem has \.pem")
+
+
+@pytest.mark.parametrize("ext", ["png", "JPG", "jpeg", "gif", "webp", "svg", "pdf", "docx", "xlsx", "pptx", "csv"])
+def test_attach_allows_each_listed_type_with_its_own_content_type(tmp_path, ext):
+    from atl_agent.client import ATTACH_TYPES
+
+    path, _ = make_file(tmp_path, f"file.{ext}", b"data")
+    transport = Recorder(attached(f"file.{ext}"))
+    client(transport).confluence_attach("123", str(path))
+    assert f'filename="file.{ext}"\r\nContent-Type: {ATTACH_TYPES[ext.lower()]}'.encode() in transport.calls[0][3]
+
+
+def test_attach_allows_an_image_elsewhere_in_the_home_folder(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "Code" / "basita-ops" / "work").mkdir(parents=True)
+    path, _ = make_file(home / "Code" / "basita-ops" / "work", "flow.png")
+    monkeypatch.setenv("HOME", str(home))
+    transport = Recorder(attached("flow.png"))
+    assert client(transport).confluence_attach("123", str(path))["name"] == "flow.png"
+
+
+def test_cli_attach_refusal_is_a_one_line_error(tmp_path, capsys, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh" / "id_ed25519").write_bytes(SECRET)
+    monkeypatch.setenv("HOME", str(home))
+    transport = Recorder()
+    assert run(["malek", "confluence-attach", "123", "~/.ssh/id_ed25519"], transport) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("atl: refused: atl attaches no dotfile") and "SECRET-VALUE-123" not in err
+    assert transport.calls == []
