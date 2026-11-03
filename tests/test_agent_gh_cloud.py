@@ -19,6 +19,7 @@ from agent_gh import __main__ as cli
 from agent_gh import cloud, cloud_key, proxy_test, rest
 from agent_gh.check import run_check
 from agent_gh.identity import (
+    PR_WRITE,
     READ,
     IdentityError,
     agent_entry,
@@ -204,6 +205,26 @@ def test_a_cloud_push_waits_for_m0():
     with pytest.raises(IdentityError, match="Git Data API is not built yet"):
         cloud.require_cloud_push({"CLAUDE_CODE_REMOTE": "true", "AGENT_GIT_CLOUD_PUSH": "git-data"})
     cloud.require_cloud_push({"CLAUDE_CODE_REMOTE": "true", "AGENT_GIT_CLOUD_PUSH": "git"})
+
+
+def test_a_cloud_write_waits_for_m0_and_a_read_does_not():
+    on_cloud = {"CLAUDE_CODE_REMOTE": "true"}
+    cloud.require_cloud_write(PR_WRITE, {})  # the Mac
+    cloud.require_cloud_write(READ, on_cloud)
+    with pytest.raises(IdentityError, match=r"write from a cloud session waits for the proxy test"):
+        cloud.require_cloud_write(PR_WRITE, on_cloud)
+    cloud.require_cloud_write(PR_WRITE, {**on_cloud, "AGENT_GH_CLOUD_WRITES": "1"})
+
+
+def test_cmd_gh_refuses_a_cloud_write_before_a_token_is_minted(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    monkeypatch.delenv("AGENT_GH_CLOUD_WRITES", raising=False)
+    monkeypatch.setattr(cli, "_default_repo", lambda: OPS)
+    monkeypatch.setattr(cli, "token_for", lambda *a, **k: pytest.fail("a token was minted"))
+    with pytest.raises(IdentityError, match="waits for the proxy test"):
+        cli.cmd_gh("malek", ["pr", "comment", "3", "--body", "x"])
+    with pytest.raises(IdentityError, match="waits for the proxy test"):
+        cli.cmd_gh("malek", ["api", f"repos/{OPS}/issues/3/comments", "-f", "body=x"])
 
 
 def test_the_cloud_push_token_goes_as_a_header_in_the_environment():

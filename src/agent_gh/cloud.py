@@ -7,6 +7,9 @@ blocks GraphQL whatever token is used. Claude Code sets CLAUDE_CODE_REMOTE=true 
 - **REST mode.** `gh pr ...` speaks GraphQL, so agent-gh runs `pr create|view|comment|checks` through
   REST itself (rest.py), after the policy approved the original command. It is on in a cloud session,
   and AGENT_GH_REST=1 or 0 turns it on or off anywhere (to try it on the Mac, or to turn it off).
+- **Writes.** Until M0 shows a REST call carries the App's own token, a gh write (pull request,
+  comment) from a cloud session is refused as a push is; reads work. AGENT_GH_CLOUD_WRITES=1 turns
+  writes on once M0 says rest=app.
 - **Push.** Whether `git push` carries the App's own token through the proxy is what the proxy test
   (M0, BASITA-156) answers. Until it says so, a push from a cloud session is refused, because it could
   go out as the GitHub account connected to claude.ai. AGENT_GIT_CLOUD_PUSH=git turns it on once M0
@@ -24,6 +27,7 @@ from .identity import IdentityError
 REMOTE = "CLAUDE_CODE_REMOTE"
 REST_SWITCH = "AGENT_GH_REST"
 PUSH_SWITCH = "AGENT_GIT_CLOUD_PUSH"
+WRITE_SWITCH = "AGENT_GH_CLOUD_WRITES"
 ON = ("1", "true", "on", "yes")
 OFF = ("0", "false", "off", "no")
 
@@ -42,6 +46,22 @@ def rest_mode(environ: dict | None = None) -> bool:
     if switch in OFF:
         return False
     return in_cloud(environ)
+
+
+def require_cloud_write(permissions: dict, environ: dict | None = None) -> None:
+    """Nothing on the Mac, and nothing for a read. In a cloud session a gh write (a pull request, a
+    comment) waits for M0 as a push does: if the proxy put the claude.ai account's token in place of
+    the App's, it would be written as that account. AGENT_GH_CLOUD_WRITES=1 once M0 says rest=app."""
+    environ = os.environ if environ is None else environ
+    if not in_cloud(environ) or all(access != "write" for access in permissions.values()):
+        return
+    if (environ.get(WRITE_SWITCH) or "").strip().lower() in ON:
+        return
+    raise IdentityError(
+        "refused: a GitHub write from a cloud session waits for the proxy test (M0, BASITA-156). Until it "
+        "shows that a REST call carries the App's own token, it could be written as the account connected "
+        f"to claude.ai. Reads work; {WRITE_SWITCH}=1 turns writes on once M0 says rest=app"
+    )
 
 
 def require_cloud_push(environ: dict | None = None) -> None:

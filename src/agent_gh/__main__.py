@@ -112,6 +112,7 @@ def cmd_gh(agent: str, args: list[str]) -> int:
     plan = plan_gh(name, entry, args, _default_repo(), config)
     # In a cloud session the proxy blocks GraphQL: the policy approved the gh command; REST runs it.
     rest_run = rest.runner(name, plan) if cloud.rest_mode() else None
+    cloud.require_cloud_write(plan.permissions)  # in a cloud session a write waits for the proxy test (M0)
     if os.environ.get("AGENT_GH_DRY_RUN"):
         return _dry_run(name, "gh (REST)" if rest_run else "gh", plan)
     token, revocable = token_for(name, plan.repo, plan.permissions, config)
