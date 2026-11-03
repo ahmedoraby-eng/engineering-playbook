@@ -106,6 +106,8 @@ def test_allowed_gh_commands_get_the_smallest_token(args, permissions):
         (["pr", "edit", "3", "--add-label", "reviewed-by-ahmed"], "only by Ahmed"),
         (["pr", "create", "--label=docs,Human-Reviewed"], "only by Ahmed"),
         (["pr", "edit", "3", "-lreviewed-by-ahmed"], "only by Ahmed"),
+        (["pr", "edit", "3", "--add-label", "jira-status-waived"], "only by Ahmed"),
+        (["api", "repos/a/b/issues/3/labels", "-f", "labels[]=Jira-Status-Waived"], "only by Ahmed"),
         (["pr", "review", "3", "--approve"], "Yousef reviews"),
         (["pr", "view", "3", "--hostname", "evil.example"], "github.com"),
         (["api", "-X", "DELETE", "repos/a/b/git/refs/heads/x"], "deleting"),

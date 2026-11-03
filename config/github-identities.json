@@ -1,7 +1,7 @@
 {
   "_comment": "GitHub identities of Basita's agents (BASITA-149, BASITA-157). No secrets: the private keys and tokens are in the macOS Keychain, account 'basita', under the names in 'keychain'. An App whose app_id is null is pending: Ahmed creates it with scripts/gh-app-new (setup S2), and until then agent-gh and agent-git refuse it. See standards/06-agent-identity.md.",
   "attribution": "warn",
-  "ahmed_only_labels": ["reviewed-by-ahmed", "human-reviewed"],
+  "ahmed_only_labels": ["reviewed-by-ahmed", "human-reviewed", "jira-status-waived"],
   "protected_branches": ["main", "master"],
   "_protected_prefixes": "basita-ops sync.sh merges claude/* branches into main by itself, so an App must not push one",
   "protected_prefixes": ["claude/"],
