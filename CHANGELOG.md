@@ -16,6 +16,7 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 - Main guard (BASITA-150): reusable `reusable-main-guard.yml` and `python -m main_guard` turn red for any update to `main` by an actor not on the list in the caller's workflow file.
 
 ### Changed
+- `jira-status-waived` joins the labels only Ahmed sets: `agent-gh` refuses to add or remove it. It lets a PR past elbayoumy's Jira status check, which counts it only when Ahmed added it (BASITA-168).
 - An App pushes only to its own `branch_prefix` (`malek/`, `haya/`, `salma/`, `talia/`, `sherif/`, `adam/`, `nora/`, and `yousef/` for the docs App). Malek, Haya and Salma are now refused outside their prefix. `main`, `master` and `claude/*` stay refused for every App. Only `basita-sync` updates `main`, only of `basitasolutions/basita-ops`, never forced, and it pushes nothing else and runs no `gh` command. `basita-reader` reads only (BASITA-157).
 - Yousef gets a `push_app`: `agent-git yousef push` and `agent-gh yousef pr create|edit` run as `basita-yousef-docs[bot]`; his reviews and comments keep his user token. agent-attribution maps `basita-yousef-docs[bot]` to Yousef, with no workflow change. `gh-check` compares each App with its own `permissions` (BASITA-157).
 - `agent-git` knows `sync`, for `sync.sh` once it commits and pushes as `basita-sync` (BASITA-157).
