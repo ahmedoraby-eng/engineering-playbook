@@ -209,6 +209,10 @@ def _pages(read: Call, path: str, key: str | None = None) -> list:
         page += 1
 
 
+def _is_architecture_review(name: str) -> bool:
+    return name == ARCHITECTURE_REVIEW or name.endswith(f" / {ARCHITECTURE_REVIEW}")
+
+
 def _rules(read: Call, repo: str) -> dict:
     _, payload = read("GET", f"/repos/{repo}/contents/.github/review-rules.json?ref=main", None)
     try:
@@ -276,7 +280,9 @@ def check_merge(
         for r in runs
         if r.get("status") != "completed" or r.get("conclusion") not in GREEN
     )
-    review = [r for r in runs if r.get("name") == ARCHITECTURE_REVIEW]
+    # In a consuming repository the reusable workflow's run is named "<caller job> / Architecture review"
+    # ("architecture-review / Architecture review"); "rerun / Re-run Architecture review" is not it.
+    review = [r for r in runs if _is_architecture_review(r.get("name") or "")]
     _, combined = read("GET", f"/repos/{repo}/commits/{head}/status", None)
     statuses = (combined or {}).get("statuses") or []
     not_green += sorted(f"{s.get('context')} ({s.get('state')})" for s in statuses if s.get("state") != "success")

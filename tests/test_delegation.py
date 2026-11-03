@@ -477,3 +477,15 @@ def test_a_delegated_merge_from_a_cloud_session_waits_for_m0(monkeypatch):
     for agent, args in (("talia", ["pr", "merge", "12", "-R", OPS]), ("sync", ["delegation-note", "7"])):
         with pytest.raises(IdentityError, match="waits for the proxy test"):
             cli.cmd_gh(agent, args)
+
+
+def test_the_check_run_name_from_a_reusable_workflow_counts():
+    """In basita-ops, elbayoumy and the playbook the run is "architecture-review / Architecture review"."""
+    github = FakeGitHub()
+    github.runs = [
+        {"name": "architecture-review / Architecture review", "status": "completed", "conclusion": "success"},
+        {"name": "rerun / Re-run Architecture review", "status": "completed", "conclusion": "success"},
+    ]
+    assert checked(github).failures == []
+    github.runs = [{"name": "rerun / Re-run Architecture review", "status": "completed", "conclusion": "success"}]
+    assert any("Architecture review is not success" in f for f in checked(github).failures)
