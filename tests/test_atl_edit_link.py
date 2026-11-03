@@ -344,49 +344,49 @@ def shown(type_name, outward, inward, other, as_outward=True):
 
 @pytest.mark.parametrize("given", ["blocks", "Blocks", "BLOCKS"])
 def test_link_by_name_or_outward_phrase(given):
-    transport = FakeTransport(TYPES, NONE, CREATED, links_on([shown("Blocks", "blocks", "is blocked by", "DFP-2")]))
+    transport = FakeTransport(NONE, CREATED, links_on([shown("Blocks", "blocks", "is blocked by", "DFP-2")]))
     assert client(transport).jira_link_typed("DFP-1", "DFP-2", given) == "blocks"
-    assert transport.calls[1][1].endswith("/issue/DFP-1?fields=issuelinks")
-    method, url, _, body = transport.calls[2]
+    assert transport.calls[0][1].endswith("/issue/DFP-1?fields=issuelinks")
+    method, url, _, body = transport.calls[1]
     assert method == "POST" and url.endswith("/rest/api/3/issueLink")
     assert body == {"type": {"name": "Blocks"}, "inwardIssue": {"key": "DFP-1"}, "outwardIssue": {"key": "DFP-2"}}
-    assert transport.calls[3][1].endswith("/issue/DFP-1?fields=issuelinks")
+    assert transport.calls[2][1].endswith("/issue/DFP-1?fields=issuelinks")
 
 
 def test_link_by_inward_phrase_reverses_the_issues():
     transport = FakeTransport(
-        TYPES, NONE, CREATED, links_on([shown("Blocks", "blocks", "is blocked by", "DFP-2", as_outward=False)])
+        NONE, CREATED, links_on([shown("Blocks", "blocks", "is blocked by", "DFP-2", as_outward=False)])
     )
     assert client(transport).jira_link_typed("DFP-1", "DFP-2", "is blocked by") == "is blocked by"
-    assert transport.calls[2][3]["inwardIssue"] == {"key": "DFP-2"}
-    assert transport.calls[2][3]["outwardIssue"] == {"key": "DFP-1"}
+    assert transport.calls[1][3]["inwardIssue"] == {"key": "DFP-2"}
+    assert transport.calls[1][3]["outwardIssue"] == {"key": "DFP-1"}
 
 
 def test_link_says_so_when_jira_recorded_it_the_other_way():
     transport = FakeTransport(
-        TYPES, NONE, CREATED, links_on([shown("Blocks", "blocks", "is blocked by", "DFP-2", as_outward=False)])
+        NONE, CREATED, links_on([shown("Blocks", "blocks", "is blocked by", "DFP-2", as_outward=False)])
     )
     with pytest.raises(AtlError, match="Jira recorded DFP-1 is blocked by DFP-2, not DFP-1 blocks DFP-2"):
         client(transport).jira_link_typed("DFP-1", "DFP-2", "blocks")
-    assert [c[0] for c in transport.calls] == ["GET", "GET", "POST", "GET"]
+    assert [c[0] for c in transport.calls] == ["GET", "POST", "GET"]
 
 
 def test_link_backwards_is_caught_even_when_the_right_one_was_already_there():
     right = shown("Blocks", "blocks", "is blocked by", "DFP-2")
     backwards = shown("Blocks", "blocks", "is blocked by", "DFP-2", as_outward=False)
-    transport = FakeTransport(TYPES, links_on([right]), CREATED, links_on([right, backwards]))
+    transport = FakeTransport(links_on([right]), CREATED, links_on([right, backwards]))
     with pytest.raises(AtlError, match="Jira recorded DFP-1 is blocked by DFP-2, not DFP-1 blocks DFP-2"):
         client(transport).jira_link_typed("DFP-1", "DFP-2", "blocks")
 
 
 def test_link_already_there_and_unchanged_is_reported_as_it_stands():
     right = shown("Blocks", "blocks", "is blocked by", "DFP-2")
-    transport = FakeTransport(TYPES, links_on([right]), CREATED, links_on([right]))
+    transport = FakeTransport(links_on([right]), CREATED, links_on([right]))
     assert client(transport).jira_link_typed("DFP-1", "DFP-2", "blocks") == "blocks"
 
 
 def test_link_not_shown_yet_is_an_error():
-    transport = FakeTransport(TYPES, NONE, CREATED, links_on([shown("Relates", "relates to", "relates to", "DFP-9")]))
+    transport = FakeTransport(NONE, CREATED, links_on([shown("Relates", "relates to", "relates to", "DFP-9")]))
     with pytest.raises(AtlError, match="does not show a Blocks link to DFP-2"):
         client(transport).jira_link_typed("DFP-1", "DFP-2", "blocks")
 
@@ -416,15 +416,13 @@ def test_link_unknown_type_lists_the_known_ones_and_posts_nothing():
 
 
 def test_cli_link_defaults_to_relates_and_prints_what_jira_shows(capsys):
-    transport = FakeTransport(TYPES, NONE, CREATED, links_on([shown("Relates", "relates to", "relates to", "ELB-3")]))
+    transport = FakeTransport(NONE, CREATED, links_on([shown("Relates", "relates to", "relates to", "ELB-3")]))
     assert run(["sherif", "jira-link", "DFP-1", "ELB-3"], transport) == 0
     assert capsys.readouterr().out.strip() == "DFP-1 relates to ELB-3, by Sherif"
-    assert transport.calls[2][3]["type"] == {"name": "Relates"}
+    assert transport.calls[1][3]["type"] == {"name": "Relates"}
 
 
 def test_cli_link_with_type(capsys):
-    transport = FakeTransport(
-        TYPES, NONE, CREATED, links_on([shown("Duplicate", "duplicates", "is duplicated by", "DFP-2")])
-    )
+    transport = FakeTransport(NONE, CREATED, links_on([shown("Duplicate", "duplicates", "is duplicated by", "DFP-2")]))
     assert run(["adam", "jira-link", "DFP-1", "DFP-2", "--type", "duplicates"], transport) == 0
     assert capsys.readouterr().out.strip() == "DFP-1 duplicates DFP-2, by Adam"
