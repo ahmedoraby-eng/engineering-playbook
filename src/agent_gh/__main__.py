@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import delegation
+from . import cloud, delegation, rest
 from .check import run_check
 from .identity import (
     IdentityError,
@@ -112,6 +112,12 @@ def run_with_token(command: list[str], env: dict, token: str, revocable: bool, t
 def cmd_delegation(agent: str, args: list[str]) -> int:
     from .identity import api, urllib_transport
 
+    # A delegated merge or a delegation record is a write: from a cloud session it waits for the proxy test (M0),
+    # as every other write does (BASITA-163), before any token is minted.
+    if args[:2] == ["pr", "merge"]:
+        cloud.require_cloud_write(delegation.MERGE_WRITE)
+    elif agent == "sync":
+        cloud.require_cloud_write(delegation.RECORD_WRITE)
     atl = str(Path(__file__).resolve().parents[2] / "scripts" / "atl")
     deps = {
         "api": api,
@@ -133,9 +139,14 @@ def cmd_gh(agent: str, args: list[str]) -> int:
     config = load_config()
     name, entry = acting_identity(config, agent, uses_push_app(args))
     plan = plan_gh(name, entry, args, _default_repo(), config)
+    # In a cloud session the proxy blocks GraphQL: the policy approved the gh command; REST runs it.
+    rest_run = rest.runner(name, plan) if cloud.rest_mode() else None
+    cloud.require_cloud_write(plan.permissions)  # in a cloud session a write waits for the proxy test (M0)
     if os.environ.get("AGENT_GH_DRY_RUN"):
-        return _dry_run(name, "gh", plan)
+        return _dry_run(name, "gh (REST)" if rest_run else "gh", plan)
     token, revocable = token_for(name, plan.repo, plan.permissions, config)
+    if rest_run:
+        return rest.run_and_revoke(rest_run, token, revocable)
     env = _env()
     env.update({"GH_TOKEN": token, "GH_REPO": plan.repo})
     return run_with_token([GH, *plan.args], env, token, revocable)
@@ -160,11 +171,13 @@ def cmd_push(agent: str, args: list[str]) -> int:
         remote_url = urls[0]
     branch = _git("symbolic-ref", "--short", "-q", "HEAD") or None
     plan = plan_push(args, branch, remote_url, config, entry)
+    cloud.require_cloud_push()  # in a cloud session a push waits for the proxy test (M0)
     if os.environ.get("AGENT_GH_DRY_RUN"):
         return _dry_run(name, "push", plan)
     token, revocable = token_for(name, plan.repo, plan.permissions, config)
     env = _env()
     env["AGENT_GH_TOKEN"] = token
+    env.update(cloud.push_env(token))
     git = [
         "git",
         "-c", "credential.helper=",  # drops every helper set before, including gh's and the Keychain's

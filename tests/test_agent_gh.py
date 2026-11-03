@@ -448,9 +448,9 @@ def test_agent_git_push_goes_through_agent_gh(tmp_path):
     ):
         bad = subprocess.run([script, "malek", *args], cwd=repo, env=env, capture_output=True, text=True)
         assert bad.returncode != 0 and why in bad.stderr
-    # Yousef pushes through his documents App, which Ahmed has not created yet (BASITA-157).
+    # Yousef pushes through his documents App (BASITA-157), which keeps to its own prefix.
     bad = subprocess.run([script, "yousef", "push"], cwd=repo, env=env, capture_output=True, text=True)
-    assert bad.returncode == 1 and "basita-yousef-docs is not set up yet (Ahmed's setup S2)" in bad.stderr
+    assert bad.returncode == 1 and "basita-yousef-docs pushes only to yousef/* branches" in bad.stderr
 
 
 def test_agent_git_commits_with_the_bot_address(tmp_path):
@@ -478,7 +478,7 @@ def test_agent_git_commits_with_the_bot_address(tmp_path):
     salma, talia, malek = [line for line in log.splitlines() if line]
     assert malek.startswith("Malek (Basita AI) <351705446+basita-malek[bot]@users.noreply.github.com>|351705446+")
     assert malek.endswith("|Malek")
-    assert talia.startswith("Talia (Basita AI) <talia@basitasolutions.com>")
+    assert talia.startswith("Talia (Basita AI) <351996843+basita-talia[bot]@users.noreply.github.com>|351996843+")
     assert salma.startswith("Salma (Basita AI) <salma@basitasolutions.com>")
 
 
@@ -504,7 +504,8 @@ def test_cli_usage_and_bot_email(capsys):
     assert cli.main([]) == 2
     assert cli.main(["bot-email", "haya"]) == 0
     assert capsys.readouterr().out.strip() == "351706579+basita-haya[bot]@users.noreply.github.com"
-    assert cli.main(["bot-email", "talia"]) == 1  # pending: no bot yet
+    assert cli.main(["bot-email", "talia"]) == 0  # created at S2 (BASITA-155)
+    assert capsys.readouterr().out.strip() == "351996843+basita-talia[bot]@users.noreply.github.com"
     assert cli.main(["gh", "maya", "pr", "view"]) == 1
     assert "maya has no GitHub identity" in capsys.readouterr().err
 
@@ -695,6 +696,28 @@ def test_gh_check_flags_a_webhook_and_pages_installations(key):
     text = "\n".join(lines)
     assert code == 1 and "FAIL a webhook is configured" in text and "example.com" not in text
     assert "attention installation 7 on last" in text and text.count("attention installation") == 101
+
+
+@pytest.mark.parametrize(
+    ("deliveries", "expected"),
+    [
+        ([{"event": "ping"}], "ok webhook: inactive"),
+        ([], "ok webhook: inactive"),
+        ([{"event": "ping"}, {"event": "installation"}], "FAIL the webhook is active: GitHub delivered installation"),
+    ],
+)
+def test_gh_check_reads_gh_app_new_placeholder_hook_by_its_deliveries(key, deliveries, expected):
+    pem, _ = key
+    answers = _app_answers([], [])
+    answers[("GET", "/app/hook/config")] = (
+        200,
+        {},
+        {"url": "https://github.com/basitasolutions", "content_type": "json"},
+    )
+    answers[("GET", "/app/hook/deliveries?per_page=100")] = (200, {}, deliveries)
+    run = keychain({"basita-gh-malek-app": base64.b64encode(pem).decode()})
+    lines, _ = run_check(CONFIG, ["malek"], FakeGitHub(answers), run)
+    assert expected in "\n".join(lines)
 
 
 def test_gh_check_fails_when_yousef_is_a_collaborator_on_the_playbook():

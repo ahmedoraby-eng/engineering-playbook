@@ -465,3 +465,15 @@ def test_sync_notes_a_merge_on_the_delegation_issue():
     assert d.is_delegation_command("sync", ["delegation-note", "7"]) and not d.is_delegation_command(
         "sync", ["pr", "merge"]
     )
+
+
+def test_a_delegated_merge_from_a_cloud_session_waits_for_m0(monkeypatch):
+    """With BASITA-163 on main: the merge and the record are writes, gated like any other before a token."""
+    from agent_gh import __main__ as cli
+
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    monkeypatch.delenv("AGENT_GH_CLOUD_WRITES", raising=False)
+    monkeypatch.setattr(cli, "token_for", lambda *a, **k: pytest.fail("a token was minted"))
+    for agent, args in (("talia", ["pr", "merge", "12", "-R", OPS]), ("sync", ["delegation-note", "7"])):
+        with pytest.raises(IdentityError, match="waits for the proxy test"):
+            cli.cmd_gh(agent, args)
