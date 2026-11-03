@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Put an App's cloud key on the clipboard as one base64 line, without printing it (setup S1 and S8).
+#
+#   gh-cloud-key malek --file ~/Downloads/basita-malek.2026-11-03.private-key.pem
+#
+# Runs on Ahmed's Mac. The .pem is a SECOND private key generated in the App's GitHub settings, so the
+# cloud copy can be revoked alone (plan 10.8, D19a). It checks the file is that App's private key (a JWT
+# and GET /app) and not the Mac's own key, refuses sync and reader, and copies the line through pbcopy's
+# stdin. It writes nothing to disk and stores nothing in the Keychain. Paste the line into the claude.ai
+# environment as BASITA_GH_<AGENT>_KEY, then clear the clipboard (pbcopy </dev/null) and move the .pem
+# to the Trash. See standards/06-agent-identity.md, "Cloud sessions".
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m agent_gh.cloud_key "$@"

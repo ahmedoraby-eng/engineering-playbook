@@ -19,11 +19,11 @@ from .identity import (
     IdentityError,
     api,
     app_jwt,
+    app_key_with_source,
     bot_login,
     is_pending,
     keychain_secret,
     mint_installation_token,
-    private_key,
     revoke_installation_token,
     urllib_transport,
 )
@@ -86,8 +86,8 @@ def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: 
     if not entry.get("bot_id"):
         return [*lines, f"  FAIL the config has no bot_id for {entry['slug']}"]
     try:
-        pem = private_key(entry["keychain"], run)
-        lines.append(f"  ok key: {entry['keychain']} holds a private key")
+        pem, source = app_key_with_source(agent, entry, run)
+        lines.append(f"  ok key: {source} holds a private key")
         jwt = app_jwt(entry, pem)
         del pem
         auth = f"Bearer {jwt}"
