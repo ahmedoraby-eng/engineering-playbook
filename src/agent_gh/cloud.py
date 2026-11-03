@@ -1,7 +1,10 @@
 """What changes for agent-gh and agent-git push in a cloud session (plan 10.8, BASITA-163).
 
 In an Anthropic-hosted cloud session every GitHub request goes through Anthropic's GitHub proxy, which
-blocks GraphQL whatever token is used. Claude Code sets CLAUDE_CODE_REMOTE=true there.
+blocks GraphQL whatever token is used. Claude Code sets CLAUDE_CODE_REMOTE=true there. A session also
+counts as a cloud one when an App key would come from `BASITA_GH_<AGENT>_KEY`: no Keychain (no
+`security`) and such a variable set (Yousef's review of #37), so the gates below don't rest on one
+variable alone.
 
 - **Key.** There is no Keychain, so an App's key comes from `BASITA_GH_<AGENT>_KEY` (identity.py).
 - **REST mode.** `gh pr ...` speaks GraphQL, so agent-gh runs `pr create|view|comment|checks` through
@@ -21,6 +24,8 @@ from __future__ import annotations
 
 import base64
 import os
+import re
+import shutil
 
 from .identity import IdentityError
 
@@ -32,9 +37,21 @@ ON = ("1", "true", "on", "yes")
 OFF = ("0", "false", "off", "no")
 
 
+KEY_VARIABLE = re.compile(r"^BASITA_GH_[A-Z0-9_]+_KEY$")
+
+
+def key_from_environment(environ: dict | None = None) -> bool:
+    """An App key would come from the environment: a BASITA_GH_<AGENT>_KEY is set and there is no Keychain
+    (identity.py reads the variable only then; on the Mac the Keychain always wins)."""
+    environ = os.environ if environ is None else environ
+    if not any(KEY_VARIABLE.match(name) and (value or "").strip() for name, value in environ.items()):
+        return False
+    return shutil.which("security", path=environ.get("PATH", os.defpath)) is None
+
+
 def in_cloud(environ: dict | None = None) -> bool:
     environ = os.environ if environ is None else environ
-    return (environ.get(REMOTE) or "").strip().lower() == "true"
+    return (environ.get(REMOTE) or "").strip().lower() == "true" or key_from_environment(environ)
 
 
 def rest_mode(environ: dict | None = None) -> bool:
