@@ -114,8 +114,12 @@ def _next(assign: str) -> str:
 
 def _steps() -> list[dict]:
     """FLOW's rows first, then the other commands'. Each has its action, command, who, from, to and next owner."""
+
+    def behind(step: dict) -> str:  # a row that runs only when its switch is on (approve, BASITA-151)
+        return f" (behind {step['switch']})" if step.get("switch") else ""
+
     steps = [
-        {"action": a, "command": "jira-flow", "who": _who(s["agents"]), "from": s["from"], "to": s["to"],
+        {"action": a, "command": "jira-flow", "who": _who(s["agents"]) + behind(s), "from": s["from"], "to": s["to"],
          "next": _next(s["assign"]), "table": True}
         for a, s in FLOW.items()
     ]  # fmt: skip

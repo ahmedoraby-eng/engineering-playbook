@@ -40,8 +40,11 @@ signs it (`-` reads stdin); `--due-date` takes YYYY-MM-DD or `none`. `jira-link 
 issues so that the first one "<T>" the second: T is a link type's name or phrase (relates to, blocks, is blocked by,
 duplicates, clones; default relates to). It reads the link back and prints what this call recorded, compared with the
 links there before.
-`jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject): the table in
-client.py gives who may, the next status and the next assignee. The read commands print
+`jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject, and approve once
+it is switched on): the table in client.py gives who may, the next status and the next assignee. With FLOW_REVIEW_GUARD
+on in basita-ops jira-agents.conf, submit waits for Architecture review green on the head of every open PR that
+mentions the issue; approve (Yousef's, FLOW_APPROVE) always does (BASITA-151). Both switches are off by default.
+The read commands print
 JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
 JQL query; `confluence-get` gives a page with its body, comments, attachments and children; `confluence-search` finds
 pages by words or CQL. Each result names the agent whose token answered (`read_by`). `confluence-create` and

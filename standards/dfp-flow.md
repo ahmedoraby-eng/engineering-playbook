@@ -22,6 +22,7 @@ flowchart TD
     in_testing -->|"fail · Salma<br/>next: whoever last worked it"| ready_for_development
     ready_for_acceptance -->|"accept · Adam<br/>next: Ahmed"| ready_for_release
     ready_for_acceptance -->|"reject · Adam<br/>next: whoever last worked it"| ready_for_development
+    in_development -->|"approve · Yousef (behind FLOW_APPROVE)<br/>next: Salma"| ready_for_testing
     refinement -.->|"ready · Adam<br/>next: an engineer (--assignee)"| ready_for_development
     refinement -.->|"return · Adam<br/>next: Salma"| ready_for_testing
     refinement -.->|"bug to engineer · Salma<br/>next: Malek or Haya (--assignee)"| ready_for_development
@@ -38,6 +39,7 @@ flowchart TD
 | fail | `jira-flow` | Salma | In Testing | Ready for Development | whoever last worked it |
 | accept | `jira-flow` | Adam | Ready for Acceptance | Ready for Release | Ahmed |
 | reject | `jira-flow` | Adam | Ready for Acceptance | Ready for Development | whoever last worked it |
+| approve | `jira-flow` | Yousef (behind FLOW_APPROVE) | In Development | Ready for Testing | Salma |
 | ready | `jira-ready` | Adam | Refinement | Ready for Development | an engineer (--assignee) |
 | return | `jira-return` | Adam | Refinement | Ready for Testing | Salma |
 | bug to engineer | `jira-create` | Salma | Refinement | Ready for Development | Malek or Haya (--assignee) |
@@ -46,6 +48,6 @@ flowchart TD
 | dismiss | `jira-dismiss` | Salma | In Testing | Closed | no one |
 | merged | `the merge (close.py)` | merge job (Sherif's account) | Ready for Release | Released | no one |
 
-5 steps are rows of the `jira-flow` table; 7 are made by other commands.
+6 steps are rows of the `jira-flow` table; 7 are made by other commands.
 
 Decided, not built (BASITA-41), so not drawn: the status In Acceptance, refuse, blocked, restart, reset.

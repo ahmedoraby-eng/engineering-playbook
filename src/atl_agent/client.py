@@ -236,7 +236,24 @@ FLOW = {
         "to": "Ready for Development",
         "assign": LAST_ENGINEER,
     },
+    # BASITA-151 (plan 4.3, T3): the architect approves a reviewed PR's issue into testing. Off until Ahmed switches it
+    # on (FLOW_APPROVE), and D6 decides who owns this step before that; Yousef is the plan's candidate.
+    "approve": {
+        "agents": ("yousef",),
+        "from": "In Development",
+        "to": "Ready for Testing",
+        "assign": SALMA_ACCOUNT,
+        "switch": "FLOW_APPROVE",
+    },
 }
+# BASITA-151: the review guard. With FLOW_REVIEW_GUARD on, submit needs Architecture review green on the head of every
+# open PR that mentions the issue; approve always does, and needs at least one such PR. A PR whose review isn't required
+# is green, so submit works as before for it, and an issue with no open PR (work that isn't code) submits as before.
+REVIEW_GUARDED = ("submit", "approve")
+# The switches, in basita-ops jira-agents.conf; missing means off. The file is read, never run: only NAME="value" or
+# NAME=value lines count, and the last one wins. ATL_AGENTS_CONF points to another file (tests).
+FLOW_SWITCHES = ("FLOW_REVIEW_GUARD", "FLOW_APPROVE")
+AGENTS_CONF = Path.home() / "Code" / "basita-ops" / "jira-agents.conf"
 
 
 # jira-done (BASITA-178; Ahmed, 03/11/2026, operating model 4 "Moving one's own issues"): a lead moves its own issue
@@ -303,6 +320,93 @@ def github_prs(key: str, run: Callable = subprocess.run, repos: tuple = PR_REPOS
             if mentions(pr, key)
         ]
     return found
+
+
+def flow_settings(path: str | Path | None = None) -> dict:
+    """FLOW_REVIEW_GUARD and FLOW_APPROVE, "off" or "on"; "off" when the file or the line is missing. Any other value is
+    refused, so a typo never switches a guard off or a step on."""
+    path = Path(path or os.environ.get("ATL_AGENTS_CONF") or AGENTS_CONF)
+    settings = dict.fromkeys(FLOW_SWITCHES, "off")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return settings
+    for line in lines:
+        match = re.match(r'^(FLOW_[A-Z_]+)=(?:"([^"]*)"|([^"\s#]*))\s*(?:#.*)?$', line)
+        if match and match.group(1) in settings:
+            settings[match.group(1)] = match.group(2) if match.group(2) is not None else match.group(3)
+    for name, value in settings.items():
+        if value not in ("off", "on"):
+            raise AtlError(f"{name} in {path} is '{value}', not off or on: nothing moved")
+    return settings
+
+
+def _reader_api(run: Callable, path: str, jq: str) -> str:
+    result = run([AGENT_GH, "reader", "api", path, "--jq", jq], capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        detail = " ".join((result.stderr or "").split())[:200]
+        raise AtlError(f"could not read {path.split('?')[0]} as basita-reader: {detail or result.returncode}")
+    return result.stdout.strip()
+
+
+def is_architecture_review(name: str) -> bool:
+    """The check run's name: "Architecture review", or "<caller job> / Architecture review" from a reusable workflow."""
+    return name == "Architecture review" or name.endswith(" / Architecture review")
+
+
+def arch_review_state(repo: str, number: int, run: Callable = subprocess.run) -> dict:
+    """Architecture review on a PR's head, from the check's machine-readable notice line
+    ("arch-review mode=on class=… state=green|waiting|changes|error head=<sha> …"), read as basita-reader. The line, not
+    the conclusion, decides: in report mode the check is always green. state is "missing" with no check on the head,
+    "running" while it runs, and "unreadable" with no such line (Architecture review off on that repository)."""
+    head = _reader_api(run, f"repos/{repo}/pulls/{number}", ".head.sha")
+    runs = json.loads(
+        _reader_api(
+            run,
+            f"repos/{repo}/commits/{head}/check-runs?filter=latest&per_page=100",
+            "[.check_runs[] | {id, name, status}]",
+        )
+        or "[]"
+    )
+    found = [r for r in runs if is_architecture_review(r.get("name") or "")]
+    if not found:
+        return {"head": head, "state": "missing"}
+    if found[0].get("status") != "completed":
+        return {"head": head, "state": "running"}
+    messages = json.loads(
+        _reader_api(run, f"repos/{repo}/check-runs/{found[0]['id']}/annotations", "[.[] | .message]") or "[]"
+    )
+    line = next((m for m in messages if isinstance(m, str) and m.startswith("arch-review ")), "")
+    facts = dict(part.split("=", 1) for part in line.split()[1:] if "=" in part)
+    return {"state": "unreadable", **facts, "head": head, "checked": facts.get("head", "")}
+
+
+def review_guard(
+    issue: str, action: str, prs: Callable[[str], list[dict]], review: Callable[[str, int], dict]
+) -> list[str]:
+    """Why submit or approve may not move the issue now; empty when it may. Every open PR that mentions the issue
+    must have Architecture review green on its current head. approve also needs one such PR. A PR that can't be read
+    refuses."""
+    try:
+        found = prs(issue)
+    except AtlError as error:
+        return [f"can't tell which PRs mention it ({error})"]
+    open_prs = [p for p in found if p.get("state") == "OPEN"]
+    if action == "approve" and not open_prs:
+        return ["no open PR mentions it, so there is no review to approve"]
+    problems = []
+    for pr in open_prs:
+        where = pr.get("url") or f"{pr.get('repo')}#{pr.get('number')}"
+        try:
+            state = review(pr["repo"], int(pr["number"]))
+        except (AtlError, ValueError, KeyError, TypeError) as error:
+            problems.append(f"{where}: Architecture review can't be read ({error})")
+            continue
+        if state.get("state") != "green":
+            problems.append(f"{where}: Architecture review is {state.get('state')} on {str(state.get('head'))[:7]}")
+        elif state.get("checked") != state.get("head"):
+            problems.append(f"{where}: Architecture review ran on {str(state.get('checked'))[:7]}, not the head")
+    return problems
 
 
 def account_for(agent: str, via: str = "") -> str:
@@ -1039,9 +1143,18 @@ class AtlClient:
             raise AtlError(f"{issue}: no one who works DFP issues is in its assignee history, so no one to go back to")
         return found
 
-    def jira_flow(self, issue: str, action: str) -> str:
+    def jira_flow(
+        self,
+        issue: str,
+        action: str,
+        prs: Callable[[str], list[dict]] = github_prs,
+        review: Callable[[str, int], dict] = arch_review_state,
+        settings: dict | None = None,
+    ) -> str:
         """One step of DFP's flow, from FLOW: checks the agent and the status, assigns the next person, moves the
         issue and returns the new status. It assigns first, so running it again after a failure finishes the step.
+        A row with a `switch` (approve) runs only when that switch is on; with FLOW_REVIEW_GUARD on, submit and
+        approve run review_guard first (BASITA-151). Every check comes before the first write.
         Needs read:jira-work and write:jira-work."""
         step = FLOW.get(action)
         if not step:
@@ -1050,9 +1163,20 @@ class AtlClient:
             raise AtlError(f"{issue}: jira-flow is for DFP only")
         if self.agent not in step["agents"]:
             raise AtlError(f"{action} is for {' or '.join(a.capitalize() for a in step['agents'])}, not {self.display}")
+        switch = step.get("switch")
+        guarded = action in REVIEW_GUARDED
+        if switch or guarded:
+            settings = settings if settings is not None else flow_settings()
+        if switch and settings.get(switch) != "on":
+            raise AtlError(f"{action} is off ({switch} in basita-ops jira-agents.conf); Ahmed switches it on")
         status = self.jira_status(issue)["name"]
         if status.lower() != step["from"].lower():
             raise AtlError(f"{issue}: status is '{status}', {action} only leaves '{step['from']}'")
+        # approve is the reviewed step, so its guard always runs; submit's only with FLOW_REVIEW_GUARD on.
+        if guarded and (action == "approve" or settings.get("FLOW_REVIEW_GUARD") == "on"):
+            problems = review_guard(issue, action, prs, review)
+            if problems:
+                raise AtlError(f"{issue}: {action} waits for the architect's review: " + "; ".join(problems))
         assignee = self._last_engineer(issue) if step["assign"] == LAST_ENGINEER else step["assign"]
         moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
         chosen = next((t for t in moves if t["to"]["name"].lower() == step["to"].lower()), None)
