@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Create one agent's GitHub App from the config's manifest, and store its private key in the Keychain.
+#
+#   gh-app-new talia             opens GitHub's "new App" page with everything filled in; click Create, then Install
+#   gh-app-new talia --dry-run   prints the manifest and the URL; opens and listens to nothing
+#
+# Only for an App the config lists with "app_id": null. The key goes from GitHub straight to the Keychain
+# (basita-gh-<agent>-app, account basita); only the ids are printed. See standards/06-agent-identity.md.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m agent_gh.app_new "$@"
