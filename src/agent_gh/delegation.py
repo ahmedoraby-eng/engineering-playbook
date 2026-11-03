@@ -7,8 +7,8 @@ A delegation is valid only as an issue in basitasolutions/basita-ops with the la
 opened by Ahmed (`ahmedoraby-eng`), or by `basita-sync[bot]` when Talia records his words from a session
 on his Mac (`delegation-record.sh`, D22). Its title is "Delegation until HH:MM" (Cairo time) or
 "Delegation until YYYY-MM-DD HH:MM". It starts when GitHub opened it and ends at that time, at most 12
-hours later, or when the issue is closed, whichever comes first. A title renamed by anyone but Ahmed
-voids it. "Now" is GitHub's clock (the Date header of its answers), not the Mac's.
+hours later, or when the issue is first closed, whichever comes first; reopening it doesn't bring it back.
+A title renamed by anyone but Ahmed voids it. "Now" is GitHub's clock (the Date header of its answers), not the Mac's.
 
 Before each merge, everything is read fresh with the read-only App (reader), and every point must hold:
 1. a valid delegation now;
@@ -145,9 +145,13 @@ def delegation_window(issue: dict, events: list[dict]) -> tuple[Delegation | Non
     if not until:
         return None, f"#{number}'s title isn't 'Delegation until HH:MM'"
     end = min(until, opened + MAX_WINDOW)
+    # The first close ends it for good: GitHub clears closed_at when an issue is reopened, so the events decide,
+    # and a reopen never brings a delegation back.
+    closes = [_time(e.get("created_at")) for e in events if e.get("event") == "closed" and e.get("created_at")]
     closed = _time(issue.get("closed_at"))
-    if closed:
-        end = min(end, closed)
+    for moment in [*closes, closed]:
+        if moment:
+            end = min(end, moment)
     return Delegation(number, issue.get("html_url", ""), opener, opened, end), ""
 
 

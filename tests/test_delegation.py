@@ -135,6 +135,21 @@ def test_closing_the_issue_ends_the_window():
     assert window.end == dt.datetime(2026, 11, 3, 14, tzinfo=UTC)
 
 
+def test_a_reopened_delegation_stays_ended_at_its_first_close():
+    """Yousef's probe on #36: closed at 14:00 UTC, then reopened, GitHub clears closed_at; it must stay ended."""
+    events = [
+        {"event": "closed", "created_at": "2026-11-03T14:00:00Z", "actor": {"login": "ahmedoraby-eng"}},
+        {"event": "reopened", "created_at": "2026-11-03T14:10:00Z", "actor": {"login": "ahmedoraby-eng"}},
+        {"event": "closed", "created_at": "2026-11-03T16:00:00Z", "actor": {"login": "ahmedoraby-eng"}},
+        {"event": "reopened", "created_at": "2026-11-03T16:05:00Z", "actor": {"login": "ahmedoraby-eng"}},
+    ]
+    window, _ = d.delegation_window(issue(), events)  # open again, closed_at None
+    assert window.end == dt.datetime(2026, 11, 3, 14, tzinfo=UTC)
+    github = FakeGitHub(events={7: events})
+    assert any("no valid delegation now" in f for f in checked(github).failures)  # GitHub says 15:00
+    assert d.covering(github, dt.datetime(2026, 11, 3, 14, 30, tzinfo=UTC)) is None
+
+
 @pytest.mark.parametrize(
     ("changes", "events", "why"),
     [
