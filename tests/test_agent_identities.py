@@ -1,7 +1,8 @@
 """BASITA-157: the seven new identities, their branch prefixes, sync, reader and Yousef's push App.
 
-One test for every refusal. The Apps are pending in the real config, so the tests that need one set up
-use a copy of the config with made-up ids (no real App, key or token is used anywhere).
+One test for every refusal. Ahmed created the seven Apps at S2 (BASITA-155), so the real config has their
+ids. The tests that need an App set up use a copy of the config with made-up ids, and the tests of a
+pending App use a copy with the ids taken out (no real key or token is used anywhere).
 """
 
 import base64
@@ -80,6 +81,34 @@ def ready(config=CONFIG, *names):
 READY = ready()
 
 
+def pending(config=CONFIG, *names):
+    """A copy of the config in which the named Apps are not created yet, as before S2."""
+    config = copy.deepcopy(config)
+    for name in names or NEW:
+        config["agents"][name].update({"app_id": None, "client_id": None, "bot_id": None, "installations": {}})
+    return config
+
+
+PENDING = pending()
+
+# S2 (BASITA-155): app_id, client_id, bot_id and installations, from basita-ops
+# work/talia/github-apps-created-2026-11-03.md.
+CREATED = {
+    "talia": (5596031, "Iv23li8erVR1kSm1QyTh", 351996843, {"basitasolutions": 178208723}),
+    "sherif": (5596085, "Iv23lirm0mILYg7g4HeY", 351998495, {"basitasolutions": 178209669}),
+    "adam": (5596141, "Iv23libZR9pm7kX377jm", 352000396, {"basitasolutions": 178210706}),
+    "nora": (5596187, "Iv23lixUCYzrGsGWZhIE", 352001471, {"basitasolutions": 178211748}),
+    "yousef-docs": (5596240, "Iv23liePPnWTo9uCmrRH", 352002984, {"basitasolutions": 178212701}),
+    "sync": (5596339, "Iv23liWjBt4dzcm7Ufye", 352005823, {"basitasolutions": 178214976}),
+    "reader": (
+        5596397,
+        "Iv23lig3YQPy8TNoAlGM",
+        352007377,
+        {"basitasolutions": 178216385, "ahmedoraby-eng": 178216933},
+    ),
+}
+
+
 def entry(name, config=READY):
     return agent_entry(config, name)
 
@@ -120,18 +149,37 @@ def pem(tmp_path_factory):
     return (folder / "k.pem").read_bytes()
 
 
+def _playbook_copy(tmp_path, config, name="playbook"):
+    """The playbook's scripts and code with the given config, so the scripts run against it."""
+    copy_root = tmp_path / name
+    for folder in ("scripts", "src"):
+        shutil.copytree(ROOT / folder, copy_root / folder, ignore=shutil.ignore_patterns("__pycache__"))
+    (copy_root / "config").mkdir()
+    (copy_root / "config" / "github-identities.json").write_text(json.dumps(config))
+    return copy_root
+
+
 # --- the config -------------------------------------------------------------------------------------
 
 
-def test_the_seven_apps_are_listed_and_pending_until_ahmed_creates_them():
+def test_the_seven_apps_are_listed_with_the_ids_of_s2():
     agents = CONFIG["agents"]
     for name in NEW:
         app = agents[name]
         assert app["kind"] == "app" and app["slug"] == f"basita-{name}"
-        assert app["app_id"] is None and app["client_id"] is None and app["bot_id"] is None
-        assert app["installations"] == {} and app["keychain"] == f"basita-gh-{name}-app"
+        app_id, client_id, bot_id, installations = CREATED[name]
+        assert (app["app_id"], app["client_id"], app["bot_id"]) == (app_id, client_id, bot_id)
+        assert {owner: i["id"] for owner, i in app["installations"].items()} == installations
+        assert app["keychain"] == f"basita-gh-{name}-app"
         assert app["manifest"]["name"] == app["slug"] and app["manifest"]["description"]
-        assert is_pending(app)
+        assert not is_pending(app) and is_pending(PENDING["agents"][name])
+    assert agents["talia"]["installations"]["basitasolutions"]["repos"] == [
+        "basita-ops",
+        "elbayoumy-farm-nutrition-platform",
+    ]
+    assert agents["reader"]["installations"]["ahmedoraby-eng"]["repos"] == ["engineering-playbook"]
+    for name in ("sherif", "adam", "nora", "yousef-docs", "sync"):
+        assert agents[name]["installations"]["basitasolutions"]["repos"] == ["basita-ops"], name
     for name, prefix in PREFIXED.items():
         assert agents[name]["branch_prefix"] == prefix
     assert "branch_prefix" not in agents["sync"] and "branch_prefix" not in agents["reader"]
@@ -148,7 +196,7 @@ def test_the_four_live_identities_keep_every_field_they_had():
             351705446,
             {"basitasolutions": 177981619, "ahmedoraby-eng": 177982765},
         ),
-        "haya": (5586509, "Iv23lilUPyDFpb9xrvRG", 351706579, {"basitasolutions": 177982074}),
+        "haya": (5586509, "Iv23lilUPyDFpb9xrvRG", 351706579, {"basitasolutions": 177982074}),  # + basita-ops, S2
         "salma": (5586535, "Iv23liIFJsD9Ub2uKUkh", 351707078, {"basitasolutions": 177982412}),
     }
     for name, (app_id, client_id, bot_id, installations) in live.items():
@@ -163,7 +211,7 @@ def test_the_four_live_identities_keep_every_field_they_had():
 
 
 def test_no_app_may_hold_workflows_administration_secrets_or_write_actions():
-    """D4 and plan 10.2. sync has no issues permission until D22 is decided."""
+    """D4 and plan 10.2. sync has no issues permission until Ahmed grants it on GitHub (D16 with D22)."""
     for name, app in CONFIG["agents"].items():
         if app.get("kind") != "app":
             continue
@@ -180,13 +228,14 @@ def test_no_app_may_hold_workflows_administration_secrets_or_write_actions():
 @pytest.mark.parametrize("name", NEW)
 def test_a_pending_app_is_refused_before_anything_is_planned_or_minted(name):
     with pytest.raises(IdentityError, match=r"refused: .* is not set up yet \(Ahmed's setup S2\)"):
-        acting_identity(CONFIG, "yousef" if name == "yousef-docs" else name, True)
+        acting_identity(PENDING, "yousef" if name == "yousef-docs" else name, True)
     if name != "yousef-docs":
         with pytest.raises(IdentityError, match="not set up yet"):
-            token_for(name, "basitasolutions/basita-ops", READ, CONFIG, FakeGitHub({}), no_keychain)
+            token_for(name, "basitasolutions/basita-ops", READ, PENDING, FakeGitHub({}), no_keychain)
 
 
 def test_pending_through_the_scripts(tmp_path):
+    copy_root = _playbook_copy(tmp_path, PENDING)
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", "-b", "talia/BASITA-1-x", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", OPS], check=True)
@@ -200,7 +249,7 @@ def test_pending_through_the_scripts(tmp_path):
         ["agent-git", "yousef", "push"],
     ):
         result = subprocess.run(
-            [str(ROOT / "scripts" / command[0]), *command[1:]], cwd=repo, env=env, capture_output=True, text=True
+            [str(copy_root / "scripts" / command[0]), *command[1:]], cwd=repo, env=env, capture_output=True, text=True
         )
         assert result.returncode == 1 and "not set up yet (Ahmed's setup S2)" in result.stderr, command
 
@@ -385,7 +434,7 @@ def test_yousef_pushes_and_opens_prs_as_his_docs_app_and_reviews_as_himself():
 @pytest.mark.parametrize(
     "config, agent, why",
     [
-        (CONFIG, "yousef", "basita-yousef-docs is not set up yet"),  # his push App is pending
+        (PENDING, "yousef", "basita-yousef-docs is not set up yet"),  # his push App before S2
         (READY, "yousef-docs", "basita-yousef-docs is yousef's; use agent-gh yousef or agent-git yousef"),
     ],
 )
@@ -421,12 +470,7 @@ def test_yousefs_docs_app_cannot_approve_and_keeps_the_app_rules():
 @pytest.fixture
 def playbook(tmp_path):
     """The playbook's scripts and code, with a config in which the new Apps are set up."""
-    copy_root = tmp_path / "playbook"
-    for folder in ("scripts", "src"):
-        shutil.copytree(ROOT / folder, copy_root / folder, ignore=shutil.ignore_patterns("__pycache__"))
-    (copy_root / "config").mkdir()
-    (copy_root / "config" / "github-identities.json").write_text(json.dumps(READY))
-    return copy_root
+    return _playbook_copy(tmp_path, READY)
 
 
 def _clone(tmp_path, branch, url=OPS):
@@ -488,7 +532,7 @@ def test_reader_push_is_refused_in_the_cli(monkeypatch, tmp_path):
 def test_yousef_commits_as_his_docs_bot_once_it_is_set_up(playbook, tmp_path):
     repo = _clone(tmp_path, "yousef/BASITA-1-plan")
     env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
-    for root in (ROOT, playbook):
+    for root in (_playbook_copy(tmp_path, PENDING, "pending"), playbook):
         subprocess.run(
             [str(root / "scripts" / "agent-git"), "yousef", "commit", "-q", "--allow-empty", "-m", "BASITA-1: x"],
             cwd=repo,
@@ -506,7 +550,10 @@ def test_yousef_commits_as_his_docs_bot_once_it_is_set_up(playbook, tmp_path):
     assert log == ["8005+basita-yousef-docs[bot]@users.noreply.github.com|Yousef", "yousef@basitasolutions.com|Yousef"]
 
 
-def test_bot_email_of_pending_apps_falls_back(capsys):
+def test_bot_email_of_pending_apps_falls_back(capsys, monkeypatch, tmp_path):
+    path = tmp_path / "ids.json"
+    path.write_text(json.dumps(PENDING))
+    monkeypatch.setattr(identity, "CONFIG", path)
     for name in ("talia", "sync", "reader", "yousef"):
         assert cli.main(["bot-email", name]) == 1
     assert cli.main(["bot-email", "malek"]) == 0
@@ -561,7 +608,7 @@ def test_the_credential_helper_answers_only_https_github_com(pem, request_, answ
         ),
         (READY, "malek", {"protocol": "https", "host": "github.com", "path": "a/b.git"}, "only a read-only App"),
         (READY, "talia", {"protocol": "https", "host": "github.com", "path": "a/b.git"}, "only a read-only App"),
-        (CONFIG, "reader", {"protocol": "https", "host": "github.com", "path": "a/b.git"}, "not set up yet"),
+        (PENDING, "reader", {"protocol": "https", "host": "github.com", "path": "a/b.git"}, "not set up yet"),
     ],
 )
 def test_credential_helper_refusals(pem, config, agent, request_, why):
@@ -577,7 +624,7 @@ def test_the_credential_helper_stores_and_erases_nothing(monkeypatch):
 
 def test_git_uses_the_helper_and_gets_nothing_while_the_reader_is_pending(tmp_path):
     """The helper as Talia sets it up at S5, through the real script; pending means no password."""
-    helper = f"!{ROOT / 'scripts' / 'agent-gh'} reader credential"
+    helper = f"!{_playbook_copy(tmp_path, PENDING) / 'scripts' / 'agent-gh'} reader credential"
     env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "GIT_TERMINAL_PROMPT": "0"}
     fill = subprocess.run(
         [
@@ -605,7 +652,7 @@ def test_git_uses_the_helper_and_gets_nothing_while_the_reader_is_pending(tmp_pa
 
 def test_gh_check_shows_pending_apps_as_plain_lines():
     github = FakeGitHub({})
-    lines, code = run_check(CONFIG, list(NEW), github, no_keychain)
+    lines, code = run_check(PENDING, list(NEW), github, no_keychain)
     assert code == 0 and lines == [f"pending {name}: not created yet" for name in NEW]
     assert github.calls == []
     # Not picked up by basita-ops hourly-check.sh, which flags lines that start with FAIL or attention.

@@ -31,7 +31,7 @@
       "bot_id": 351706579,
       "keychain": "basita-gh-haya-app",
       "installations": {
-        "basitasolutions": {"id": 177982074, "repos": ["elbayoumy-farm-nutrition-platform"]}
+        "basitasolutions": {"id": 177982074, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]}
       },
       "manifest": {"name": "basita-haya", "public": false, "description": "Haya (Basita AI): front-end code, pull requests and pushes to haya/* branches"}
     },
@@ -64,11 +64,13 @@
       "slug": "basita-talia",
       "branch_prefix": "talia/",
       "permissions": {"contents": "write", "issues": "read", "metadata": "read", "pull_requests": "write"},
-      "app_id": null,
-      "client_id": null,
-      "bot_id": null,
+      "app_id": 5596031,
+      "client_id": "Iv23li8erVR1kSm1QyTh",
+      "bot_id": 351996843,
       "keychain": "basita-gh-talia-app",
-      "installations": {},
+      "installations": {
+        "basitasolutions": {"id": 178208723, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]}
+      },
       "manifest": {"name": "basita-talia", "public": false, "description": "Talia (Basita AI): documents, pull requests and pushes to talia/* branches"}
     },
     "sherif": {
@@ -76,11 +78,13 @@
       "slug": "basita-sherif",
       "branch_prefix": "sherif/",
       "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
-      "app_id": null,
-      "client_id": null,
-      "bot_id": null,
+      "app_id": 5596085,
+      "client_id": "Iv23lirm0mILYg7g4HeY",
+      "bot_id": 351998495,
       "keychain": "basita-gh-sherif-app",
-      "installations": {},
+      "installations": {
+        "basitasolutions": {"id": 178209669, "repos": ["basita-ops"]}
+      },
       "manifest": {"name": "basita-sherif", "public": false, "description": "Sherif (Basita AI): documents, pull requests and pushes to sherif/* branches"}
     },
     "adam": {
@@ -88,11 +92,13 @@
       "slug": "basita-adam",
       "branch_prefix": "adam/",
       "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
-      "app_id": null,
-      "client_id": null,
-      "bot_id": null,
+      "app_id": 5596141,
+      "client_id": "Iv23libZR9pm7kX377jm",
+      "bot_id": 352000396,
       "keychain": "basita-gh-adam-app",
-      "installations": {},
+      "installations": {
+        "basitasolutions": {"id": 178210706, "repos": ["basita-ops"]}
+      },
       "manifest": {"name": "basita-adam", "public": false, "description": "Adam (Basita AI): documents, pull requests and pushes to adam/* branches"}
     },
     "nora": {
@@ -100,11 +106,13 @@
       "slug": "basita-nora",
       "branch_prefix": "nora/",
       "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
-      "app_id": null,
-      "client_id": null,
-      "bot_id": null,
+      "app_id": 5596187,
+      "client_id": "Iv23lixUCYzrGsGWZhIE",
+      "bot_id": 352001471,
       "keychain": "basita-gh-nora-app",
-      "installations": {},
+      "installations": {
+        "basitasolutions": {"id": 178211748, "repos": ["basita-ops"]}
+      },
       "manifest": {"name": "basita-nora", "public": false, "description": "Nora (Basita AI): documents, pull requests and pushes to nora/* branches"}
     },
     "yousef-docs": {
@@ -112,24 +120,28 @@
       "slug": "basita-yousef-docs",
       "branch_prefix": "yousef/",
       "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
-      "app_id": null,
-      "client_id": null,
-      "bot_id": null,
+      "app_id": 5596240,
+      "client_id": "Iv23liePPnWTo9uCmrRH",
+      "bot_id": 352002984,
       "keychain": "basita-gh-yousef-docs-app",
-      "installations": {},
+      "installations": {
+        "basitasolutions": {"id": 178212701, "repos": ["basita-ops"]}
+      },
       "manifest": {"name": "basita-yousef-docs", "public": false, "description": "Yousef (Basita AI): his documents, their pull requests and pushes to yousef/* branches. He reviews as basita-yousef"}
     },
     "sync": {
       "kind": "app",
       "slug": "basita-sync",
-      "_updates_main": "the one repository whose main this App pushes, fast-forward or merge, never forced; it pushes nothing else and runs no gh command. Issues write waits for D22",
+      "_updates_main": "the one repository whose main this App pushes, fast-forward or merge, never forced; it pushes nothing else and runs no gh command. Issues write (D16, approved with D22 on 03/11/2026) is added here once Ahmed grants it to the App on GitHub, so gh-check stays green",
       "updates_main": "basitasolutions/basita-ops",
       "permissions": {"contents": "write", "metadata": "read"},
-      "app_id": null,
-      "client_id": null,
-      "bot_id": null,
+      "app_id": 5596339,
+      "client_id": "Iv23liWjBt4dzcm7Ufye",
+      "bot_id": 352005823,
       "keychain": "basita-gh-sync-app",
-      "installations": {},
+      "installations": {
+        "basitasolutions": {"id": 178214976, "repos": ["basita-ops"]}
+      },
       "manifest": {"name": "basita-sync", "public": false, "description": "basita-ops sync.sh on Ahmed's Mac: updates main of basita-ops, never forced"}
     },
     "reader": {
@@ -138,11 +150,14 @@
       "_read_only": "every write and every push is refused; it is git's read-only credential for github.com (agent-gh reader credential)",
       "read_only": true,
       "permissions": {"actions": "read", "checks": "read", "contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read", "statuses": "read"},
-      "app_id": null,
-      "client_id": null,
-      "bot_id": null,
+      "app_id": 5596397,
+      "client_id": "Iv23lig3YQPy8TNoAlGM",
+      "bot_id": 352007377,
       "keychain": "basita-gh-reader-app",
-      "installations": {},
+      "installations": {
+        "basitasolutions": {"id": 178216385, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
+        "ahmedoraby-eng": {"id": 178216933, "repos": ["engineering-playbook"]}
+      },
       "manifest": {"name": "basita-reader", "public": true, "description": "Basita's read-only identity on Ahmed's Mac: fetch, clone and API reads, never a write"}
     }
   }
