@@ -1,8 +1,10 @@
 import json
 import subprocess
+from dataclasses import replace
 
+import agent_attribution.__main__ as cli
 from agent_attribution import Commit, Config, PullRequest, check
-from agent_attribution.__main__ import main
+from agent_attribution.__main__ import DEFAULT_IDENTITIES, main
 from agent_attribution.check import trailers
 
 CONFIG = Config(
@@ -136,7 +138,145 @@ def test_agent_git_sets_identity_and_trailers(tmp_path):
         check=True,
     ).stdout
     author, committer, body = log.split("|", 2)
-    assert author == "Malek (Basita AI) <malek@basitasolutions.com>" == committer
+    # Malek has a GitHub App, so the address is its bot's (see config/github-identities.json).
+    assert author == "Malek (Basita AI) <351705446+basita-malek[bot]@users.noreply.github.com>" == committer
     assert "Agent: Malek" in body and "Requested-by: Ahmed Oraby" in body and "Agent-Model: m-1" in body
     bad = subprocess.run([str(script), "mallory", "status"], cwd=repo, env=env, capture_output=True, text=True)
     assert bad.returncode == 2 and "unknown agent" in bad.stderr
+
+
+# GitHub App bots (BASITA-149)
+
+BOT_EMAIL = "351705446+basita-malek[bot]@users.noreply.github.com"
+BOTS = {"basita-malek[bot]": "malek", "basita-salma[bot]": "salma"}
+BOT_CONFIG = replace(CONFIG, bots=BOTS)
+FAIL_CONFIG = replace(BOT_CONFIG, bot_severity="error")
+BOT_PR = PullRequest(title="DFP-1: change", branch="DFP-1-x", body="", author_login="basita-malek[bot]")
+
+
+def bot_commit(message="Fix\n\nAgent: Malek", email=BOT_EMAIL, login="basita-malek[bot]", **kw):
+    return commit(email=email, message=message, author_login=login, **kw)
+
+
+def test_bot_commit_with_matching_trailer_passes():
+    assert check([bot_commit()], BOT_PR, BOT_CONFIG) == []
+    assert check([bot_commit(login="Basita-Malek[bot]", message="Fix\n\nAgent: malek")], BOT_PR, BOT_CONFIG) == []
+
+
+def test_bot_commit_trailer_missing_or_mismatched_warns_then_fails():
+    for message, rule in (("Fix", "bot-trailer-missing"), ("Fix\n\nAgent: Salma", "bot-trailer-mismatch")):
+        warned = check([bot_commit(message=message)], BOT_PR, BOT_CONFIG)
+        assert rules(warned) == [rule] and warned[0].severity == "warning"
+        assert "basita-malek[bot]" in warned[0].message
+        failed = check([bot_commit(message=message)], BOT_PR, FAIL_CONFIG)
+        assert rules(failed) == [rule] and failed[0].severity == "error"
+
+
+def test_bot_commit_is_recognised_by_email_alone():
+    findings = check([bot_commit(message="Fix", login="")], BOT_PR, BOT_CONFIG)
+    assert rules(findings) == ["bot-trailer-missing"]
+    assert check([bot_commit(login="")], BOT_PR, BOT_CONFIG) == []
+    # Without the numeric id it is not GitHub's noreply form, so the author is unknown.
+    other = check([bot_commit(email="basita-malek[bot]@users.noreply.github.com", login="")], BOT_PR, BOT_CONFIG)
+    assert rules(other) == ["unknown-author"]
+
+
+def test_unmapped_bots_and_merges_are_still_skipped():
+    assert check([bot_commit(message="Bump", login="dependabot[bot]", email="x@y.z")], BOT_PR, BOT_CONFIG) == []
+    haya = bot_commit(
+        message="Fix", login="basita-haya[bot]", email="351706579+basita-haya[bot]@users.noreply.github.com"
+    )
+    assert check([haya], BOT_PR, BOT_CONFIG) == []
+    assert check([bot_commit(message="Merge", parent_count=2)], BOT_PR, BOT_CONFIG) == []
+    # Without a bot map (the old behaviour) our bot is skipped like any other.
+    assert check([bot_commit(message="Fix")], BOT_PR, CONFIG) == []
+
+
+def test_smart_commit_by_a_bot_is_an_error_even_in_warn_mode():
+    findings = check([bot_commit(message="DFP-1 #done\n\nAgent: Malek")], BOT_PR, BOT_CONFIG)
+    assert rules(findings) == ["smart-commit"] and findings[0].severity == "error"
+
+
+def test_bot_pr_with_another_agents_line_warns():
+    pr = replace(BOT_PR, body="Agent: Salma\n\nRefs DFP-1")
+    findings = check([bot_commit()], pr, BOT_CONFIG)
+    assert rules(findings) == ["pr-bot-mismatch"] and findings[0].severity == "warning"
+    assert "basita-malek[bot]" in findings[0].message and "Salma" in findings[0].message
+    assert check([bot_commit()], replace(BOT_PR, body="Agent: Malek"), BOT_CONFIG) == []
+    assert check([bot_commit()], pr, FAIL_CONFIG)[0].severity == "error"
+
+
+def test_bot_pr_with_another_agents_commits_warns_once():
+    salma_bot = bot_commit(
+        message="Fix\n\nAgent: Salma",
+        login="basita-salma[bot]",
+        email="351707078+basita-salma[bot]@users.noreply.github.com",
+    )
+    salma_domain = commit(email="salma@example.com", message="Fix\n\nAgent: Salma")
+    findings = check([bot_commit(), salma_bot, salma_domain], BOT_PR, BOT_CONFIG)
+    assert rules(findings) == ["pr-bot-mismatch"]
+    assert "basita-malek[bot]" in findings[0].message and "Salma" in findings[0].message
+    both = check([salma_domain], replace(BOT_PR, body="Agent: Salma"), BOT_CONFIG)
+    assert rules(both) == ["pr-bot-mismatch", "pr-bot-mismatch"]
+
+
+def test_bot_pr_needs_no_agent_line_but_human_pr_with_bot_commits_does():
+    assert check([bot_commit()], BOT_PR, BOT_CONFIG) == []
+    human_pr = replace(BOT_PR, author_login="owner-login")
+    assert rules(check([bot_commit()], human_pr, BOT_CONFIG)) == ["pr-agent-line"]
+    assert check([bot_commit()], replace(human_pr, body="Agent: Malek"), BOT_CONFIG) == []
+
+
+def _bot_cli(tmp_path, message="Fix", pr_login="basita-malek[bot]"):
+    commits = tmp_path / "commits.json"
+    pr = tmp_path / "pr.json"
+    commits.write_text(json.dumps([_github_commit(BOT_EMAIL, message, login="basita-malek[bot]")]))
+    pr.write_text(json.dumps({"title": "DFP-1 x", "head": {"ref": "b"}, "body": "", "user": {"login": pr_login}}))
+    return ["--commits", str(commits), "--pr", str(pr), "--agents", "malek,salma", "--agent-domain", "example.com"]
+
+
+def test_cli_maps_bots_from_the_playbooks_identity_config(tmp_path, capsys):
+    assert DEFAULT_IDENTITIES.is_file()
+    assert json.loads(DEFAULT_IDENTITIES.read_text())["attribution"] == "warn"
+    base = _bot_cli(tmp_path)
+    assert main([*base, "--format", "github"]) == 0
+    assert "::warning title=bot-trailer-missing::" in capsys.readouterr().out
+    assert main([*base, "--format", "github", "--bot-mode", "fail"]) == 1
+    assert "::error title=bot-trailer-missing::" in capsys.readouterr().out
+    assert main([*base, "--bot-mode", "fail", "--warn-only"]) == 0
+
+
+def test_cli_maps_only_the_listed_agents_bots(tmp_path, capsys):
+    base = _bot_cli(tmp_path)
+    base[base.index("--agents") + 1] = "salma"
+    assert main(base) == 0
+    assert "bot-trailer-missing" not in capsys.readouterr().out
+
+
+def test_cli_reads_an_identities_file(tmp_path, capsys):
+    identities = tmp_path / "ids.json"
+    identities.write_text(
+        json.dumps(
+            {
+                "attribution": "fail",
+                "agents": {
+                    "malek": {"kind": "app", "slug": "basita-malek", "bot_id": 1},
+                    "yousef": {"kind": "user", "login": "basita-yousef"},
+                },
+            }
+        )
+    )
+    base = _bot_cli(tmp_path)
+    assert main([*base, "--identities", str(identities)]) == 1
+    assert "ERROR   [bot-trailer-missing]" in capsys.readouterr().out
+    assert main([*base, "--identities", str(identities), "--bot-mode", "warn"]) == 0
+    assert "WARNING [bot-trailer-missing]" in capsys.readouterr().out
+    identities.write_text(json.dumps({"agents": {}}))
+    assert main([*base, "--identities", str(identities)]) == 0
+    assert "bot-trailer-missing" not in capsys.readouterr().out
+
+
+def test_cli_without_an_identity_config_skips_bots(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "DEFAULT_IDENTITIES", tmp_path / "missing.json")
+    assert main(_bot_cli(tmp_path)) == 0
+    assert "bot-trailer-missing" not in capsys.readouterr().out

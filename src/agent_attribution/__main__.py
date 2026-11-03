@@ -9,6 +9,10 @@ from pathlib import Path
 
 from .check import Commit, Config, Finding, PullRequest, check
 
+# The playbook's own identity config; the reusable workflow checks the playbook out, so it is found
+# next to the package without any workflow input.
+DEFAULT_IDENTITIES = Path(__file__).resolve().parents[2] / "config" / "github-identities.json"
+
 
 def _escape(value: str) -> str:
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -16,6 +20,17 @@ def _escape(value: str) -> str:
 
 def _split(value: str) -> frozenset[str]:
     return frozenset(item.strip().lower() for item in value.split(",") if item.strip())
+
+
+def load_bots(path: Path, agents: frozenset[str]) -> tuple[dict[str, str], str]:
+    """GitHub App bot logins of the listed agents, and the bot mode ("warn" or "fail"), from the identity config."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    bots = {}
+    for name, identity in (data.get("agents") or {}).items():
+        agent = name.strip().lower()
+        if agent in agents and identity.get("kind") == "app" and identity.get("slug"):
+            bots[f"{identity['slug'].strip().lower()}[bot]"] = agent
+    return bots, "fail" if data.get("attribution") == "fail" else "warn"
 
 
 def format_finding(f: Finding, fmt: str) -> str:
@@ -36,15 +51,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-issue-key", action="store_true", help="fail when the PR has no issue key")
     parser.add_argument("--format", choices=["text", "github"], default="text")
     parser.add_argument("--warn-only", action="store_true", help="report errors as warnings and always exit 0")
+    parser.add_argument(
+        "--identities", type=Path, help="agent GitHub identity config (default: the playbook's, if present)"
+    )
+    parser.add_argument(
+        "--bot-mode", choices=["warn", "fail"], help="severity of the bot rules (default: the config's 'attribution')"
+    )
     args = parser.parse_args(argv)
+    agents = _split(args.agents)
+
+    bots: dict[str, str] = {}
+    bot_mode = "warn"
+    if args.identities is not None:
+        if not args.identities.is_file():
+            parser.error(f"--identities: no such file: {args.identities}")
+        bots, bot_mode = load_bots(args.identities, agents)
+    elif DEFAULT_IDENTITIES.is_file():
+        bots, bot_mode = load_bots(DEFAULT_IDENTITIES, agents)
+    bot_mode = args.bot_mode or bot_mode
 
     commits = [Commit.from_github(c) for c in json.loads(Path(args.commits).read_text(encoding="utf-8"))]
     pr = PullRequest.from_github(json.loads(Path(args.pr).read_text(encoding="utf-8"))) if args.pr else PullRequest()
     config = Config(
-        agents=_split(args.agents),
+        agents=agents,
         agent_domain=args.agent_domain.strip(),
         humans=_split(args.humans),
         require_issue_key=args.require_issue_key,
+        bots=bots,
+        bot_severity="error" if bot_mode == "fail" else "warning",
     )
 
     findings = check(commits, pr, config)

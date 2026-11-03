@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Store an agent's GitHub secret in the Keychain (account basita) without printing it.
+#
+#   gh-store malek --file ~/Downloads/basita-malek.pem   (or copy the key, then: gh-store malek)
+#   gh-store yousef basitasolutions                      (copy the token first; ahmedoraby-eng for the public one)
+#
+# Only a value of the right shape is stored. Then clear the clipboard (pbcopy </dev/null) and run gh-check.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m agent_gh store "$@"
