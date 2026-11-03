@@ -7,6 +7,10 @@
     atl <agent> jira-ready BASITA-1 ["text"]
     atl adam jira-return DFP-1 "reason"
     atl salma jira-dismiss DFP-1 --reason "Not a Bug" ["text"]
+    atl <agent> jira-edit DFP-1 [--add-label L] [--remove-label L] [--set-labels "a,b"] [--assignee <name|none>]
+        [--description "text"] [--priority High] [--fix-version V] [--remove-fix-version V] [--set-fix-versions "a,b"]
+        [--summary "text"] [--parent DFP-2] [--due-date YYYY-MM-DD|none]
+    atl <agent> jira-link DFP-1 DFP-2 [--type "blocks"]
     atl <agent> confluence-get <page id or URL>
     atl <agent> confluence-search "words or CQL"
     atl <agent> confluence-create <space key> "text" --title "Title" [--parent <page id>] [--storage]
@@ -22,6 +26,14 @@ recognise agents' own replies. `jira-start` moves a To Do issue to In Progress, 
 comments. `jira-ready` moves a Refinement issue to Ready (never an Epic) and comments.
 `jira-create <PROJECT> <Story|Task|Bug|Sub-task|Epic> "summary" "description"` creates an issue, signed in its
 description and unassigned unless --assignee says otherwise.
+`jira-edit <KEY>` changes the fields named by its options in one request, as the agent's own user (BASITA-169):
+labels and Fix Versions are added, removed or set as a whole list (comma-separated; "" empties it); the labels only
+Ahmed sets (reviewed-by-ahmed, human-reviewed, needs-ahmed, jira-status-waived, any case) are refused in every form,
+and a whole list must keep them as they are. `--assignee` takes a name with a Jira seat or `none`, for the agents that
+assign; `--description` replaces the description and signs it (`-` reads stdin); `--due-date` takes YYYY-MM-DD or
+`none`. `jira-link <KEY> <KEY> --type T` links two issues so that the first one "<T>" the second: T is a link type's
+name or phrase (relates to, blocks, is blocked by, duplicates, clones; default relates to). It reads the link back and
+prints what Jira recorded.
 `jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject): the table in
 client.py gives who may, the next status and the next assignee. The read commands print
 JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
@@ -63,6 +75,8 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "jira-create",
             "jira-return",
             "jira-dismiss",
+            "jira-edit",
+            "jira-link",
             "confluence-get",
             "confluence-search",
             "confluence-create",
@@ -86,10 +100,45 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     parser.add_argument("--assignee", default="", help="jira-create, jira-ready: who gets the issue")
     parser.add_argument("--link", default="", help="jira-create: an issue this one relates to")
     parser.add_argument("--storage", action="store_true", help="the text is Confluence storage format")
+    parser.add_argument("--add-label", action="append", default=[], help="jira-edit: add a label (repeatable)")
+    parser.add_argument("--remove-label", action="append", default=[], help="jira-edit: remove a label (repeatable)")
+    parser.add_argument(
+        "--set-labels", default=None, help='jira-edit: the whole label list, comma-separated ("" empties)'
+    )
+    parser.add_argument("--description", dest="new_description", default="", help="jira-edit: the new description")
+    parser.add_argument("--priority", default="", help="jira-edit: Highest, High, Medium, Low or Lowest")
+    parser.add_argument("--fix-version", action="append", default=[], help="jira-edit: add a Fix Version (repeatable)")
+    parser.add_argument("--remove-fix-version", action="append", default=[], help="jira-edit: remove a Fix Version")
+    parser.add_argument(
+        "--set-fix-versions", default=None, help="jira-edit: the whole Fix Version list, comma-separated"
+    )
+    parser.add_argument("--summary", default="", help="jira-edit: the new summary")
+    parser.add_argument("--due-date", default="", help="jira-edit: YYYY-MM-DD, or none")
+    parser.add_argument("--type", dest="link_type", default="", help="jira-link: the link type or phrase (relates to)")
     parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. sherif")
     parser.add_argument("--cloud-id", default=default_cloud_id())
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
     args = parser.parse_args(argv)
+    edit_options = (
+        args.add_label,
+        args.remove_label,
+        args.set_labels is not None,
+        args.new_description,
+        args.priority,
+        args.fix_version,
+        args.remove_fix_version,
+        args.set_fix_versions is not None,
+        args.summary,
+        args.due_date,
+    )
+    if args.command != "jira-edit" and any(edit_options):
+        print(f"atl: those options are for jira-edit, not {args.command}", file=sys.stderr)
+        return 2
+    if args.command != "jira-link" and args.link_type:
+        print(f"atl: --type is for jira-link, not {args.command}", file=sys.stderr)
+        return 2
+    if args.command in ("jira-edit", "jira-link"):
+        return _edit_or_link(args, token_source, transport)
 
     if args.command in READS:
         try:
@@ -230,6 +279,65 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         else:
             result = client.confluence_append(args.target, text)
             print(f"page {args.target} now version {result.get('version', {}).get('number')} by {client.display}")
+    except AtlError as error:
+        print(f"atl: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _split(value: str | None) -> tuple | None:
+    """A comma-separated list from an option: None when the option is absent, () for an empty string."""
+    if value is None:
+        return None
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _edit_or_link(args, token_source, transport) -> int:
+    if args.command == "jira-edit":
+        if args.text or args.why or args.description:
+            print("atl: jira-edit takes the issue key and options only", file=sys.stderr)
+            return 2
+        if args.label or args.link:
+            print("atl: jira-edit takes --add-label, --remove-label or --set-labels, and no --link", file=sys.stderr)
+            return 2
+    elif not args.text or args.why or args.description:
+        print('atl: jira-link needs two issue keys: jira-link <KEY> <KEY> [--type "blocks"]', file=sys.stderr)
+        return 2
+    try:
+        agent = args.agent.lower()
+        kwargs = {"transport": transport} if transport else {}
+        client = AtlClient(
+            agent,
+            args.cloud_id,
+            token_source(account_for(agent, args.via), "jira"),
+            args.domain,
+            via=args.via,
+            **kwargs,
+        )
+        if args.command == "jira-link":
+            relation = client.jira_link_typed(args.target, args.text, args.link_type or "relates to")
+            print(f"{args.target} {relation} {args.text}, by {client.display}")
+            return 0
+        description = sys.stdin.read() if args.new_description == "-" else args.new_description
+        if args.new_description and not description.strip():
+            raise AtlError("the description is empty")
+        signed = f"{description.rstrip()}\n\n— {client.signature}" if description.strip() else ""
+        changes = client.jira_edit(
+            args.target,
+            add_labels=tuple(args.add_label),
+            remove_labels=tuple(args.remove_label),
+            set_labels=_split(args.set_labels),
+            assignee=args.assignee,
+            description=signed,
+            priority=args.priority,
+            add_fix_versions=tuple(args.fix_version),
+            remove_fix_versions=tuple(args.remove_fix_version),
+            set_fix_versions=_split(args.set_fix_versions),
+            summary=args.summary,
+            parent=args.parent,
+            duedate=args.due_date,
+        )
+        print(f"{args.target} edited by {client.display}: {'; '.join(changes)}")
     except AtlError as error:
         print(f"atl: {error}", file=sys.stderr)
         return 1
