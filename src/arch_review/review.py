@@ -6,18 +6,21 @@ files with the same blob SHAs against the base branch): that is a merge from the
 touched none of the PR's files, and a re-review would find nothing new. Any real change, or any
 doubt (a file list that could not be read, a commit no longer reachable), needs a re-review of the
 delta since the approved commit, at the same effort. Comment-only reviews change nothing.
+On a PR the reviewer's own bot opened or committed to (`reviewer_own_bots`), no review of his counts:
+the check waits for the owner, who waives it or reviews it himself.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from .rules import Classification
 
 APPROVED, CHANGES, DISMISSED = "APPROVED", "CHANGES_REQUESTED", "DISMISSED"
-# Waiting states; `pickup` (T4) starts the reviewer on `waiting` and the author on `changes`.
-GREEN, WAITING, CHANGES_STATE = "green", "waiting", "changes"
+# Waiting states; T4 (`fire.py`, and pickup as the fallback) starts the reviewer on `waiting` and the
+# author on `changes`. `owner` is the owner's turn: nothing starts.
+GREEN, WAITING, CHANGES_STATE, OWNER_STATE = "green", "waiting", "changes", "owner"
 
 
 @dataclass(frozen=True)
@@ -37,7 +40,7 @@ class Review:
 
 @dataclass(frozen=True)
 class Decision:
-    state: str  # green, waiting or changes
+    state: str  # green, waiting, changes or owner
     status: str  # one line for people
     reviewed_sha: str = ""  # the reviewer's last approved or reviewed commit, for a delta review
     request: bool = False  # ask the reviewer (again)
@@ -59,10 +62,18 @@ def decide(
     head_sha: str,
     reviews: list[Review],
     same_changes: Callable[[str], bool],
+    own_bots: Sequence[str] = (),
+    owner: str = "the owner",
 ) -> Decision:
-    """Decide the check. `same_changes(sha)` says whether `sha` has the head's exact change set."""
+    """Decide the check. `same_changes(sha)` says whether `sha` has the head's exact change set.
+    `own_bots` are the reviewer's own bots found on the PR (its author or its commits)."""
     if not classification.required:
         return Decision(GREEN, f"no review needed ({classification.cls}: {'; '.join(classification.reasons)})")
+    if own_bots:
+        return Decision(
+            OWNER_STATE,
+            f"waiting for {owner}: {reviewer}'s review can't count, the PR has work by {', '.join(own_bots)}",
+        )
     tier = classification.effort
     last = latest_review(reviews, reviewer)
     if last is None:

@@ -17,6 +17,11 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 - `agent-git <agent> commit` uses the App's bot address (`<bot id>+basita-<agent>[bot]@users.noreply.github.com`) for Malek, Haya and Salma, so GitHub links the commit to the bot. `AGENT_GIT_LEGACY_EMAIL=1` goes back to `<agent>@basitasolutions.com` (BASITA-149).
 - agent-attribution maps the Apps' bots to their agents (from `config/github-identities.json`, so the reusable workflow is unchanged): a bot commit needs the matching `Agent:` trailer, and a pull request opened by a bot must not name another agent. These are warnings while `"attribution"` is `"warn"`, errors once it is `"fail"`. Other bots are still skipped (BASITA-149).
 
+### Added (BASITA-161, T4 fired by GitHub events: playbook part)
+- `python -m arch_review.fire`: the last step of Architecture review can start Yousef's review (`waiting`) or the author's rework (`changes`) through a pickup routine's `/fire` URL, with fixed fields only (`KIND REPO PR SHA TIER ROUND`), never the PR's text. The repo variable `T4_FIRE` switches it: `off` (default, the step doesn't run), `dry-run` (says what it would fire) or `on`. Loop guards of plan 10.10: only PRs opened by `t4.agent_bots` from the same repository (never forks); a review only when Yousef has no review on that commit; a rework only for changes requested on the head; at most `t4.max_rework_rounds` (2) reworks, then "round cap, waiting for <owner>"; one claim comment by github-actions[bot] so a (PR, commit, kind) fires once from GitHub. The routine tokens (`ROUTINE_FIRE_OPUS`, `ROUTINE_FIRE_SONNET`) are only in that step's environment and never printed; the step never changes the check's result. The workflow change is a patch for Ahmed (D4).
+- `reviewer_own_bots` in `.github/review-rules.json` (`basita-yousef-docs[bot]`): on a PR one of them opened or committed to, Yousef's review can't count, and the check's new state `owner` waits for Ahmed.
+- `templates/t4-routine-prompt.md`: the pickup routines' prompt for both payload forms, the review and rework briefs, and the design of `pickup-event.sh` (basita-ops part).
+
 ## 2026-11-02
 
 ### Added
