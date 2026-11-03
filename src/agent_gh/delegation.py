@@ -387,13 +387,55 @@ MERGE_WRITE = {"contents": "write", "pull_requests": "write", "metadata": "read"
 USAGE = (
     "usage: agent-gh talia pr merge <N> [-R owner/repo] | agent-gh talia merge-check <N> [-R owner/repo]"
     " | agent-gh reader delegation-covers <ISO time>"
+    " | agent-gh sync delegation-record --until HH:MM < words | agent-gh sync delegation-note <issue> < text"
 )
+RECORD_WRITE = {"issues": "write", "metadata": "read"}
 
 
 def is_delegation_command(agent: str, args: list[str]) -> bool:
-    return (agent == "talia" and (args[:2] == ["pr", "merge"] or args[:1] == ["merge-check"])) or (
-        agent == "reader" and args[:1] == ["delegation-covers"]
+    return (
+        (agent == "talia" and (args[:2] == ["pr", "merge"] or args[:1] == ["merge-check"]))
+        or (agent == "reader" and args[:1] == ["delegation-covers"])
+        or (agent == "sync" and args[:1] in (["delegation-record"], ["delegation-note"]))
     )
+
+
+def record_body(words: str) -> str:
+    quoted = "\n".join(f"> {line}" if line else ">" for line in words.strip().splitlines())
+    return (
+        "Ahmed's words, in a session on his Mac, recorded by Talia with `delegation-record.sh` (D22):\n\n"
+        f"{quoted}\n\nThe window starts when this issue was opened and ends at the time in its title, at most 12 hours "
+        "later. Closing this issue ends it at once."
+    )
+
+
+def sync_command(args: list[str], stdin: str, read: Call, write: Call) -> str:
+    """basita-sync on the Mac: open a delegation issue from Ahmed's words, or note a merge on one."""
+    text = stdin.strip()
+    if not text:
+        raise IdentityError("refused: nothing on stdin (Ahmed's words, or the note)")
+    if args[:1] == ["delegation-record"]:
+        if len(args) != 3 or args[1] != "--until":
+            raise IdentityError(USAGE)
+        title = f"Delegation until {args[2]}"
+        headers, _ = read("GET", f"/repos/{DELEGATION_REPO}", None)
+        now = github_now(headers)
+        until = parse_until(title, now)
+        if not until:
+            raise IdentityError(f"refused: '{args[2]}' is not HH:MM or YYYY-MM-DD HH:MM (Cairo time)")
+        if not now < until <= now + MAX_WINDOW:
+            raise IdentityError(f"refused: {args[2]} Cairo time is not within the next 12 hours")
+        _, created = write(
+            "POST", f"/repos/{DELEGATION_REPO}/issues", {"title": title, "body": record_body(text), "labels": [LABEL]}
+        )
+        return f"recorded {created.get('html_url')} until {until:%Y-%m-%d %H:%M} UTC"
+    if len(args) != 2 or not args[1].isdigit():
+        raise IdentityError(USAGE)
+    _, target = read("GET", f"/repos/{DELEGATION_REPO}/issues/{args[1]}", None)
+    if LABEL not in {(label.get("name") or "").lower() for label in target.get("labels") or []}:
+        raise IdentityError(f"refused: #{args[1]} is not a delegation issue")
+    write("POST", f"/repos/{DELEGATION_REPO}/issues/{args[1]}/comments", {"body": text})
+    return f"noted on {target.get('html_url')}"
 
 
 def _pr_args(args: list[str], default_repo: str | None) -> tuple[str, int]:
@@ -456,12 +498,19 @@ def jira_status_with_atl(atl: str, run) -> Callable[[str], str]:
 
 
 def cli(agent: str, args: list[str], config: dict, default_repo: str | None, deps: dict) -> int:
-    """deps: api, transport, token_for, revoke, read_permissions, jira, dry_run, out (print)."""
+    """deps: api, transport, token_for, revoke, read_permissions, jira, dry_run, out (print), stdin."""
     out = deps["out"]
     tokens = _Tokens(config, deps["transport"], deps["token_for"], deps["revoke"])
     reader_perms = deps["read_permissions"](config["agents"]["reader"])
     read = _caller(deps["api"], deps["transport"], tokens, "reader", reader_perms)
     try:
+        if agent == "sync":
+            if deps.get("dry_run"):
+                out(f"agent-gh dry run: sync {args[0]} on {DELEGATION_REPO}")
+                return 0
+            write = _caller(deps["api"], deps["transport"], tokens, "sync", RECORD_WRITE)
+            out(sync_command(args, deps["stdin"](), read, write))
+            return 0
         if agent == "reader":
             if len(args) != 2:
                 raise IdentityError(USAGE)

@@ -391,3 +391,62 @@ def test_only_talia_merges_and_only_reader_answers_covers():
     assert not d.is_delegation_command("malek", ["pr", "merge", "3"])
     assert not d.is_delegation_command("sync", ["pr", "merge", "3"])
     assert not d.is_delegation_command("talia", ["delegation-covers", "x"])
+
+
+# --- basita-sync records a delegation from Ahmed's words on his Mac (D22) ------------------------------------------
+
+
+class SyncGitHub(FakeGitHub):
+    def __call__(self, method, path, body):
+        if method == "GET" and path == f"/repos/{OPS}":
+            self.calls.append((method, path, body))
+            return {"Date": NOW}, {}
+        if method == "GET" and path == f"/repos/{OPS}/issues/7":
+            self.calls.append((method, path, body))
+            return {"Date": NOW}, issue()
+        if method == "GET" and path == f"/repos/{OPS}/issues/8":
+            self.calls.append((method, path, body))
+            return {"Date": NOW}, {**issue(8), "labels": []}
+        if method == "POST" and path == f"/repos/{OPS}/issues":
+            self.calls.append((method, path, body))
+            return {"Date": NOW}, {"html_url": f"https://github.com/{OPS}/issues/9"}
+        return super().__call__(method, path, body)
+
+
+def test_sync_records_a_delegation_with_ahmeds_words():
+    github = SyncGitHub()
+    code, out, minted, revoked = run_cli(
+        "sync", ["delegation-record", "--until", "21:00"], github, stdin=lambda: "خدي كل الصلاحيات\nلحد ما ارجع"
+    )
+    assert code == 0 and out == [f"recorded https://github.com/{OPS}/issues/9 until 2026-11-03 19:00 UTC"]
+    (post,) = [b for m, p, b in github.calls if m == "POST"]
+    assert post["title"] == "Delegation until 21:00" and post["labels"] == ["delegation"]
+    assert "> خدي كل الصلاحيات\n> لحد ما ارجع" in post["body"]
+    assert ("sync", OPS, (("issues", "write"), ("metadata", "read"))) in minted and len(revoked) == len(minted)
+
+
+@pytest.mark.parametrize(
+    ("args", "stdin", "why"),
+    [
+        (["delegation-record", "--until", "08:00"], "x", "not within the next 12 hours"),  # 06:00 UTC tomorrow
+        (["delegation-record", "--until", "soon"], "x", "not HH:MM"),
+        (["delegation-record", "--until", "21:00"], "  ", "nothing on stdin"),
+        (["delegation-record", "21:00"], "x", "usage"),
+        (["delegation-note", "8"], "merged #12", "not a delegation issue"),
+    ],
+)
+def test_sync_refusals(args, stdin, why):
+    with pytest.raises(IdentityError, match=why):
+        run_cli("sync", args, SyncGitHub(), stdin=lambda: stdin)
+
+
+def test_sync_notes_a_merge_on_the_delegation_issue():
+    github = SyncGitHub()
+    code, out, _, _ = run_cli("sync", ["delegation-note", "7"], github, stdin=lambda: "merged basita-ops#12")
+    assert code == 0 and out[0] == f"noted on https://github.com/{OPS}/issues/7"
+    assert (f"/repos/{OPS}/issues/7/comments", {"body": "merged basita-ops#12"}) in [
+        (p, b) for m, p, b in github.calls if m == "POST"
+    ]
+    assert d.is_delegation_command("sync", ["delegation-note", "7"]) and not d.is_delegation_command(
+        "sync", ["pr", "merge"]
+    )

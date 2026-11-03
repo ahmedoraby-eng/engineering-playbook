@@ -8,6 +8,7 @@
     python -m agent_gh credential reader get              (scripts/agent-gh reader credential get)
     python -m agent_gh gh talia pr merge|merge-check <N>  (Talia's merge on Ahmed's delegation, delegation.py)
     python -m agent_gh gh reader delegation-covers <time> (main-guard-check.sh: which delegation held then)
+    python -m agent_gh gh sync delegation-record|delegation-note  (basita-ops delegation-record.sh, on the Mac)
 
 The token goes only into the environment of the one gh or git process that needs it (GH_TOKEN, or a
 one-command credential helper for git), and an App's token is revoked as soon as that process ends,
@@ -121,6 +122,7 @@ def cmd_delegation(agent: str, args: list[str]) -> int:
         "jira": delegation.jira_status_with_atl(atl, subprocess.run),
         "dry_run": bool(os.environ.get("AGENT_GH_DRY_RUN")),
         "out": print,
+        "stdin": sys.stdin.read,
     }
     return delegation.cli(agent, args, load_config(), _default_repo(), deps)
 
