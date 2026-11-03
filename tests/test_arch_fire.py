@@ -13,6 +13,7 @@ from arch_review.fire import (
     FIRE_URL,
     HEADER,
     MARKER,
+    ROUTINE_BETA,
     Fire,
     FireError,
     FireRules,
@@ -31,7 +32,7 @@ from arch_review.rules import ChangedFile, RulesError, commit_logins
 OWNER, REVIEWER, AGENT, DOCS_BOT = "owner-login", "arch-bot", "agent-app[bot]", "arch-docs[bot]"
 REPO = "org/repo"
 HEAD, OLD, OLDER, BASE = "a" * 40, "b" * 40, "c" * 40, "d" * 40
-TOKEN = "sk-ant-oat01-" + "x" * 40
+FAKE_ROUTINE_TOKEN = "test-routine-token-" + "x" * 40
 RULES_JSON = {
     "owner": OWNER,
     "critical_paths": ["^src/calc/"],
@@ -224,6 +225,7 @@ def test_the_same_commit_requested_twice_is_one_round():
         ({"user": {"login": "someone[bot]"}}, "not an agent's bot"),
         ({"draft": True}, "draft"),
         ({"state": "closed"}, "not open"),
+        ({"head": {"sha": "f" * 40, "repo": {"full_name": REPO}}}, "the PR moved on"),
     ],
 )
 def test_only_open_ready_agent_prs_from_this_repo_fire(change, reason):
@@ -426,7 +428,7 @@ class FakePost:
 
 
 ROUTINES = "opus=trig_01OPUS, sonnet=trig_01SONNET"
-ENV = {"ROUTINE_FIRE_OPUS": TOKEN, "ROUTINE_FIRE_SONNET": TOKEN.replace("x", "y")}
+ENV = {"ROUTINE_FIRE_OPUS": FAKE_ROUTINE_TOKEN, "ROUTINE_FIRE_SONNET": FAKE_ROUTINE_TOKEN.replace("x", "y")}
 
 
 def run_fire(tmp_path, fire=None, mode="on", gh=None, post=None, env=ENV, routines=ROUTINES, write=True):
@@ -464,8 +466,9 @@ def test_on_claims_then_fires_the_fixed_fields_and_records_it(tmp_path, capsys):
     assert code == 0
     [(url, headers, body)] = post.calls
     assert url == FIRE_URL.format("trig_01OPUS")
-    assert headers["Authorization"] == f"Bearer {TOKEN}"
+    assert headers["Authorization"] == f"Bearer {FAKE_ROUTINE_TOKEN}"
     assert headers["anthropic-version"] and headers["Content-Type"] == "application/json"
+    assert headers["anthropic-beta"] == ROUTINE_BETA == "experimental-cc-routine-2026-04-01"
     assert json.loads(body) == {"text": f"KIND=review REPO={REPO} PR=7 SHA={HEAD} TIER=max ROUND=1"}
     # Claim first (POST the comment), fire, then mark the row fired (PATCH).
     assert [w[0] for w in gh.writes] == ["POST", "PATCH"]
@@ -528,7 +531,7 @@ def test_no_claim_means_no_fire(tmp_path, capsys, fail):
     [
         ({}, ROUTINES, "ROUTINE_FIRE_OPUS is missing"),
         ({"ROUTINE_FIRE_OPUS": "short"}, ROUTINES, "ROUTINE_FIRE_OPUS is missing or malformed"),
-        ({"ROUTINE_FIRE_OPUS": TOKEN + "\nX: y"}, ROUTINES, "malformed"),
+        ({"ROUTINE_FIRE_OPUS": FAKE_ROUTINE_TOKEN + "\nX: y"}, ROUTINES, "malformed"),
         (ENV, "", "no trigger id for the opus routine"),
         (ENV, "opus=https://evil.example/fire", "no trigger id for the opus routine"),
     ],
@@ -557,9 +560,12 @@ def test_a_missing_or_bad_decision_file_fires_nothing(tmp_path, capsys):
 
 def test_the_token_is_never_printed_or_summarised(tmp_path, capsys):
     for status in (200, 401, 0):
-        run_fire(tmp_path, post=FakePost(status, '{"error":{"type":"authentication_error","message":"' + TOKEN + '"}}'))
+        run_fire(
+            tmp_path,
+            post=FakePost(status, '{"error":{"type":"authentication_error","message":"' + FAKE_ROUTINE_TOKEN + '"}}'),
+        )
     out = capsys.readouterr().out + (tmp_path / "s.md").read_text()
-    assert TOKEN not in out and "sk-ant" not in out
+    assert FAKE_ROUTINE_TOKEN not in out
 
 
 def test_an_unexpected_error_still_exits_0(tmp_path, capsys):
@@ -597,10 +603,10 @@ def test_claim_rows_last_status_wins_and_rows_are_replaced_in_place():
 
 def test_send_fire_reads_the_session_and_reports_errors_without_the_token():
     fire = fire_for()
-    assert send_fire(fire, "trig_1", TOKEN, FakePost()) == (True, "session_01ABC")
-    assert send_fire(fire, "trig_1", TOKEN, FakePost(200, "not json")) == (True, "unknown session")
-    assert send_fire(fire, "trig_1", TOKEN, FakePost(503, "<html>")) == (False, "HTTP 503")
-    started, why = send_fire(fire, "trig_1", TOKEN, FakePost(0, "URLError"))
+    assert send_fire(fire, "trig_1", FAKE_ROUTINE_TOKEN, FakePost()) == (True, "session_01ABC")
+    assert send_fire(fire, "trig_1", FAKE_ROUTINE_TOKEN, FakePost(200, "not json")) == (True, "unknown session")
+    assert send_fire(fire, "trig_1", FAKE_ROUTINE_TOKEN, FakePost(503, "<html>")) == (False, "HTTP 503")
+    started, why = send_fire(fire, "trig_1", FAKE_ROUTINE_TOKEN, FakePost(0, "URLError"))
     assert started is None and "may have started" in why
 
 

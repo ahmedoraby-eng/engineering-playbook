@@ -34,7 +34,7 @@ The loop guards of plan 10.10:
 
 The `/fire` call follows Anthropic's "Trigger a routine through the API" page (experimental, read
 03/11/2026): POST `https://api.anthropic.com/v1/claude_code/routines/<trig_ id>/fire`, `Authorization:
-Bearer <the routine's token>`, `anthropic-version`, and a JSON body `{"text": ...}`. There is no
+Bearer <the routine's token>`, `anthropic-version`, `anthropic-beta`, and a JSON body `{"text": ...}`. There is no
 idempotency key, so nothing here retries: a fire with no answer may have started its run, and keeps its
 claim.
 """
@@ -72,6 +72,8 @@ ROUTINE_NAME = re.compile(r"^[a-z]{1,20}$")
 TRIGGER_ID = re.compile(r"^trig_[A-Za-z0-9]{1,64}$")
 FIRE_URL = "https://api.anthropic.com/v1/claude_code/routines/{}/fire"
 API_VERSION = "2023-06-01"  # the endpoint accepts every version from this one on
+# The routines API "ships under" this beta header; without it the fire is refused.
+ROUTINE_BETA = "experimental-cc-routine-2026-04-01"
 ACTIONS_BOT = "github-actions[bot]"
 MARKER = "<!-- arch-review-t4 -->"
 ROW = re.compile(r"<!-- t4 (review|rework) ([0-9a-f]{40}) (claimed|fired|failed) -->")
@@ -235,6 +237,10 @@ def decide_fire(
     head_repo = (((pr.get("head") or {}).get("repo") or {}).get("full_name") or "").lower()
     if head_repo != repo.lower():
         return Fire("never fires: the PR's branch is not in this repository (a fork)")
+    fresh = ((pr.get("head") or {}).get("sha") or "").lower()
+    if fresh and fresh != head_sha.lower():
+        # Two quick pushes would otherwise start two reviews: only the run on the newest head may fire.
+        return Fire(f"nothing to start: the PR moved on to {fresh[:7]}; the run on the new head decides")
     author = ((pr.get("user") or {}).get("login") or "").lower()
     if author not in t4.agent_bots:
         return Fire(f"nothing to start: opened by {author or 'unknown'}, not an agent's bot in t4.agent_bots")
@@ -331,6 +337,7 @@ def send_fire(
     headers = {
         "Authorization": f"Bearer {token}",
         "anthropic-version": API_VERSION,
+        "anthropic-beta": ROUTINE_BETA,
         "Content-Type": "application/json",
     }
     status, answer = post(FIRE_URL.format(trigger), headers, body)
