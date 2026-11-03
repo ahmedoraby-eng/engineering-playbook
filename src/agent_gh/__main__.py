@@ -6,6 +6,8 @@
     python -m agent_gh store <agent> [--file key.pem]     (scripts/gh-store)
     python -m agent_gh bot-email <agent>
     python -m agent_gh credential reader get              (scripts/agent-gh reader credential get)
+    python -m agent_gh gh talia pr merge|merge-check <N>  (Talia's merge on Ahmed's delegation, delegation.py)
+    python -m agent_gh gh reader delegation-covers <time> (main-guard-check.sh: which delegation held then)
 
 The token goes only into the environment of the one gh or git process that needs it (GH_TOKEN, or a
 one-command credential helper for git), and an App's token is revoked as soon as that process ends,
@@ -27,6 +29,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import delegation
 from .check import run_check
 from .identity import (
     IdentityError,
@@ -105,7 +108,26 @@ def run_with_token(command: list[str], env: dict, token: str, revocable: bool, t
                 print("agent-gh: could not revoke the token; it expires within the hour", file=sys.stderr)
 
 
+def cmd_delegation(agent: str, args: list[str]) -> int:
+    from .identity import api, urllib_transport
+
+    atl = str(Path(__file__).resolve().parents[2] / "scripts" / "atl")
+    deps = {
+        "api": api,
+        "transport": urllib_transport,
+        "token_for": token_for,
+        "revoke": revoke_installation_token,
+        "read_permissions": read_permissions,
+        "jira": delegation.jira_status_with_atl(atl, subprocess.run),
+        "dry_run": bool(os.environ.get("AGENT_GH_DRY_RUN")),
+        "out": print,
+    }
+    return delegation.cli(agent, args, load_config(), _default_repo(), deps)
+
+
 def cmd_gh(agent: str, args: list[str]) -> int:
+    if delegation.is_delegation_command(agent.lower(), args):
+        return cmd_delegation(agent.lower(), args)
     config = load_config()
     name, entry = acting_identity(config, agent, uses_push_app(args))
     plan = plan_gh(name, entry, args, _default_repo(), config)

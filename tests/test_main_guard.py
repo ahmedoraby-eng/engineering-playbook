@@ -41,3 +41,30 @@ def test_command_line_exit_codes_and_summary(tmp_path, capsys):
     assert "::error title=Main guard::refs/heads/main was updated by x[bot]" in out
     assert "::warning title=Main guard::refs/heads/main was force-pushed" in out
     assert "red: refs/heads/main was updated by x[bot]" in summary.read_text()
+
+
+# --- BASITA-162: Talia's App may update main only by merging a pull request ----------------------------------
+
+
+def test_a_merge_only_actor_passes_on_a_pr_merge():
+    push = Push("refs/heads/main", ("basita-talia[bot]",), before="a" * 40, after="b" * 40)
+    assert check(push, frozenset({"ahmedoraby-eng"}), frozenset({"basita-talia[bot]"}), pr_merge=True) == []
+
+
+def test_a_merge_only_actor_fails_on_a_plain_or_forced_push():
+    talia = frozenset({"basita-talia[bot]"})
+    plain = Push("refs/heads/main", ("basita-talia[bot]",))
+    (finding,) = check(plain, frozenset({"ahmedoraby-eng"}), talia, pr_merge=False)
+    assert finding.severity == "error" and "only by merging a pull request" in finding.message
+    forced = Push("refs/heads/main", ("basita-talia[bot]",), forced=True)
+    findings = check(forced, frozenset({"ahmedoraby-eng"}), talia, pr_merge=True)
+    assert [f.severity for f in findings] == ["error", "warning"] and "force-pushed by" in findings[0].message
+
+
+def test_merge_only_through_the_command_line(capsys):
+    args = ["--allowed", "ahmedoraby-eng", "--merge-only", "basita-talia[bot]", "--actor", "basita-talia[bot]"]
+    assert main([*args, "--pr-merge", "true"]) == 0
+    assert main([*args, "--pr-merge", "false"]) == 1
+    assert main(args) == 1  # the workflow didn't say it was a merge
+    assert main(["--allowed", "ahmedoraby-eng", "--actor", "basita-talia[bot]", "--pr-merge", "true"]) == 1
+    assert "only by merging a pull request" in capsys.readouterr().out

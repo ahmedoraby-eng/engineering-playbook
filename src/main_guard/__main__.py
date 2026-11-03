@@ -15,6 +15,10 @@ def _escape(value: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="main-guard", description="Flag an update to main by an unexpected actor.")
     parser.add_argument("--allowed", required=True, help="comma-separated GitHub logins allowed to update main")
+    parser.add_argument(
+        "--merge-only", default="", help="comma-separated logins allowed only to merge a PR into main (BASITA-162)"
+    )
+    parser.add_argument("--pr-merge", default="false", help="'true' when the new head is a merged PR's merge commit")
     parser.add_argument("--ref", default="refs/heads/main")
     parser.add_argument("--actor", action="append", default=[], help="an actor of the push (repeatable)")
     parser.add_argument("--forced", default="false", help="'true' for a force push")
@@ -25,7 +29,8 @@ def main(argv: list[str] | None = None) -> int:
 
     allowed = frozenset(a.strip().lower() for a in args.allowed.split(",") if a.strip())
     push = Push(args.ref, tuple(a.strip() for a in args.actor), args.forced.lower() == "true", args.before, args.after)
-    findings = check(push, allowed)
+    merge_only = frozenset(a.strip().lower() for a in args.merge_only.split(",") if a.strip())
+    findings = check(push, allowed, merge_only, args.pr_merge.lower() == "true")
     for f in findings:
         print(f"::{f.severity} title=Main guard::{_escape(f.message)}")
     errors = [f for f in findings if f.severity == "error"]
