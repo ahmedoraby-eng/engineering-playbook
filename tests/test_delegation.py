@@ -40,6 +40,10 @@ def issue(number=7, title="Delegation until 19:00", by="ahmedoraby-eng", created
     }
 
 
+def notice(state="green", head=HEAD, mode="on", cls="normal"):
+    return f"arch-review mode={mode} class={cls} effort=high state={state} head={head} reviewed={head}"
+
+
 class FakeGitHub:
     """Answers by (method, path without the paging suffix). Records every call."""
 
@@ -63,10 +67,12 @@ class FakeGitHub:
         self.issues = [issue()] if issues is None else issues
         self.events = events or {}
         self.runs = [
-            {"name": "Architecture review", "status": "completed", "conclusion": "success"},
-            {"name": "Owner review", "status": "completed", "conclusion": "success"},
-            {"name": "ci", "status": "completed", "conclusion": "skipped"},
+            {"id": 1, "name": "Architecture review", "status": "completed", "conclusion": "success"},
+            {"id": 2, "name": "Owner review", "status": "completed", "conclusion": "success"},
+            {"id": 3, "name": "ci", "status": "completed", "conclusion": "skipped"},
         ]
+        # Architecture review's machine-readable notice line, by check run id (BASITA-162, Yousef's review of #40).
+        self.notices = {1: notice()}
         self.statuses = []
         self.files = [{"filename": "work/sherif/notes.md"}]
         self.commits = [{"author": {"login": "basita-sherif[bot]"}, "commit": {"author": {"email": "x"}}}]
@@ -86,6 +92,11 @@ class FakeGitHub:
             return date, self.events.get(int(base.split("/")[-2]), [])
         if method == "GET" and base == f"{r}/commits/{HEAD}/check-runs?filter=latest":
             return date, {"check_runs": self.runs}
+        if method == "GET" and base.startswith(f"{r}/check-runs/") and base.endswith("/annotations"):
+            run_id = int(base.split("/")[-2])
+            return date, [{"message": "The ubuntu-latest label will migrate"}] + (
+                [{"message": self.notices[run_id]}] if run_id in self.notices else []
+            )
         if method == "GET" and base == f"{r}/commits/{HEAD}/status":
             return date, {"statuses": self.statuses}
         if method == "GET" and base == f"{r}/contents/.github/review-rules.json?ref=main":
@@ -218,9 +229,13 @@ def test_unknown_mergeable_is_asked_again():
 @pytest.mark.parametrize(
     ("runs", "statuses", "why"),
     [
-        ([{"name": "Architecture review", "status": "completed", "conclusion": "failure"}], [], "Architecture review"),
-        ([{"name": "Architecture review", "status": "in_progress", "conclusion": None}], [], "in_progress"),
-        ([{"name": "Owner review", "status": "completed", "conclusion": "success"}], [], "Architecture review is not"),
+        ([{"id": 1, "name": "Architecture review", "status": "completed", "conclusion": "failure"}], [], "failure"),
+        ([{"id": 1, "name": "Architecture review", "status": "in_progress", "conclusion": None}], [], "in_progress"),
+        (
+            [{"id": 2, "name": "Owner review", "status": "completed", "conclusion": "success"}],
+            [],
+            "no Architecture review check",
+        ),
         (None, [{"context": "ci/x", "state": "pending"}], "ci/x (pending)"),
     ],
 )
@@ -477,3 +492,52 @@ def test_a_delegated_merge_from_a_cloud_session_waits_for_m0(monkeypatch):
     for agent, args in (("talia", ["pr", "merge", "12", "-R", OPS]), ("sync", ["delegation-note", "7"])):
         with pytest.raises(IdentityError, match="waits for the proxy test"):
             cli.cmd_gh(agent, args)
+
+
+def test_the_check_run_name_from_a_reusable_workflow_counts():
+    """In basita-ops, elbayoumy and the playbook the run is "architecture-review / Architecture review"."""
+    github = FakeGitHub()
+    github.runs = [
+        {"id": 1, "name": "architecture-review / Architecture review", "status": "completed", "conclusion": "success"},
+        {"id": 4, "name": "rerun / Re-run Architecture review", "status": "completed", "conclusion": "success"},
+    ]
+    assert checked(github).failures == []
+    github.runs = [
+        {"id": 4, "name": "rerun / Re-run Architecture review", "status": "completed", "conclusion": "success"}
+    ]
+    assert any("no Architecture review check" in f for f in checked(github).failures)
+
+
+@pytest.mark.parametrize(
+    ("line", "why"),
+    [
+        # Report mode (ARCH_REVIEW_MODE unset or "report"): the check is success whatever the review says.
+        (notice(state="waiting", mode="report"), "Architecture review is waiting on aaaaaaa, not green (mode report)"),
+        (notice(state="changes"), "Architecture review is changes on aaaaaaa, not green (mode on)"),
+        (notice(state="error"), "Architecture review is error"),
+        # Green, but for an older commit: the review doesn't cover the head that would be merged.
+        (notice(head="c" * 40), "Architecture review ran on ccccccc, not on the head aaaaaaa"),
+        # Off on the repository, so the check prints no line at all.
+        (None, "has no arch-review line"),
+    ],
+)
+def test_check_3_trusts_the_notice_line_not_the_conclusion(line, why):
+    github = FakeGitHub()  # every check run's conclusion is success
+    if line is None:
+        github.notices = {}
+    else:
+        github.notices = {1: line}
+    result = checked(github)
+    assert any(why in f for f in result.failures), result.failures
+    with pytest.raises(IdentityError, match="refused"):
+        d.merge(result, github)
+    assert github.merged is None
+
+
+@pytest.mark.parametrize("mode, cls", [("on", "normal"), ("report", "normal"), ("on", "not-required")])
+def test_check_3_passes_on_state_green_for_the_head(mode, cls):
+    github = FakeGitHub()
+    github.notices = {1: notice(mode=mode, cls=cls)}
+    result = checked(github)
+    assert result.failures == []
+    assert any(f"state=green on that head (mode {mode}, class {cls})" in p for p in result.passed)
