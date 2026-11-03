@@ -2,6 +2,8 @@
 
 An App agent (Malek, Haya, Salma; Talia, Sherif, Adam, Nora, sync and reader once set up) has a
 private key in the Keychain (`basita-gh-<agent>-app`, base64 of the PEM on one line, account `basita`).
+In a cloud session, where there is no Keychain, an App other than sync and reader reads its own cloud
+key from `BASITA_GH_<AGENT>_KEY` instead, in the same form (plan 10.8, BASITA-163).
 For each command the key is read, signs a JWT through `openssl` from a pipe (nothing on disk), and the
 JWT asks GitHub for an installation token limited to the one repository and the permissions that
 command needs. That token lasts one hour and is kept
@@ -127,25 +129,81 @@ def bot_email(entry: dict) -> str:
     return f"{entry['bot_id']}+{bot_login(entry)}@users.noreply.github.com"
 
 
+class NoKeychain(IdentityError):
+    """This machine has no macOS Keychain (no `security` binary): a cloud session, or CI."""
+
+
 def keychain_secret(service: str, run: Callable = subprocess.run) -> str:
-    result = run(
-        ["security", "find-generic-password", "-s", service, "-a", ACCOUNT, "-w"], capture_output=True, text=True
-    )
+    try:
+        result = run(
+            ["security", "find-generic-password", "-s", service, "-a", ACCOUNT, "-w"], capture_output=True, text=True
+        )
+    except FileNotFoundError:
+        raise NoKeychain(f"no Keychain here (no `security`): {service} is kept on the Mac only") from None
     value = (result.stdout or "").strip()
     if result.returncode != 0 or not value:
         raise IdentityError(f"no Keychain item {service} (account '{ACCOUNT}'); see standards/06-agent-identity.md")
     return value
 
 
+def _pem_from_base64(value: str, where: str) -> bytes:
+    """A PEM private key from one line of base64. The messages name `where`, never the value."""
+    if value.lstrip().startswith("-----BEGIN"):
+        raise IdentityError(f"{where} holds a PEM, not one base64 line; make the line with scripts/gh-cloud-key")
+    try:
+        pem = base64.b64decode(value, validate=True)
+    except ValueError:
+        raise IdentityError(f"{where} does not hold base64 of a private key") from None
+    if not re.match(rb"-----BEGIN (RSA )?PRIVATE KEY-----", pem):
+        raise IdentityError(f"{where} does not hold a private key")
+    return pem.strip() + b"\n"
+
+
 def private_key(service: str, run: Callable = subprocess.run) -> bytes:
     """The App's PEM key, decoded from the one-line base64 the Keychain holds."""
+    return _pem_from_base64(keychain_secret(service, run), service)
+
+
+def cloud_key_variable(agent: str) -> str:
+    """The environment variable of an App's cloud key: BASITA_GH_MALEK_KEY, BASITA_GH_YOUSEF_DOCS_KEY."""
+    return "BASITA_GH_" + re.sub(r"[^A-Z0-9]", "_", agent.upper()) + "_KEY"
+
+
+def never_in_cloud(agent: str, entry: dict) -> bool:
+    """sync and reader, and any App that updates main or reads only, have no key in the cloud (plan 10.8)."""
+    return agent.lower() in ("sync", "reader") or bool(entry.get("updates_main") or entry.get("read_only"))
+
+
+def env_private_key(agent: str, entry: dict, environ: dict | None = None) -> bytes:
+    """The App's cloud key from BASITA_GH_<AGENT>_KEY: its own second key, one base64 line of the PEM
+    (plan 10.8, D19a). Refused for sync and reader even when the variable is set. A user agent (Yousef)
+    has no cloud key: his tokens stay in the Mac's Keychain."""
+    environ = os.environ if environ is None else environ
+    name = cloud_key_variable(agent)
+    if entry.get("kind") != "app":
+        raise IdentityError(f"refused: {entry.get('login', agent)}'s tokens are kept in the Mac's Keychain only")
+    if never_in_cloud(agent, entry):
+        raise IdentityError(f"refused: {entry.get('slug', agent)} never has a key in the cloud (plan 10.8)")
+    value = (environ.get(name) or "").strip()
+    if not value:
+        slug = entry.get("slug", agent)
+        raise IdentityError(f"no Keychain here and no {name}: {slug} has no cloud key in this environment")
+    return _pem_from_base64(value, name)
+
+
+def app_key_with_source(
+    agent: str, entry: dict, run: Callable = subprocess.run, environ: dict | None = None
+) -> tuple[bytes, str]:
+    """The App's key and where it came from. The Keychain always wins: the variable is read only when
+    this machine has no Keychain at all, never because a Keychain item is missing."""
     try:
-        pem = base64.b64decode(keychain_secret(service, run), validate=True)
-    except ValueError:
-        raise IdentityError(f"{service} does not hold base64 of a private key") from None
-    if not re.match(rb"-----BEGIN (RSA )?PRIVATE KEY-----", pem):
-        raise IdentityError(f"{service} does not hold a private key")
-    return pem.strip() + b"\n"
+        return private_key(entry["keychain"], run), entry["keychain"]
+    except NoKeychain:
+        return env_private_key(agent, entry, environ), cloud_key_variable(agent)
+
+
+def app_key(agent: str, entry: dict, run: Callable = subprocess.run, environ: dict | None = None) -> bytes:
+    return app_key_with_source(agent, entry, run, environ)[0]
 
 
 def _b64url(data: bytes) -> str:
@@ -270,12 +328,17 @@ def token_for(
     if entry["kind"] == "user":
         for listed_owner, token in entry.get("tokens", {}).items():
             if listed_owner.lower() == owner.lower():
-                return keychain_secret(token["keychain"], run), False
+                try:
+                    return keychain_secret(token["keychain"], run), False
+                except NoKeychain:
+                    raise IdentityError(
+                        f"{entry['login']}'s tokens are kept in the Mac's Keychain only; there is no cloud copy"
+                    ) from None
         raise IdentityError(f"{entry['login']} has no token for {owner} (listed: {', '.join(entry.get('tokens', {}))})")
     if entry.get("read_only") and any(access != "read" for access in permissions.values()):
         raise IdentityError(f"refused: {entry['slug']} reads only; it gets no token that writes")
     installation_id = installation_for(entry, owner)
-    jwt = app_jwt(entry, private_key(entry["keychain"], run), openssl=openssl)
+    jwt = app_jwt(entry, app_key(agent, entry, run), openssl=openssl)
     return mint_installation_token(entry, installation_id, permissions, [name], transport, jwt)["token"], True
 
 

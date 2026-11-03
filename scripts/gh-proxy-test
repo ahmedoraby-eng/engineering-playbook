@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# The proxy test (M0, BASITA-156): can a cloud session use an App's own token through Anthropic's
+# GitHub proxy, for REST, gh api, GraphQL and git push?
+#
+#   gh-proxy-test malek basitasolutions/basita-ops     (needs BASITA_GH_MALEK_KEY in the environment)
+#   gh-proxy-test --whoami                             (only: who the proxy attaches to a bare request)
+#
+# Run it in a cloud session. Read-only except one empty commit pushed to <prefix>BASITA-153-proxy-test,
+# which it leaves in place. It prints logins, HTTP statuses and yes/no only, never a token or a key, and
+# revokes its token at the end. See standards/06-agent-identity.md, "Cloud sessions".
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m agent_gh.proxy_test "$@"
