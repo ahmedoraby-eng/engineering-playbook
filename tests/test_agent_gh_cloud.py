@@ -200,6 +200,24 @@ def test_cloud_and_rest_mode_detection(environ, cloud_on, rest_on):
     assert cloud.rest_mode(environ) is rest_on
 
 
+def test_a_key_from_the_environment_means_a_cloud_session_even_without_claude_code_remote(tmp_path):
+    """Yousef's review of #37: the gates don't rest on CLAUDE_CODE_REMOTE alone."""
+    no_keychain = {"PATH": str(tmp_path), "BASITA_GH_MALEK_KEY": "x"}  # a PATH with no `security`
+    assert cloud.key_from_environment(no_keychain) and cloud.in_cloud(no_keychain)
+    with pytest.raises(IdentityError, match="waits for the proxy test"):
+        cloud.require_cloud_push(no_keychain)
+    with pytest.raises(IdentityError, match="waits for the proxy test"):
+        cloud.require_cloud_write(PR_WRITE, no_keychain)
+    assert cloud.push_env("t", no_keychain)  # the token goes as the header, as in any cloud session
+    # Not the cloud: no key variable (or an empty one), or a Keychain, which identity.py prefers.
+    assert not cloud.in_cloud({"PATH": str(tmp_path)})
+    assert not cloud.in_cloud({"PATH": str(tmp_path), "BASITA_GH_MALEK_KEY": " "})
+    (tmp_path / "security").write_text("#!/bin/sh\n")
+    (tmp_path / "security").chmod(0o755)
+    assert not cloud.in_cloud(no_keychain)
+    assert not cloud.in_cloud({"PATH": str(tmp_path), "BASITA_GH_KEY_NOTE": "x"})
+
+
 def test_a_cloud_push_waits_for_m0():
     cloud.require_cloud_push({})  # the Mac: nothing changes
     with pytest.raises(IdentityError, match=r"waits for the proxy test \(M0, BASITA-156\)"):
