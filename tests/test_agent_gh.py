@@ -209,7 +209,7 @@ def test_remotes():
 def test_bot_email_and_unknown_agents():
     assert bot_email(agent_entry(CONFIG, "malek")) == "351705446+basita-malek[bot]@users.noreply.github.com"
     with pytest.raises(IdentityError, match="no GitHub identity"):
-        agent_entry(CONFIG, "talia")
+        agent_entry(CONFIG, "maya")
 
 
 def test_private_key_must_be_base64_of_a_pem(key):
@@ -434,16 +434,21 @@ def test_agent_gh_dry_run_and_refusals_through_the_script(tmp_path):
 
 
 def test_agent_git_push_goes_through_agent_gh(tmp_path):
-    repo = _repo(tmp_path)
+    repo = _repo(tmp_path, branch="malek/DFP-1-x")
     script = str(ROOT / "scripts" / "agent-git")
     env = _env(tmp_path, AGENT_GH_DRY_RUN="1")
     ok = subprocess.run([script, "malek", "push"], cwd=repo, env=env, capture_output=True, text=True)
-    assert ok.returncode == 0 and "origin HEAD:refs/heads/DFP-1-x" in ok.stdout
-    for args, why in ((["push", "origin", "main"], "pushing to main"), (["-C", ".", "push"], "put push first")):
+    assert ok.returncode == 0 and "origin HEAD:refs/heads/malek/DFP-1-x" in ok.stdout
+    for args, why in (
+        (["push", "origin", "main"], "pushing to main"),
+        (["push", "origin", "HEAD:DFP-1-x"], "pushes only to malek/* branches"),
+        (["-C", ".", "push"], "put push first"),
+    ):
         bad = subprocess.run([script, "malek", *args], cwd=repo, env=env, capture_output=True, text=True)
         assert bad.returncode != 0 and why in bad.stderr
+    # Yousef pushes through his documents App, which Ahmed has not created yet (BASITA-157).
     bad = subprocess.run([script, "yousef", "push"], cwd=repo, env=env, capture_output=True, text=True)
-    assert bad.returncode == 1 and "doesn't push" in bad.stderr
+    assert bad.returncode == 1 and "basita-yousef-docs is not set up yet (Ahmed's setup S2)" in bad.stderr
 
 
 def test_agent_git_commits_with_the_bot_address(tmp_path):
@@ -497,9 +502,9 @@ def test_cli_usage_and_bot_email(capsys):
     assert cli.main([]) == 2
     assert cli.main(["bot-email", "haya"]) == 0
     assert capsys.readouterr().out.strip() == "351706579+basita-haya[bot]@users.noreply.github.com"
-    assert cli.main(["bot-email", "talia"]) == 1
-    assert cli.main(["gh", "talia", "pr", "view"]) == 1
-    assert "talia has no GitHub identity" in capsys.readouterr().err
+    assert cli.main(["bot-email", "talia"]) == 1  # pending: no bot yet
+    assert cli.main(["gh", "maya", "pr", "view"]) == 1
+    assert "maya has no GitHub identity" in capsys.readouterr().err
 
 
 def test_store_keeps_only_a_key_and_never_prints_it(key, tmp_path, monkeypatch, capsys):
@@ -631,13 +636,13 @@ def test_cmd_gh_runs_gh_and_revokes(monkeypatch):
 
 def test_cmd_push_never_pushes_submodules(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.chdir(_repo(tmp_path))
+    monkeypatch.chdir(_repo(tmp_path, branch="malek/DFP-1-x"))
     monkeypatch.setattr(cli, "token_for", lambda *a, **k: (MINTED, True))
     monkeypatch.setattr(cli, "run_with_token", lambda cmd, env, token, revocable: calls.append((cmd, env)) or 0)
     monkeypatch.delenv("AGENT_GH_DRY_RUN", raising=False)
     assert cli.cmd_push("malek", []) == 0
     cmd, env = calls[0]
-    assert "push.recurseSubmodules=no" in cmd and cmd[-3:] == ["push", "origin", "HEAD:refs/heads/DFP-1-x"]
+    assert "push.recurseSubmodules=no" in cmd and cmd[-3:] == ["push", "origin", "HEAD:refs/heads/malek/DFP-1-x"]
     assert env["AGENT_GH_TOKEN"] == MINTED and MINTED not in " ".join(cmd)
 
 

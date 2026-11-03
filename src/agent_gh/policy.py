@@ -5,6 +5,10 @@ write gets pull_requests:write with contents:read (which cannot merge or push), 
 gets contents:write. On top of that, this module refuses what only Ahmed does: merging, pushes or ref
 updates to main, deletes, settings, secrets, and the labels only he sets. It is a guard, not a seal:
 an agent on the same Mac can reach the key another way, and review is what keeps that honest.
+
+Per identity (BASITA-157): an App with a `branch_prefix` pushes only to branches that start with it;
+the App with `updates_main` (sync) pushes only `main` of that one repository and runs no gh command; a
+`read_only` App (reader) gets reads only, with its own read permissions, and never pushes.
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .identity import PR_WRITE, PUSH, READ, IdentityError
+from .identity import PR_WRITE, PUSH, IdentityError, read_permissions
 
 GITHUB_URL = re.compile(r"^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?(?:/|$)")
 REMOTE = re.compile(
@@ -35,6 +39,8 @@ WRITES = {
 }
 # A user agent (Yousef) reviews: reads, reviews and comments only.
 USER_WRITES = {"pr": {"review", "comment"}, "issue": {"comment"}}
+# What a user agent runs as his `push_app` instead (Yousef's documents): opening and editing a pull request.
+PUSH_APP_WRITES = {"pr": {"create", "edit"}}
 WHY = {
     ("pr", "merge"): "merging is Ahmed's",
     ("pr", "close"): "closing a pull request is Ahmed's",
@@ -225,6 +231,22 @@ def _approves(args: list[str]) -> bool:
     return any(a.startswith("--approve") or (re.fullmatch(r"-[A-Za-z]+", a) and "a" in a[1:]) for a in args)
 
 
+def _subcommand(args: list[str]) -> tuple[str, str]:
+    command = args[0] if args else ""
+    rest = args[1:]
+    return command, rest[0] if rest and not rest[0].startswith("-") else ""
+
+
+def uses_push_app(args: list[str]) -> bool:
+    """Whether a user agent runs this gh command as his push App (pr create, pr edit)."""
+    command, sub = _subcommand(args)
+    return sub in PUSH_APP_WRITES.get(command, set())
+
+
+def _reads_only(entry: dict) -> IdentityError:
+    return _refuse(f"{entry.get('slug')} reads only; writes go through the agent's own identity")
+
+
 def repo_from_remote(url: str) -> str:
     match = REMOTE.match(url.strip())
     if not match:
@@ -239,21 +261,24 @@ def plan_gh(agent: str, entry: dict, args: list[str], default_repo: str | None, 
     hosts = _flag_values(args, {"--hostname"})
     if any(h.lower() != "github.com" for h in hosts):
         raise _refuse("only github.com")
-    command = args[0]
+    command, sub = _subcommand(args)
     rest = args[1:]
-    sub = rest[0] if rest and not rest[0].startswith("-") else ""
     for key in ((command, sub), (command, "")):
         if key in WHY:
             raise _refuse(WHY[key])
+    if entry.get("updates_main"):
+        raise _refuse(f"{entry['slug']} only pushes main of {entry['updates_main']}; reads go through agent-gh reader")
     if command == "api":
         return _plan_api(agent, entry, rest, default_repo, config)
     if "--delete-branch" in rest:
         raise _refuse("deleting a branch")
     writes = USER_WRITES if entry["kind"] == "user" else WRITES
     if sub in writes.get(command, set()):
+        if entry.get("read_only"):
+            raise _reads_only(entry)
         permissions = PR_WRITE
     elif sub in READS.get(command, set()):
-        permissions = READ
+        permissions = read_permissions(entry)
     else:
         raise _refuse(f"`gh {command} {sub}`".replace(" `", "`") + " is not on agent-gh's list")
     _check_labels(_flag_values(rest, LABEL_FLAGS), config.get("ahmed_only_labels", []))
@@ -295,7 +320,7 @@ def _plan_api(agent: str, entry: dict, rest: list[str], default_repo: str | None
         repo = default_repo or ""
         if not repo:
             raise IdentityError("no repository for the token: run inside a clone or use a REST path")
-        return Plan(repo, READ, ["api", *rest])
+        return Plan(repo, read_permissions(entry), ["api", *rest])
     placeholder = path.startswith("repos/{owner}/{repo}")
     match = re.match(r"^repos/([^/]+)/([^/]+)", path)
     if placeholder:
@@ -310,7 +335,9 @@ def _plan_api(agent: str, entry: dict, rest: list[str], default_repo: str | None
     else:
         raise _refuse(f"{method} {path} is outside a repository")
     if method == "GET":
-        return Plan(repo, READ, ["api", *rest])
+        return Plan(repo, read_permissions(entry), ["api", *rest])
+    if entry.get("read_only"):
+        raise _reads_only(entry)
     if method == "DELETE":
         raise _refuse("deleting on GitHub")
     user = entry["kind"] == "user"
@@ -328,8 +355,24 @@ def _plan_api(agent: str, entry: dict, rest: list[str], default_repo: str | None
     return Plan(repo, PR_WRITE, ["api", *rest])
 
 
-def plan_push(args: list[str], current_branch: str | None, remote_url: str, config: dict) -> Plan:
-    """Refuse or plan one `git push`. The refspecs are made explicit, so the destination is known."""
+def plan_push(
+    args: list[str], current_branch: str | None, remote_url: str, config: dict, entry: dict | None = None
+) -> Plan:
+    """Refuse or plan one `git push`. The refspecs are made explicit, so the destination is known.
+
+    `entry` is the App that pushes. Without one, only the rules every App shares apply: never main or
+    master, never a `claude/*` branch, never forced, deleting, bulk or tags. On top of them, an App with
+    a `branch_prefix` pushes only to branches that start with it, the `updates_main` App pushes only
+    that repository's main (a push that isn't forced is a fast-forward, or a merge commit on top), and a
+    `read_only` App never pushes."""
+    entry = entry or {}
+    slug = entry.get("slug", "this App")
+    if entry.get("read_only"):
+        raise _refuse(f"{slug} reads only; it never pushes")
+    own_prefix = entry.get("branch_prefix") or ""
+    main_of = entry.get("updates_main") or ""
+    if own_prefix and main_of:
+        raise IdentityError(f"refused: {slug} has both a branch_prefix and updates_main in the config")
     protected = {b.lower() for b in config.get("protected_branches", ["main", "master"])}
     prefixes = tuple(p.lower() for p in config.get("protected_prefixes", ["claude/"]))
     flags, positionals = [], []
@@ -345,6 +388,9 @@ def plan_push(args: list[str], current_branch: str | None, remote_url: str, conf
             positionals.append(arg)
     remote = positionals[0] if positionals else "origin"
     refspecs = positionals[1:]
+    repo = repo_from_remote(remote_url)
+    if main_of and repo.lower() != main_of.lower():
+        raise _refuse(f"{slug} pushes only to main of {main_of}, not to {repo}")
     if not refspecs:
         if not current_branch:
             raise _refuse("pushing a detached HEAD; name the branch")
@@ -365,11 +411,18 @@ def plan_push(args: list[str], current_branch: str | None, remote_url: str, conf
         if dst.startswith("refs/") and not dst.startswith("refs/heads/"):
             raise _refuse(f"updating {dst}; agents push branches only")
         name = dst[len("refs/heads/") :] if dst.startswith("refs/heads/") else dst
+        if main_of:
+            if name != "main":
+                raise _refuse(f"pushing to {name}; {slug} pushes only main of {main_of}")
+            planned.append(f"{src}:refs/heads/main")
+            continue
         if name.lower() in protected:
             raise _refuse(f"pushing to {name}; only Ahmed updates it, by merging")
         if name.lower().startswith(prefixes):
             raise _refuse(f"pushing to {name}: sync.sh merges {name.split('/')[0]}/* branches into main by itself")
         if not name:
             raise _refuse("an empty destination")
+        if own_prefix and not (name.startswith(own_prefix) and len(name) > len(own_prefix)):
+            raise _refuse(f"pushing to {name}; {slug} pushes only to {own_prefix}* branches")
         planned.append(f"{src}:refs/heads/{name}")
-    return Plan(repo_from_remote(remote_url), PUSH, [*flags, remote, *planned])
+    return Plan(repo, PUSH, [*flags, remote, *planned])

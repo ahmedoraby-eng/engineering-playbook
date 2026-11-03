@@ -2,7 +2,9 @@
 
 Lines start with `ok`, `FAIL` or `attention`. FAIL means the identity doesn't work as the config says;
 attention is something for Ahmed to look at (an App installed somewhere not listed, a token that
-expires within 14 days). The exit code is 1 when any line is FAIL.
+expires within 14 days). The exit code is 1 when any line is FAIL. An App Ahmed has not created yet
+(setup S2) is one plain `pending <agent>: not created yet` line, neither FAIL nor attention. Each App
+is checked against its own `permissions`, or the top-level `app_permissions` when it has none.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from .identity import (
     api,
     app_jwt,
     bot_login,
+    is_pending,
     keychain_secret,
     mint_installation_token,
     private_key,
@@ -44,8 +47,20 @@ def _days_left(expiry: str, today: dt.date) -> int | None:
         return None
 
 
+def expected_permissions(entry: dict, config: dict) -> dict:
+    return entry.get("permissions") or config.get("app_permissions", {})
+
+
 def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: Callable, today: dt.date) -> list[str]:
     lines = [f"{agent}: App {entry['slug']} (id {entry['app_id']})"]
+    expected = expected_permissions(entry, config)
+    if entry.get("read_only") and any(access != "read" for access in expected.values()):
+        return [
+            *lines,
+            f"  FAIL the config gives the read-only {entry['slug']} {_perms(expected)}; it must be reads only",
+        ]
+    if not entry.get("bot_id"):
+        return [*lines, f"  FAIL the config has no bot_id for {entry['slug']}"]
     try:
         pem = private_key(entry["keychain"], run)
         lines.append(f"  ok key: {entry['keychain']} holds a private key")
@@ -55,7 +70,6 @@ def check_app(agent: str, entry: dict, config: dict, transport: Transport, run: 
         _, app = api(transport, "GET", "/app", auth)
     except IdentityError as error:
         return [*lines, f"  FAIL {error}"]
-    expected = config.get("app_permissions", {})
     granted = app.get("permissions") or {}
     if app.get("slug") != entry["slug"] or int(app.get("id", 0)) != int(entry["app_id"]):
         lines.append(f"  FAIL the key belongs to {app.get('slug')} (id {app.get('id')}), not {entry['slug']}")
@@ -205,6 +219,8 @@ def run_check(
         entry = config.get("agents", {}).get(name.lower())
         if not entry:
             lines.append(f"{name}: FAIL no GitHub identity in the config")
+        elif is_pending(entry):
+            lines.append(f"pending {name.lower()}: not created yet")
         elif entry["kind"] == "app":
             lines.extend(check_app(name.lower(), entry, config, transport, run, today))
         else:

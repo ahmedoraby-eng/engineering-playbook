@@ -8,7 +8,8 @@ agent should have committed under its own name. Any other author is unknown.
 
 An agent with a GitHub App commits as its bot: the author login is `<slug>[bot]`, or the email is
 `<id>+<slug>[bot]@users.noreply.github.com` when GitHub does not resolve the login. Such a commit
-must carry an `Agent:` trailer naming the agent the bot belongs to, and no Smart Commit commands. A
+must carry an `Agent:` trailer naming the agent the bot belongs to (Yousef's documents App,
+basita-yousef-docs[bot], belongs to Yousef), and no Smart Commit commands. A
 pull request opened by an agent's bot must not name another agent, in its `Agent:` line or through
 its commits. The bot findings are warnings in the trial mode and errors once it ends. Other bots,
 such as dependabot, are skipped.
