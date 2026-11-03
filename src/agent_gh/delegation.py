@@ -213,6 +213,18 @@ def _is_architecture_review(name: str) -> bool:
     return name == ARCHITECTURE_REVIEW or name.endswith(f" / {ARCHITECTURE_REVIEW}")
 
 
+def _arch_review_facts(read: Call, repo: str, run: dict) -> dict:
+    """The check's "arch-review mode=… class=… state=… head=<sha> …" notice line as a dict, or {} without one."""
+    if run.get("status") != "completed" or not run.get("id"):
+        return {}
+    _, annotations = read("GET", f"/repos/{repo}/check-runs/{run['id']}/annotations?per_page=100", None)
+    for note in annotations or []:
+        message = (note or {}).get("message") or ""
+        if message.startswith("arch-review "):
+            return dict(part.split("=", 1) for part in message.split()[1:] if "=" in part)
+    return {}
+
+
 def _rules(read: Call, repo: str) -> dict:
     _, payload = read("GET", f"/repos/{repo}/contents/.github/review-rules.json?ref=main", None)
     try:
@@ -288,10 +300,22 @@ def check_merge(
     not_green += sorted(f"{s.get('context')} ({s.get('state')})" for s in statuses if s.get("state") != "success")
     if not_green:
         fail(f"not green on {head[:7]}: {', '.join(not_green)}")
-    if not review or any(r.get("conclusion") != "success" for r in review):
-        fail(f"{ARCHITECTURE_REVIEW} is not success on {head[:7]}")
-    if not not_green and review and all(r.get("conclusion") == "success" for r in review):
-        ok(f"{len(runs)} check runs and {len(statuses)} statuses green on {head[:7]}, {ARCHITECTURE_REVIEW} included")
+    # The conclusion alone proves nothing: in report mode (ARCH_REVIEW_MODE unset or "report") the check is always
+    # success. Its machine-readable notice line decides: state=green on head=<this PR's head> (Yousef's review, #40).
+    facts = _arch_review_facts(read, repo, review[0]) if review else {}
+    if not review:
+        fail(f"no {ARCHITECTURE_REVIEW} check on {head[:7]}")
+    elif not facts:
+        fail(f"{ARCHITECTURE_REVIEW} on {head[:7]} has no arch-review line (off on this repository, or still running)")
+    elif facts.get("state") != "green":
+        fail(f"{ARCHITECTURE_REVIEW} is {facts.get('state')} on {head[:7]}, not green (mode {facts.get('mode')})")
+    elif facts.get("head") != head:
+        fail(f"{ARCHITECTURE_REVIEW} ran on {str(facts.get('head'))[:7]}, not on the head {head[:7]}")
+    elif not not_green:
+        ok(
+            f"{len(runs)} check runs and {len(statuses)} statuses green on {head[:7]}; {ARCHITECTURE_REVIEW} "
+            f"state=green on that head (mode {facts.get('mode')}, class {facts.get('class')})"
+        )
 
     # 4. Critical paths, from the rules on main.
     rules = _rules(read, repo)
