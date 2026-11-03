@@ -3,13 +3,14 @@
 import base64
 import io
 import json
+import os
 import subprocess
 
 import pytest
 
 from atl_agent import AtlClient, AtlError
 from atl_agent.__main__ import main
-from atl_agent.client import JIRA_ACCOUNTS, PR_LIST_LIMIT, PR_REPOS, github_prs, mentions
+from atl_agent.client import AGENT_GH, JIRA_ACCOUNTS, PR_LIST_LIMIT, PR_REPOS, github_prs, mentions
 
 TOKEN = "tok-" + "d" * 12  # assembled at runtime; not a real credential
 CLOUD = "cloud-1"
@@ -256,25 +257,32 @@ class Done:
         self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
 
 
-def test_github_prs_reads_every_repo_with_gh_and_keeps_the_mentions():
+def test_github_prs_reads_every_repo_as_the_reader_and_keeps_the_mentions():
     calls = []
 
     def run(command, **kwargs):
         calls.append(command)
-        repo = command[command.index("--repo") + 1]
+        repo = command[command.index("-R") + 1]
         pr = {"number": 5, "title": "BASITA-7 x" if "ops" in repo else "other", "state": "MERGED", "url": "u"}
         return Done(stdout=json.dumps([pr]))
 
     found = github_prs("BASITA-7", run)
-    assert [c[:3] for c in calls] == [["gh", "pr", "list"]] * len(PR_REPOS)
-    assert all("--state" in c and "all" in c for c in calls)
+    assert [c[:4] for c in calls] == [[AGENT_GH, "reader", "pr", "list"]] * len(PR_REPOS)
+    assert [c[c.index("-R") + 1] for c in calls] == list(PR_REPOS)
+    assert all(c[c.index("--state") + 1] == "all" for c in calls)
+    assert not any(c[0] == "gh" for c in calls)  # never the Mac's own gh login
     assert found == [{"repo": "basitasolutions/basita-ops", "number": 5, "state": "MERGED", "url": "u"}]
+
+
+def test_agent_gh_is_the_playbooks_own_script():
+    assert AGENT_GH.endswith("/scripts/agent-gh") and os.path.isabs(AGENT_GH) and os.path.isfile(AGENT_GH)
 
 
 @pytest.mark.parametrize(
     "answer, message",
     [
         (Done(returncode=1, stderr="HTTP 401"), "HTTP 401"),
+        (Done(returncode=1, stderr="agent-gh: refused: basita-reader is not set up yet (S2)"), "not set up yet"),
         (Done(stdout="not json"), "did not answer with JSON"),
         (Done(stdout="{}"), "did not answer with a list"),
         (Done(stdout=json.dumps([{"number": n} for n in range(PR_LIST_LIMIT)])), "more than atl reads"),
@@ -361,3 +369,11 @@ def test_cli_wrong_arguments_exit_2_and_send_nothing(args):
     transport = FakeTransport()
     assert run(args, transport) == 2
     assert transport.calls == []
+
+
+def test_jira_done_fails_closed_while_the_reader_is_pending():
+    def pending(command, **kwargs):
+        return Done(returncode=1, stderr="agent-gh: refused: basita-reader is not set up yet (Ahmed's setup S2)")
+
+    transport = FakeTransport(issue(), MINE)
+    refused(transport, "can't tell.*basita-reader is not set up yet", source=lambda key: github_prs(key, pending))
