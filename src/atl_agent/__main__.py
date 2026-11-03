@@ -12,7 +12,7 @@
         [--description "text"] [--priority High] [--fix-version V] [--remove-fix-version V] [--set-fix-versions "a,b"]
         [--summary "text"] [--parent DFP-2] [--due-date YYYY-MM-DD|none]
     atl <agent> jira-link DFP-1 DFP-2 [--type "blocks"]
-    atl <agent> confluence-get <page id or URL>
+    atl <agent> confluence-get <page id or URL> [--storage]
     atl <agent> confluence-search "words or CQL"
     atl <agent> confluence-create <space key> "text" --title "Title" [--parent <page id>] [--storage] [--label L ...]
     atl <agent> confluence-edit <page id or URL> ["text"] [--title "New title"] [--storage] [--parent <page id>]
@@ -48,7 +48,9 @@ on in basita-ops jira-agents.conf, submit waits for Architecture review green on
 mentions the issue; approve (Yousef's, FLOW_APPROVE) always does (BASITA-151). Both switches are off by default.
 The read commands print
 JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
-JQL query; `confluence-get` gives a page with its body, comments, attachments and children; `confluence-search` finds
+JQL query; `confluence-get` gives a page with its body, comments, attachments and children (with --storage, also the
+body in storage format, so a table can be edited and written back exactly with `confluence-edit --storage`, BASITA-191);
+`confluence-search` finds
 pages by words or CQL. Each result names the agent whose token answered (`read_by`). `confluence-create` and
 `confluence-edit` take plain text, or Confluence storage format with --storage. `confluence-edit` replaces the body;
 Confluence keeps every earlier version. Nothing here deletes.
@@ -190,6 +192,9 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         return _done(args, token_source, transport, pr_source)
 
     if args.command in READS:
+        if args.storage and args.command != "confluence-get":
+            print(f"atl: --storage is for confluence-get, create and edit, not {args.command}", file=sys.stderr)
+            return 2
         try:
             agent = args.agent.lower()
             kwargs = {"transport": transport} if transport else {}
@@ -202,7 +207,11 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
                 via=args.via,
                 **kwargs,
             )
-            print(json.dumps(READS[args.command](client)(args.target), ensure_ascii=False, indent=2))
+            if args.command == "confluence-get" and args.storage:  # BASITA-191: the body as storage, to edit it exactly
+                result = client.confluence_get(args.target, storage=True)
+            else:
+                result = READS[args.command](client)(args.target)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         except AtlError as error:
             print(f"atl: {error}", file=sys.stderr)
             return 1
