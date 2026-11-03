@@ -10,52 +10,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
-from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote
 
+from .fire import FIRE_MODES, Fire, FireRules, decide_fire
+from .github import FetchError, GitHub
 from .review import Decision, Review, change_set, decide
-from .rules import ChangedFile, Classification, Rules, RulesError, classify, commit_author
+from .rules import ChangedFile, Classification, Rules, RulesError, classify, commit_author, commit_logins
 
 MODES = ("off", "report", "on")
-
-
-class FetchError(RuntimeError):
-    """A GitHub API read failed; the check then fails closed."""
-
-
-def _run_gh(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["gh", "api", *args], capture_output=True, text=True)
-
-
-class GitHub:
-    """The few GitHub API calls the check needs, through `gh api` (GH_TOKEN from the job)."""
-
-    def __init__(self, run: Callable[[list[str]], subprocess.CompletedProcess] = _run_gh):
-        self.run = run
-
-    def get(self, path: str, raw: bool = False):
-        args = ["-H", "Accept: application/vnd.github.raw+json", path] if raw else [path]
-        done = self.run(args)
-        if done.returncode != 0:
-            raise FetchError(f"GET {path}: {(done.stderr or done.stdout).strip()[:200]}")
-        try:
-            return json.loads(done.stdout)
-        except json.JSONDecodeError as exc:
-            raise FetchError(f"GET {path}: not JSON ({exc})") from exc
-
-    def items(self, path: str) -> list[dict]:
-        """All items of a paginated list, one compact JSON object per line from `--jq '.[]'`."""
-        done = self.run(["--paginate", "--jq", ".[] | tojson", path])
-        if done.returncode != 0:
-            raise FetchError(f"GET {path}: {(done.stderr or done.stdout).strip()[:200]}")
-        return [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
-
-    def post(self, path: str, fields: list[str]) -> str:
-        """POST with `-f` fields. Returns "" on success, else the error text."""
-        done = self.run(["-X", "POST", path, *[arg for f in fields for arg in ("-f", f)]])
-        return "" if done.returncode == 0 else (done.stderr or done.stdout).strip()[:200]
 
 
 def _one_line(value: str) -> str:
@@ -75,9 +38,23 @@ def compare_files(gh: GitHub, repo: str, base: str, sha: str) -> list[dict] | No
     return data.get("files") if isinstance(data, dict) else None
 
 
+def own_bots_on(rules: Rules, pr: dict, commits: list[dict]) -> list[str]:
+    """The reviewer's own bots that opened the PR or are linked to one of its commits."""
+    if not rules.reviewer_own_bots:
+        return []
+    found = {((pr.get("user") or {}).get("login") or "").lower()}
+    for commit in commits:
+        found |= commit_logins(commit)
+    own = sorted(found & rules.reviewer_own_bots)
+    # A commit the API didn't list (it stops at 250) may be one of them.
+    if not own and (pr.get("commits") or 0) > len(commits):
+        own = [f"commits not listed by the API (possibly {', '.join(sorted(rules.reviewer_own_bots))})"]
+    return own
+
+
 def evaluate(
     gh: GitHub, repo: str, pr_number: int, head_sha: str, rules: Rules
-) -> tuple[dict, Classification, Decision]:
+) -> tuple[dict, Classification, Decision, list[Review]]:
     pr = gh.get(f"repos/{repo}/pulls/{pr_number}")
     if (pr.get("head") or {}).get("sha") != head_sha:
         raise FetchError(f"the PR head moved to {(pr.get('head') or {}).get('sha', '?')[:7]}; the run on it decides")
@@ -99,7 +76,7 @@ def evaluate(
         waived_by = added[-1] if added else ""
     classification = classify(rules, authors, files, labels, waived_by, pr.get("changed_files"))
     if not classification.required:
-        return pr, classification, decide(classification, rules.reviewer, head_sha, [], lambda _: False)
+        return pr, classification, decide(classification, rules.reviewer, head_sha, [], lambda _: False), []
 
     reviews = [Review.from_github(r) for r in gh.items(f"repos/{repo}/pulls/{pr_number}/reviews")]
     base = (pr.get("base") or {}).get("ref") or ""
@@ -109,7 +86,9 @@ def evaluate(
         now = change_set(compare_files(gh, repo, base, head_sha))
         return before is not None and before == now
 
-    return pr, classification, decide(classification, rules.reviewer, head_sha, reviews, same_changes)
+    own = own_bots_on(rules, pr, commits)
+    decision = decide(classification, rules.reviewer, head_sha, reviews, same_changes, own, rules.owner)
+    return pr, classification, decision, reviews
 
 
 def request_reviewer(gh: GitHub, repo: str, pr: dict, rules: Rules, decision: Decision) -> str:
@@ -127,6 +106,25 @@ def request_reviewer(gh: GitHub, repo: str, pr: dict, rules: Rules, decision: De
     return f"could not request {rules.reviewer}: {error}" if error else f"requested {rules.reviewer}"
 
 
+def t4_decision(
+    data: dict,
+    rules: Rules,
+    repo: str,
+    pr: dict,
+    cls: Classification,
+    decision: Decision,
+    reviews: list[Review],
+    head_sha: str,
+) -> Fire:
+    """T4's fire decision for this run. A bad `t4` block, or any surprise, stops T4 only, never the check."""
+    try:
+        return decide_fire(rules, FireRules.from_json(data), repo, pr, cls, decision, reviews, head_sha)
+    except RulesError as exc:
+        return Fire(f"nothing to start: {_one_line(exc)}")
+    except Exception as exc:  # noqa: BLE001 - T4 must not change the check's result
+        return Fire(f"nothing to start: unexpected {type(exc).__name__}")
+
+
 def summary_lines(
     mode: str,
     rules: Rules | None,
@@ -135,6 +133,7 @@ def summary_lines(
     head_sha: str,
     note: str,
     error: str,
+    fire: Fire | None = None,
 ) -> list[str]:
     def cell(value: str) -> str:
         return _one_line(value).replace("|", "\\|")
@@ -155,6 +154,8 @@ def summary_lines(
         rows.append(("Error", error))
     if note:
         rows.append(("Request", note))
+    if fire:
+        rows.append(("T4", fire.describe()))
     rows.append(("Head", head_sha[:12]))
     return ["### Architecture review", "", "| | |", "|---|---|", *[f"| {k} | {cell(v)} |" for k, v in rows], ""]
 
@@ -169,8 +170,15 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None) -> int:
     parser.add_argument("--mode", default="", help="off, report or on (empty means report)")
     parser.add_argument("--no-request", action="store_true", help="never request the reviewer, only wait")
     parser.add_argument("--summary", help="file to append the Markdown summary to ($GITHUB_STEP_SUMMARY)")
+    parser.add_argument("--t4-mode", default="", help="T4_FIRE: off, dry-run or on (empty means off)")
+    parser.add_argument("--t4-out", help="file to write T4's fire decision to, for the fire step")
     args = parser.parse_args(argv)
     gh = gh or GitHub()
+    # T4 (BASITA-161): with T4_FIRE off nothing below changes; an unknown value counts as off here and
+    # the fire step reports it.
+    t4_mode = (args.t4_mode or "off").strip().lower()
+    t4_on = t4_mode in FIRE_MODES and t4_mode != "off"
+    fire = None
 
     mode = (args.mode or "report").strip().lower()
     rules = cls = decision = None
@@ -180,8 +188,11 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None) -> int:
     elif mode != "off":
         try:
             ref = quote(args.rules_ref, safe="")
-            rules = Rules.from_json(gh.get(f"repos/{args.repo}/contents/{args.rules_path}?ref={ref}", raw=True))
-            pr, cls, decision = evaluate(gh, args.repo, args.pr, args.head_sha, rules)
+            data = gh.get(f"repos/{args.repo}/contents/{args.rules_path}?ref={ref}", raw=True)
+            rules = Rules.from_json(data)
+            pr, cls, decision, reviews = evaluate(gh, args.repo, args.pr, args.head_sha, rules)
+            if t4_on:
+                fire = t4_decision(data, rules, args.repo, pr, cls, decision, reviews, args.head_sha)
             if mode == "on" and not args.no_request:
                 note = request_reviewer(gh, args.repo, pr, rules, decision)
             elif decision.request:
@@ -193,7 +204,9 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None) -> int:
 
     if args.summary:
         with Path(args.summary).open("a", encoding="utf-8") as out:
-            out.write("\n".join(summary_lines(mode, rules, cls, decision, args.head_sha, note, error)) + "\n")
+            out.write("\n".join(summary_lines(mode, rules, cls, decision, args.head_sha, note, error, fire)) + "\n")
+    if fire and args.t4_out:
+        Path(args.t4_out).write_text(json.dumps(fire.to_json()), encoding="utf-8")
 
     if mode == "off" and not error:
         print("Architecture review is off (ARCH_REVIEW_MODE=off): nothing checked.")
@@ -207,11 +220,15 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None) -> int:
         "head": args.head_sha,
         "reviewed": decision.reviewed_sha if decision else "",
     }
+    if fire:
+        facts.update({"t4": fire.kind, "round": str(fire.round or "")})
     # One machine-readable line for the flow guard and pickup; they read it from the check run.
     print(_command("notice", "arch-review " + " ".join(f"{k}={v or '-'}" for k, v in facts.items())))
     message = error or decision.status
     if note:
         message += f" ({note})"
+    if fire and fire.capped:
+        message += f" ({fire.reason})"
     if mode == "report":
         verdict = "green" if not error and decision.green else "red"
         print(

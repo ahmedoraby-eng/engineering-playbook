@@ -14,6 +14,8 @@ Classes, first match wins:
 - `large`: more than `large_lines` changed lines outside `size_exclude`. Effort `xhigh`.
 - `normal`: everything else. Effort `high`.
 The `needs-yousef` label, which anyone may add, turns `not-required` into a review.
+`reviewer_own_bots` lists the bots the reviewer pushes with (his docs App): his approval never counts on
+a PR they opened or committed to, so he can't approve his own work (BASITA-161, plan 10.2).
 A docs or test file on a critical path (an agent rule in `CLAUDE.md`, a CI file) is critical, never
 docs or tests. A file list shorter than the PR's `changed_files` (GitHub stops at 3000) is critical.
 """
@@ -47,6 +49,22 @@ def commit_author(commit: dict) -> str:
     return author
 
 
+def commit_logins(commit: dict) -> set[str]:
+    """The lowercased GitHub logins a commit is linked to: its author and committer. An author or
+    committer address of the form `<id>+<login>@users.noreply.github.com` (what `agent-git` gives an
+    App's bot) names the login even when GitHub did not link it."""
+    logins = set()
+    for role in ("author", "committer"):
+        login = (commit.get(role) or {}).get("login") or ""
+        if login:
+            logins.add(login.lower())
+        email = (((commit.get("commit") or {}).get(role) or {}).get("email") or "").lower()
+        local, _, domain = email.partition("@")
+        if domain == "users.noreply.github.com":
+            logins.add(local.split("+", 1)[-1])
+    return logins
+
+
 class RulesError(ValueError):
     """The rules file is missing a field or holds a bad pattern."""
 
@@ -76,6 +94,7 @@ class Rules:
     waive_label: str = "review-waived"
     needs_label: str = "needs-yousef"
     effort: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT))
+    reviewer_own_bots: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
     def from_json(cls, data: dict) -> Rules:
@@ -93,6 +112,9 @@ class Rules:
             raise RulesError("'architecture_review.large_lines' must be a positive whole number")
         effort = {**DEFAULT_EFFORT, **(arch.get("effort") or {})}
         exempt = arch.get("exempt_authors", [owner])
+        own = arch.get("reviewer_own_bots", [])
+        if not isinstance(own, list) or not all(isinstance(b, str) and b for b in own):
+            raise RulesError("'architecture_review.reviewer_own_bots' must be a list of GitHub logins")
         return cls(
             owner=owner,
             reviewer=reviewer,
@@ -106,6 +128,7 @@ class Rules:
             waive_label=arch.get("waive_label", "review-waived"),
             needs_label=arch.get("needs_label", "needs-yousef"),
             effort=effort,
+            reviewer_own_bots=frozenset(b.lower() for b in own),
         )
 
 
