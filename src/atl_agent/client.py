@@ -11,6 +11,7 @@ goes to `https://api.atlassian.com/ex/{jira|confluence}/<cloud id>/...` with bas
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 import os
 import re
@@ -205,7 +206,11 @@ JIRA_ACCOUNTS = {
     "yamen": "712020:135e8ec3-e174-46bf-b4fb-65de538cff2d",
     "abdelrahman": "712020:6f47dac6-82b6-4fd4-bd86-da7394ffa87d",
 }
-AHMED_ONLY_LABELS = ("reviewed-by-ahmed", "human-reviewed", "needs-ahmed")
+# Labels only Ahmed sets or removes, refused in any case; a whole label list must keep them exactly, case included
+# (BASITA-169). jira-status-waived lets a PR past elbayoumy's Jira status
+# check (BASITA-168).
+AHMED_ONLY_LABELS = ("reviewed-by-ahmed", "human-reviewed", "needs-ahmed", "jira-status-waived")
+PRIORITIES = ("Highest", "High", "Medium", "Low", "Lowest")
 # Who works a DFP issue and submits it to testing (BASITA-147): the engineers, and the leads who take DFP work that
 # isn't code. Only Malek and Haya could on 02/11/2026, so Nora left DFP-97 In Development. Maya has no Jira user and
 # works through Sherif's.
@@ -239,6 +244,33 @@ def account_for(agent: str, via: str = "") -> str:
     if account not in AGENTS:
         raise AtlError(f"'{account}' has no Atlassian user to work through")
     return account
+
+
+def _ahmed_only(label: str) -> bool:
+    return label.lower() in AHMED_ONLY_LABELS
+
+
+def _check_label(label: str, action: str = "set") -> None:
+    """An agent's label: one word, and never one only Ahmed sets."""
+    if not label or re.search(r"\s", label) or _ahmed_only(label):
+        raise AtlError(f"an agent does not {action} the label '{label}'")
+
+
+def _check_issue(key: str) -> None:
+    """An issue an agent edits or links: a key in one of the projects agents create in."""
+    if not ISSUE_KEY.match(key):
+        raise AtlError(f"'{key}' is not an issue key")
+    if key.split("-")[0] not in CREATE_PROJECTS:
+        raise AtlError(f"'{key}' is not in a project an agent edits (known: {', '.join(CREATE_PROJECTS)})")
+
+
+def _names(values, what: str) -> list[str]:
+    """Labels or Fix Version names from a list, each stripped. A name is one line of 1 to 255 characters."""
+    names = [v.strip() for v in values]
+    for name in names:
+        if not name or "\n" in name or len(name) > 255:
+            raise AtlError(f"'{name}' is not a {what}")
+    return names
 
 
 class AtlClient:
@@ -369,8 +401,7 @@ class AtlClient:
         if parent and not (ISSUE_KEY.match(parent) and parent.startswith(f"{project}-")):
             raise AtlError(f"'{parent}' is not an issue in {project}")
         for label in labels:
-            if label in AHMED_ONLY_LABELS or not label or re.search(r"\s", label):
-                raise AtlError(f"an agent does not set the label '{label}'")
+            _check_label(label)
         fields = {
             "project": {"key": project},
             "issuetype": {"name": type_name},
@@ -412,6 +443,189 @@ class AtlClient:
             raise AtlError(f"'{other}' is not an issue key")
         link = {"type": {"name": "Relates"}, "outwardIssue": {"key": issue}, "inwardIssue": {"key": other}}
         self._call("POST", "jira", "/rest/api/3/issueLink", link)
+
+    def jira_edit(
+        self,
+        issue: str,
+        *,
+        add_labels: tuple = (),
+        remove_labels: tuple = (),
+        set_labels: tuple | None = None,
+        assignee: str = "",
+        description: str = "",
+        priority: str = "",
+        add_fix_versions: tuple = (),
+        remove_fix_versions: tuple = (),
+        set_fix_versions: tuple | None = None,
+        summary: str = "",
+        parent: str = "",
+        duedate: str = "",
+    ) -> list[str]:
+        """Edit an issue's fields in one request, as this agent's own Jira user, and return what changed.
+
+        Labels and Fix Versions can be added, removed, or set as a whole list (not both at once). The labels only
+        Ahmed sets (AHMED_ONLY_LABELS, any case) are refused in every form: added, removed, or set. A whole list may
+        only keep the issue's Ahmed-only labels exactly as they are, case included. The issue is in BASITA, DFP or ELB
+        (CREATE_PROJECTS). `assignee` is a name with a Jira seat, or `none`
+        to unassign; only the agents that assign on create may. `duedate` is YYYY-MM-DD or `none`. Every value is
+        checked before any call; setting a whole label list first reads the issue's labels. Never deletes anything.
+        Needs read:jira-work and write:jira-work."""
+        _check_issue(issue)
+        fields: dict = {}
+        update: dict = {}
+        changes: list[str] = []
+        if set_labels is not None and (add_labels or remove_labels):
+            raise AtlError("set the whole label list, or add and remove labels, not both")
+        for label in add_labels:
+            _check_label(label, "add")
+        for label in remove_labels:
+            _check_label(label, "remove")
+        if add_labels or remove_labels:
+            update["labels"] = [{"add": label} for label in add_labels] + [{"remove": label} for label in remove_labels]
+            changes.append("labels " + " ".join([f"+{x}" for x in add_labels] + [f"-{x}" for x in remove_labels]))
+        if set_labels is not None:
+            new = list(dict.fromkeys(set_labels))
+            for label in new:
+                if not label or re.search(r"\s", label):
+                    raise AtlError(f"an agent does not set the label '{label}'")
+        if set_fix_versions is not None and (add_fix_versions or remove_fix_versions):
+            raise AtlError("set the whole Fix Version list, or add and remove versions, not both")
+        if add_fix_versions or remove_fix_versions:
+            adds = _names(add_fix_versions, "Fix Version")
+            removes = _names(remove_fix_versions, "Fix Version")
+            update["fixVersions"] = [{"add": {"name": v}} for v in adds] + [{"remove": {"name": v}} for v in removes]
+            changes.append("fix versions " + " ".join([f"+{v}" for v in adds] + [f"-{v}" for v in removes]))
+        if set_fix_versions is not None:
+            names = list(dict.fromkeys(_names(set_fix_versions, "Fix Version")))
+            fields["fixVersions"] = [{"name": v} for v in names]
+            changes.append(f"fix versions = {', '.join(names) or '(none)'}")
+        if assignee:
+            if self.agent not in ASSIGNERS:
+                raise AtlError(f"{self.display} does not assign issues (only {', '.join(ASSIGNERS)})")
+            if assignee.lower() == "none":
+                fields["assignee"] = None
+                changes.append("unassigned")
+            else:
+                account = JIRA_ACCOUNTS.get(assignee.lower())
+                if not account:
+                    raise AtlError(f"'{assignee}' has no Jira seat to assign to (known: {', '.join(JIRA_ACCOUNTS)})")
+                fields["assignee"] = {"accountId": account}
+                changes.append(f"assigned to {assignee.capitalize()}")
+        if description:
+            if not description.strip():
+                raise AtlError("the description is empty")
+            fields["description"] = _adf(description)
+            changes.append("description")
+        if priority:
+            chosen = next((p for p in PRIORITIES if p.lower() == priority.strip().lower()), None)
+            if not chosen:
+                raise AtlError(f"'{priority}' is not a priority (known: {', '.join(PRIORITIES)})")
+            fields["priority"] = {"name": chosen}
+            changes.append(f"priority {chosen}")
+        if summary:
+            summary = summary.strip()
+            if not summary or "\n" in summary or len(summary) > 255:
+                raise AtlError("the summary must be one line of 1 to 255 characters")
+            fields["summary"] = summary
+            changes.append("summary")
+        if parent:
+            project = issue.split("-")[0]
+            if not (ISSUE_KEY.match(parent) and parent.startswith(f"{project}-")) or parent == issue:
+                raise AtlError(f"'{parent}' is not another issue in {project}")
+            fields["parent"] = {"key": parent}
+            changes.append(f"parent {parent}")
+        if duedate:
+            if duedate.lower() == "none":
+                fields["duedate"] = None
+                changes.append("no due date")
+            else:
+                try:
+                    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", duedate):
+                        raise ValueError
+                    datetime.date.fromisoformat(duedate)
+                except ValueError:
+                    raise AtlError(f"'{duedate}' is not a date (YYYY-MM-DD, or none)") from None
+                fields["duedate"] = duedate
+                changes.append(f"due {duedate}")
+        if set_labels is None and not fields and not update:
+            raise AtlError("nothing to change: name at least one field")
+        if set_labels is not None:
+            data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=labels")
+            current = data["fields"].get("labels") or []
+            # Exactly, case included: NEEDS-AHMED for needs-ahmed would replace the label Ahmed set.
+            kept = sorted(x for x in new if _ahmed_only(x))
+            had = sorted(x for x in current if _ahmed_only(x))
+            if kept != had:
+                raise AtlError(
+                    f"the new label list would change the labels only Ahmed sets ({', '.join(had) or 'none'} now); "
+                    "keep them exactly as they are, or use --add-label and --remove-label for the others"
+                )
+            fields["labels"] = new
+            changes.append(f"labels = {', '.join(new) or '(none)'}")
+        body: dict = {}
+        if fields:
+            body["fields"] = fields
+        if update:
+            body["update"] = update
+        self._call("PUT", "jira", f"/rest/api/3/issue/{issue}", body)
+        return changes
+
+    def jira_link_typed(self, issue: str, other: str, link_type: str = "Relates") -> str:
+        """Link two issues so that `issue <relation> other` reads as asked, and return the relation as Jira now
+        shows it on `issue`. `link_type` is a link type's name (Blocks), its outward phrase (blocks) or its inward
+        phrase (is blocked by), without case; an inward phrase reverses the two issues. Both issues are in BASITA, DFP
+        or ELB. The issue's links are read before and after the call, so the result shows what this call recorded
+        (or the same link, already there), and an error says so if it reads the other way.
+        Needs read:jira-work and write:jira-work."""
+        for key in (issue, other):
+            _check_issue(key)
+        if issue == other:
+            raise AtlError("an issue is not linked to itself")
+        wanted = link_type.strip().lower()
+        types = self._call("GET", "jira", "/rest/api/3/issueLinkType").get("issueLinkTypes", [])
+        chosen, reverse = None, False
+        for t in types:
+            if wanted in (t.get("name", "").lower(), t.get("outward", "").lower()):
+                chosen = t
+                break
+            if wanted == t.get("inward", "").lower():
+                chosen, reverse = t, True
+                break
+        if not chosen:
+            names = ", ".join(f"{t['name']} ({t['outward']} / {t['inward']})" for t in types)
+            raise AtlError(f"'{link_type}' is not a link type (known: {names})")
+        subject, target = (other, issue) if reverse else (issue, other)
+        # Jira reads a link as "inwardIssue <outward phrase> outwardIssue": {"inwardIssue": A, "outwardIssue": B}
+        # with Blocks shows "A blocks B". The read-back below checks it.
+        link = {"type": {"name": chosen["name"]}, "inwardIssue": {"key": subject}, "outwardIssue": {"key": target}}
+        # The links already there are read first, so a link recorded backwards is caught even when the right one
+        # existed before this call.
+        before = self._links_to(issue, other, chosen["name"])
+        self._call("POST", "jira", "/rest/api/3/issueLink", link)
+        expected = chosen["inward"] if reverse else chosen["outward"]
+        after = self._links_to(issue, other, chosen["name"])
+        seen = [relation for relation in after if relation not in before]
+        if expected in seen or (not seen and expected in before):
+            return expected
+        if seen:
+            raise AtlError(
+                f"Jira recorded {issue} {seen[0]} {other}, not {issue} {expected} {other}: "
+                "tell Talia, who has it corrected by hand (atl never deletes a link)"
+            )
+        raise AtlError(f"the link was sent, but {issue} does not show a {chosen['name']} link to {other} yet")
+
+    def _links_to(self, issue: str, other: str, type_name: str) -> list[str]:
+        """How `issue` shows its links of `type_name` to `other`: the phrases, e.g. ["blocks"]."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=issuelinks")["fields"]
+        relations = []
+        for found in data.get("issuelinks", []):
+            if found.get("type", {}).get("name") != type_name:
+                continue
+            outward = "outwardIssue" in found
+            if (found["outwardIssue"] if outward else found["inwardIssue"])["key"] != other:
+                continue
+            relations.append(found["type"]["outward" if outward else "inward"])
+        return relations
 
     def jira_status(self, issue: str) -> dict:
         """The issue's status: {"name": ..., "category": "new" | "indeterminate" | "done"}.
