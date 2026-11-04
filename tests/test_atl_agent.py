@@ -672,6 +672,44 @@ def test_confluence_lists_follow_next_links():
     assert transport.calls[1][1].endswith("/wiki/api/v2/x?cursor=b")
 
 
+def test_confluence_get_with_storage_also_gives_the_storage_body_and_only_reads():
+    """BASITA-191: Sherif edits the cost log's tables exactly, then writes them back with confluence-edit --storage."""
+    storage = "<table><tr><td>03/11</td></tr></table><p>x &amp; y</p>"
+    transport = FakeTransport(*_page_responses(), (200, json.dumps({"body": {"storage": {"value": storage}}})))
+    result = client(transport).confluence_get("123", storage=True)
+    assert result["storage"] == storage and result["body"] == "Body"
+    assert transport.calls[-1][1].endswith("/wiki/api/v2/pages/123?body-format=storage")
+    assert {call[0] for call in transport.calls} == {"GET"}
+
+
+def test_confluence_get_without_storage_reads_no_storage():
+    transport = FakeTransport(*_page_responses())
+    assert "storage" not in client(transport).confluence_get("123")
+    assert not any("body-format=storage" in call[1] for call in transport.calls)
+
+
+def test_cli_storage_is_for_confluence_get_not_the_other_reads(capsys):
+    for command in ("jira-get", "jira-jql", "confluence-search"):
+        transport = FakeTransport()
+        assert (
+            main(
+                ["salma", command, "DFP-1", "--storage", "--cloud-id", CLOUD],
+                token_source=lambda a, p: TOKEN,
+                transport=transport,
+            )
+            == 2
+        )
+        assert transport.calls == []
+    assert "--storage is for confluence-get" in capsys.readouterr().err
+
+
+def test_cli_confluence_get_storage(capsys):
+    transport = FakeTransport(*_page_responses(), (200, json.dumps({"body": {"storage": {"value": "<p>s</p>"}}})))
+    args = ["sherif", "confluence-get", "123", "--storage", "--cloud-id", CLOUD]
+    assert main(args, token_source=lambda a, p: TOKEN, transport=transport) == 0
+    assert json.loads(capsys.readouterr().out)["storage"] == "<p>s</p>"
+
+
 def test_confluence_get_refuses_what_is_not_a_page():
     with pytest.raises(AtlError, match="not a Confluence page"):
         client(FakeTransport()).confluence_get("plan")

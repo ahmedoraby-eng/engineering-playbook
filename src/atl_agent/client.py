@@ -1324,8 +1324,9 @@ class AtlClient:
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 
-    def confluence_get(self, page: str) -> dict:
+    def confluence_get(self, page: str, storage: bool = False) -> dict:
         """A page, by id or URL: its details, labels, body as plain text, comments, attachments and child pages.
+        With `storage`, also `storage`: the body in Confluence storage format, for an exact edit (BASITA-191).
         Only GET calls. Needs read:page, read:space, read:comment, read:attachment and
         read:hierarchical-content (all :confluence)."""
         page_id = self._page_id(page)
@@ -1344,7 +1345,7 @@ class AtlClient:
         attachments = self._results(f"/wiki/api/v2/pages/{page_id}/attachments?limit=100")
         children = self._results(f"/wiki/api/v2/pages/{page_id}/direct-children?limit=100")
         links = data.get("_links") or {}
-        return {
+        result = {
             "id": data.get("id"),
             "read_by": self.reader,
             "title": data.get("title"),
@@ -1361,6 +1362,10 @@ class AtlClient:
             "body": _doc_text(data),
             "comments": comments,
         }
+        if storage:
+            raw = self._call("GET", "confluence", f"/wiki/api/v2/pages/{page_id}?body-format=storage")
+            result["storage"] = ((raw.get("body") or {}).get("storage") or {}).get("value", "")
+        return result
 
     def confluence_search(self, query: str, limit: int = 25) -> dict:
         """Pages matching a CQL query, or plain words searched in their text, as this agent.
