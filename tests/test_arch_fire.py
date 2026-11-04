@@ -374,7 +374,16 @@ def test_the_round_cap_shows_in_the_check(tmp_path, capsys):
     code, out = run_check(FakeGitHub(check_responses(reviews=reviews)), tmp_path)
     assert code == 1
     assert json.loads(out.read_text())["capped"] is True
-    assert f"(round cap, waiting for {OWNER}:" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert f"(round cap, waiting for {OWNER}:" in printed
+    # BASITA-152: the machine-readable line says so too, for pickup's fallback (it never fires a capped state).
+    assert " capped=1" in next(line for line in printed.splitlines() if "arch-review " in line)
+
+
+def test_a_state_under_the_cap_has_no_capped_field(tmp_path, capsys):
+    run_check(FakeGitHub(check_responses()), tmp_path)
+    line = next(line for line in capsys.readouterr().out.splitlines() if "arch-review " in line)
+    assert "capped" not in line
 
 
 def test_a_bad_t4_block_stops_t4_only_never_the_check(tmp_path, capsys):

@@ -222,6 +222,8 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None) -> int:
     }
     if fire:
         facts.update({"t4": fire.kind, "round": str(fire.round or "")})
+        if fire.capped:  # BASITA-152: the fallback never fires a capped state; it raises Ahmed's line instead
+            facts["capped"] = "1"
     # One machine-readable line for the flow guard and pickup; they read it from the check run.
     print(_command("notice", "arch-review " + " ".join(f"{k}={v or '-'}" for k, v in facts.items())))
     message = error or decision.status
