@@ -55,7 +55,7 @@ permissions:
 jobs:
   agent-attribution:
     name: Agent attribution
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim # 1 vCPU, $0.002/min (BASITA cost decision §7, item 2a)
     timeout-minutes: 5
     steps:
       - name: Check out agent_attribution from the playbook
