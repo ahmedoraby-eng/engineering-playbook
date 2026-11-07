@@ -13,10 +13,13 @@ come from ADR-020 (parallel branches without shared-file conflicts, accepted by 
 
 | Order | Jira | Ticket | Owner | Size | Depends on | Register IDs |
 |---|---|---|---|---|---|---|
-| 1 | DFP-… | | | | | AA-… (reserved by Adam, ADR-020 decision 2, BASITA-199) |
+| 1 | DFP-… | | | | | AA-… (reserved in the ledger BASITA-206) |
 
-"Register IDs" are the AA/A ids Adam reserved on the ticket. A ticket that adds an assumption with no
-reserved id is not ready for the wave.
+"Register IDs" are the AA/A ids reserved for the ticket (ADR-020 decision 2, BASITA-199). The ledger is
+the Jira issue **BASITA-206**: one comment per id, `RESERVE AA-n -> KEY`, and the first comment wins. Adam
+keeps it and the next free id. Copy the ids from BASITA-206 into this column; "none" when the ticket adds
+no register entry. A ticket that adds an assumption with no reserved id is not ready for the wave, and Sherif
+checks this column against BASITA-206 when compiling the plan.
 
 ## 2. File-touch map (ADR-020 decision 6, BASITA-201)
 
