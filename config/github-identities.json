@@ -31,9 +31,10 @@
       "bot_id": 351706579,
       "keychain": "basita-gh-haya-app",
       "installations": {
-        "basitasolutions": {"id": 177982074, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]}
+        "basitasolutions": {"id": 177982074, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
+        "ahmedoraby-eng": {"id": 179709069, "repos": ["engineering-playbook"]}
       },
-      "manifest": {"name": "basita-haya", "public": false, "description": "Haya (Basita AI): front-end code, pull requests and pushes to haya/* branches"}
+      "manifest": {"name": "basita-haya", "public": true, "description": "Haya (Basita AI): front-end code, pull requests and pushes to haya/* branches"}
     },
     "salma": {
       "kind": "app",
@@ -44,9 +45,10 @@
       "bot_id": 351707078,
       "keychain": "basita-gh-salma-app",
       "installations": {
-        "basitasolutions": {"id": 177982412, "repos": ["elbayoumy-farm-nutrition-platform"]}
+        "basitasolutions": {"id": 177982412, "repos": ["elbayoumy-farm-nutrition-platform"]},
+        "ahmedoraby-eng": {"id": 179709156, "repos": ["engineering-playbook"]}
       },
-      "manifest": {"name": "basita-salma", "public": false, "description": "Salma (Basita AI): test code, pull requests and pushes to salma/* branches"}
+      "manifest": {"name": "basita-salma", "public": true, "description": "Salma (Basita AI): test code, pull requests and pushes to salma/* branches"}
     },
     "yousef": {
       "kind": "user",
@@ -69,9 +71,10 @@
       "bot_id": 351996843,
       "keychain": "basita-gh-talia-app",
       "installations": {
-        "basitasolutions": {"id": 178208723, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]}
+        "basitasolutions": {"id": 178208723, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
+        "ahmedoraby-eng": {"id": 179709236, "repos": ["engineering-playbook"]}
       },
-      "manifest": {"name": "basita-talia", "public": false, "description": "Talia (Basita AI): documents, pull requests and pushes to talia/* branches"}
+      "manifest": {"name": "basita-talia", "public": true, "description": "Talia (Basita AI): documents, pull requests and pushes to talia/* branches"}
     },
     "sherif": {
       "kind": "app",
@@ -83,9 +86,10 @@
       "bot_id": 351998495,
       "keychain": "basita-gh-sherif-app",
       "installations": {
-        "basitasolutions": {"id": 178209669, "repos": ["basita-ops"]}
+        "basitasolutions": {"id": 178209669, "repos": ["basita-ops"]},
+        "ahmedoraby-eng": {"id": 179708963, "repos": ["engineering-playbook"]}
       },
-      "manifest": {"name": "basita-sherif", "public": false, "description": "Sherif (Basita AI): documents, pull requests and pushes to sherif/* branches"}
+      "manifest": {"name": "basita-sherif", "public": true, "description": "Sherif (Basita AI): documents, pull requests and pushes to sherif/* branches"}
     },
     "adam": {
       "kind": "app",
@@ -97,9 +101,10 @@
       "bot_id": 352000396,
       "keychain": "basita-gh-adam-app",
       "installations": {
-        "basitasolutions": {"id": 178210706, "repos": ["basita-ops"]}
+        "basitasolutions": {"id": 178210706, "repos": ["basita-ops"]},
+        "ahmedoraby-eng": {"id": 179708242, "repos": ["engineering-playbook"]}
       },
-      "manifest": {"name": "basita-adam", "public": false, "description": "Adam (Basita AI): documents, pull requests and pushes to adam/* branches"}
+      "manifest": {"name": "basita-adam", "public": true, "description": "Adam (Basita AI): documents, pull requests and pushes to adam/* branches"}
     },
     "nora": {
       "kind": "app",
@@ -111,9 +116,10 @@
       "bot_id": 352001471,
       "keychain": "basita-gh-nora-app",
       "installations": {
-        "basitasolutions": {"id": 178211748, "repos": ["basita-ops"]}
+        "basitasolutions": {"id": 178211748, "repos": ["basita-ops"]},
+        "ahmedoraby-eng": {"id": 179709305, "repos": ["engineering-playbook"]}
       },
-      "manifest": {"name": "basita-nora", "public": false, "description": "Nora (Basita AI): documents, pull requests and pushes to nora/* branches"}
+      "manifest": {"name": "basita-nora", "public": true, "description": "Nora (Basita AI): documents, pull requests and pushes to nora/* branches"}
     },
     "yousef-docs": {
       "kind": "app",
@@ -125,9 +131,10 @@
       "bot_id": 352002984,
       "keychain": "basita-gh-yousef-docs-app",
       "installations": {
-        "basitasolutions": {"id": 178212701, "repos": ["basita-ops"]}
+        "basitasolutions": {"id": 178212701, "repos": ["basita-ops"]},
+        "ahmedoraby-eng": {"id": 179709388, "repos": ["engineering-playbook"]}
       },
-      "manifest": {"name": "basita-yousef-docs", "public": false, "description": "Yousef (Basita AI): his documents, their pull requests and pushes to yousef/* branches. He reviews as basita-yousef"}
+      "manifest": {"name": "basita-yousef-docs", "public": true, "description": "Yousef (Basita AI): his documents, their pull requests and pushes to yousef/* branches. He reviews as basita-yousef"}
     },
     "sync": {
       "kind": "app",
