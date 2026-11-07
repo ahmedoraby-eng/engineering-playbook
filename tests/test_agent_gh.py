@@ -264,7 +264,7 @@ def test_app_token_is_for_the_listed_installation_and_one_repo(key):
     with pytest.raises(IdentityError, match="no listed installation for someone"):
         token_for("malek", "someone/repo", PUSH, CONFIG, github, run)
     with pytest.raises(IdentityError, match="no listed installation for ahmedoraby-eng"):
-        token_for("haya", "ahmedoraby-eng/engineering-playbook", READ, CONFIG, github, run)
+        token_for("sync", "ahmedoraby-eng/engineering-playbook", READ, CONFIG, github, run)
 
 
 def test_github_errors_never_carry_the_token(key):

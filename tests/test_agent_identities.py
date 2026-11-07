@@ -94,11 +94,11 @@ PENDING = pending()
 # S2 (BASITA-155): app_id, client_id, bot_id and installations, from basita-ops
 # work/talia/github-apps-created-2026-11-03.md.
 CREATED = {
-    "talia": (5596031, "Iv23li8erVR1kSm1QyTh", 351996843, {"basitasolutions": 178208723}),
-    "sherif": (5596085, "Iv23lirm0mILYg7g4HeY", 351998495, {"basitasolutions": 178209669}),
-    "adam": (5596141, "Iv23libZR9pm7kX377jm", 352000396, {"basitasolutions": 178210706}),
-    "nora": (5596187, "Iv23lixUCYzrGsGWZhIE", 352001471, {"basitasolutions": 178211748}),
-    "yousef-docs": (5596240, "Iv23liePPnWTo9uCmrRH", 352002984, {"basitasolutions": 178212701}),
+    "talia": (5596031, "Iv23li8erVR1kSm1QyTh", 351996843, {"basitasolutions": 178208723, "ahmedoraby-eng": 179709236}),
+    "sherif": (5596085, "Iv23lirm0mILYg7g4HeY", 351998495, {"basitasolutions": 178209669, "ahmedoraby-eng": 179708963}),
+    "adam": (5596141, "Iv23libZR9pm7kX377jm", 352000396, {"basitasolutions": 178210706, "ahmedoraby-eng": 179708242}),
+    "nora": (5596187, "Iv23lixUCYzrGsGWZhIE", 352001471, {"basitasolutions": 178211748, "ahmedoraby-eng": 179709305}),
+    "yousef-docs": (5596240, "Iv23liePPnWTo9uCmrRH", 352002984, {"basitasolutions": 178212701, "ahmedoraby-eng": 179709388}),
     "sync": (5596339, "Iv23liWjBt4dzcm7Ufye", 352005823, {"basitasolutions": 178214976}),
     "reader": (
         5596397,
@@ -185,7 +185,9 @@ def test_the_seven_apps_are_listed_with_the_ids_of_s2():
     assert "branch_prefix" not in agents["sync"] and "branch_prefix" not in agents["reader"]
     assert agents["sync"]["updates_main"] == "basitasolutions/basita-ops"
     assert agents["reader"]["read_only"] is True and agents["reader"]["permissions"] == READER_PERMISSIONS
-    assert {n for n, a in agents.items() if a.get("kind") == "app" and a["manifest"]["public"]} == {"malek", "reader"}
+    assert {n for n, a in agents.items() if a.get("kind") == "app" and a["manifest"]["public"]} == {
+        "malek", "reader", "haya", "salma", "talia", "sherif", "adam", "nora", "yousef-docs"
+    }  # Ahmed 08/11: public so they install on the playbook
 
 
 def test_the_four_live_identities_keep_every_field_they_had():
@@ -196,8 +198,8 @@ def test_the_four_live_identities_keep_every_field_they_had():
             351705446,
             {"basitasolutions": 177981619, "ahmedoraby-eng": 177982765},
         ),
-        "haya": (5586509, "Iv23lilUPyDFpb9xrvRG", 351706579, {"basitasolutions": 177982074}),  # + basita-ops, S2
-        "salma": (5586535, "Iv23liIFJsD9Ub2uKUkh", 351707078, {"basitasolutions": 177982412}),
+        "haya": (5586509, "Iv23lilUPyDFpb9xrvRG", 351706579, {"basitasolutions": 177982074, "ahmedoraby-eng": 179709069}),  # + basita-ops, S2
+        "salma": (5586535, "Iv23liIFJsD9Ub2uKUkh", 351707078, {"basitasolutions": 177982412, "ahmedoraby-eng": 179709156}),
     }
     for name, (app_id, client_id, bot_id, installations) in live.items():
         app = CONFIG["agents"][name]
