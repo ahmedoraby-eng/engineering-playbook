@@ -38,7 +38,7 @@ jobs:
   rerun:
     name: Re-run Architecture review
     if: github.event.review.user.login == inputs.reviewer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim # 1 vCPU, $0.002/min (BASITA cost decision §7, item 2a)
     timeout-minutes: 5
     steps:
       - name: Re-run the check on the head commit

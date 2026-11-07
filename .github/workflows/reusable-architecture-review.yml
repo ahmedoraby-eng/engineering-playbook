@@ -70,7 +70,7 @@ permissions:
 jobs:
   architecture-review:
     name: Architecture review
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim # 1 vCPU, $0.002/min (BASITA cost decision §7, item 2a)
     timeout-minutes: 5
     steps:
       - name: Refuse anything but pull_request_target

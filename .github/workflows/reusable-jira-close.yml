@@ -62,8 +62,8 @@ on:
 jobs:
   jira-close:
     name: Close Jira issue
-    runs-on: ubuntu-latest
-    timeout-minutes: 20 # the deploy wait is up to 12
+    runs-on: ubuntu-slim # 1 vCPU, $0.002/min (BASITA cost decision §7, item 2a)
+    timeout-minutes: 15 # ubuntu-slim maximum; the deploy wait is up to 12
     steps:
       - name: Check out atl_agent from the playbook
         uses: actions/checkout@v6
