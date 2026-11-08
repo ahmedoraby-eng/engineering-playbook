@@ -578,6 +578,7 @@ def _read_responses():
         ],
     }
     comment = {
+        "id": "11",
         "author": {"displayName": "Haya"},
         "created": "2026-10-31",
         "body": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hi"}]}]},
@@ -599,7 +600,7 @@ def test_jira_get_returns_the_issue_comments_and_links_with_get_calls_only():
     assert result["read_by"] == "Malek" and result["assigned_to_reader"] is True
     assert result["status"] == "To Do" and result["parent"] == "BASITA-2" and result["labels"] == ["l"]
     assert result["description"] == "Given\n- see (https://x.test)"
-    assert result["comments"] == [{"author": "Haya", "created": "2026-10-31", "text": "hi"}]
+    assert result["comments"] == [{"id": "11", "author": "Haya", "created": "2026-10-31", "text": "hi"}]
     assert result["subtasks"] == [{"key": "BASITA-9", "summary": "sub", "status": "Done"}]
     assert result["links"] == [
         {"relation": "blocks", "key": "DFP-1", "summary": "A", "status": "Done"},

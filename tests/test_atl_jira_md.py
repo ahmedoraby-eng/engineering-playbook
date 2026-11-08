@@ -1,6 +1,7 @@
 """BASITA-205 (ADR-B001): the ADF -> Markdown renderer, `jira_md` snapshots and the jira-md / jira-get CLI."""
 
 import json
+import re
 import subprocess
 
 import pytest
@@ -178,25 +179,33 @@ def _fields(updated=UPDATED, description=None):
     }
 
 
-def _comment(n, body=None):
+def _comment(n, body=None, author=None, account=None, updated=None):
+    created = f"2026-11-01T09:{n:02d}:00.000+0200"
     return {
-        "author": {"displayName": f"Person {n}"},
-        "created": f"2026-11-0{1 + n % 7}T09:00:00.000+0200",
+        "id": str(100 + n),
+        "author": {"displayName": author or f"Person {n}", "accountId": account or f"acct-{n}"},
+        "created": created,
+        "updated": updated or created,
         "body": body or doc(para(text(f"comment {n}"))),
     }
 
 
-def _responses(comments, updated=UPDATED, post=True):
+def _history(n, items, who="Malek (Basita AI)"):
+    return {"id": str(n), "author": {"displayName": who}, "created": f"2026-11-0{n}T08:00:00.000+0200", "items": items}
+
+
+def _responses(comments, updated=UPDATED, post=True, histories=(), fields=None):
     found = [
         (200, json.dumps({"fields": {"updated": updated}})),
-        (200, json.dumps({"fields": _fields(updated)})),
+        (200, json.dumps({"fields": fields or _fields(updated)})),
         (200, json.dumps({"total": len(comments), "comments": comments})),
+        (200, json.dumps({"total": len(histories), "isLast": True, "values": list(histories)})),
     ]
     return found + ([(201, json.dumps({"id": "99"}))] if post else [])
 
 
-def test_the_file_layout_and_the_last_ten_comments(tmp_path):
-    comments = [_comment(n) for n in range(1, 13)]
+def test_the_core_file_layout(tmp_path):
+    comments = [_comment(n) for n in range(1, 4)]
     transport = FakeTransport(*_responses(comments))
     result = client(transport).jira_md("BASITA-7", tmp_path)
     path = tmp_path / "work" / "jira" / "BASITA-7.md"
@@ -216,19 +225,17 @@ def test_the_file_layout_and_the_last_ten_comments(tmp_path):
     assert "## Description\n\n### Acceptance criteria\n\n- AC1 works\n" in body
     assert "## Links\n\n- blocks DFP-1: A (Done)\n- is blocked by DFP-2: B (To Do)\n" in body
     assert "## Sub-tasks" not in body  # empty sections are left out
-    assert "## Comments (last 10 of 12)" in body
-    shown = [line for line in lines if line.startswith("### Person")]
-    assert [line.split(" · ")[0] for line in shown] == [f"### Person {n}" for n in range(3, 13)]
-    assert "comment 2\n" not in body and body.endswith("comment 12\n")
+    assert "## Current state" in body and "## Archive" in body
+    assert "work/jira/BASITA-7.full.md holds all 3 comments verbatim" in body
+    # Three comments, no rule matches: the last three are shown, the index is empty and left out.
+    assert "## Comments (3 of 3 shown" in body and "## Other comments" not in body
 
 
 def test_few_comments_are_all_shown_and_none_gives_no_section(tmp_path):
-    transport = FakeTransport(*_responses([_comment(1), _comment(2)]))
-    client(transport).jira_md("BASITA-7", tmp_path)
-    assert "## Comments (2)" in (tmp_path / "work/jira/BASITA-7.md").read_text(encoding="utf-8")
     transport = FakeTransport(*_responses([], updated="2026-11-08T00:00:00.000+0200"))
     client(transport).jira_md("BASITA-7", tmp_path)
-    assert "## Comments" not in (tmp_path / "work/jira/BASITA-7.md").read_text(encoding="utf-8")
+    body = (tmp_path / "work/jira/BASITA-7.md").read_text(encoding="utf-8")
+    assert "## Comments" not in body and "## Other comments" not in body
 
 
 def test_unchanged_makes_exactly_one_get_and_writes_nothing(tmp_path):
@@ -241,7 +248,16 @@ def test_unchanged_makes_exactly_one_get_and_writes_nothing(tmp_path):
     assert len(transport.calls) == 1 and transport.calls[0][0] == "GET"
     assert transport.calls[0][1].endswith("/rest/api/3/issue/BASITA-7?fields=updated")
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
-    assert sorted(p.name for p in path.parent.iterdir()) == ["BASITA-7.md"]  # no temp file left
+    assert sorted(p.name for p in path.parent.iterdir()) == ["BASITA-7.full.md", "BASITA-7.md"]  # no temp file left
+
+
+def test_a_snapshot_without_its_archive_is_rewritten_even_when_unchanged(tmp_path):
+    # BASITA-219: files written before the archive existed have the same `updated`; they must not stay as they are.
+    client(FakeTransport(*_responses([]))).jira_md("BASITA-7", tmp_path)
+    (tmp_path / "work/jira/BASITA-7.full.md").unlink()
+    transport = FakeTransport(*_responses([]))
+    assert client(transport).jira_md("BASITA-7", tmp_path)["changed"] is True
+    assert (tmp_path / "work/jira/BASITA-7.full.md").is_file()
 
 
 def test_the_link_comment_is_posted_once_and_never_twice(tmp_path):
@@ -412,3 +428,277 @@ def test_cli_refuses_the_app_repo(tmp_path, capsys):
     transport = FakeTransport()
     assert _cli(["malek", "jira-md", "BASITA-7", "--out", str(tmp_path)], transport) == 1
     assert "app repository" in capsys.readouterr().err and transport.calls == []
+
+
+# --- BASITA-219: the snapshot covers what the Atlassian MCP read gave ----------------------------------------------
+
+AHMED = "712020:710281c6-e4c2-44fd-b72a-81091935ae21"  # client.AHMED_ACCOUNT
+ADAM = "712020:74556401-e243-4c53-9f59-75f28fdf6cec"  # client.ADAM_ACCOUNT
+
+
+def _long_fields():
+    return {
+        **_fields(),
+        "created": "2026-11-01T08:00:00.000+0200",
+        "duedate": "2026-11-20",
+        "resolution": {"name": "Done"},
+        "components": [{"name": "atl"}, {"name": "pickup"}],
+        "attachment": [
+            {
+                "filename": "plan.pdf",
+                "mimeType": "application/pdf",
+                "size": 2048,
+                "author": {"displayName": "Yousef"},
+                "created": "2026-11-02T09:00:00.000+0200",
+            }
+        ],
+    }
+
+
+HISTORIES = (
+    _history(3, [{"field": "status", "fromString": "To Do", "toString": "In Progress"}]),
+    _history(
+        2,
+        [
+            {"field": "labels", "fromString": "", "toString": "high-priority"},
+            {"field": "description", "fromString": "old text " * 50, "toString": "new text " * 50},
+        ],
+        who="Sherif",
+    ),
+    _history(4, [{"field": "summary", "fromString": "x" * 200, "toString": None}], who="Ahmed Oraby"),
+)
+
+
+def _write(tmp_path, comments, **kwargs):
+    client(FakeTransport(*_responses(comments, **kwargs))).jira_md("BASITA-7", tmp_path)
+    folder = tmp_path / "work" / "jira"
+    return (folder / "BASITA-7.md").read_text(encoding="utf-8"), (folder / "BASITA-7.full.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def _ids(text, pattern):
+    return re.findall(pattern, text, re.MULTILINE)
+
+
+def _mixed_comments():
+    """Twelve comments: Ahmed's (101), a tagged one (103), a quote of Ahmed (105), a keyword (107), Adam's (109), a
+    comment that is cited (110, by 112), an edited one (104), and plain ones."""
+    comments = [_comment(n, author="Malek", account="m") for n in range(1, 13)]
+    comments[0] = _comment(1, body=doc(para(text("Please do it this way."))), author="Ahmed Oraby", account=AHMED)
+    comments[2] = _comment(3, body=doc(para(text("Handoff: ready for Salma"))), author="Malek", account="m")
+    comments[4] = _comment(5, body=doc(para(text("Ahmed said: «ship it Friday»"))), author="Malek", account="m")
+    comments[6] = _comment(7, body=doc(para(text("We decided to use the file."))), author="Malek", account="m")
+    comments[8] = _comment(9, author="Adam", account=ADAM)
+    comments[3] = _comment(4, updated="2026-11-01T11:00:00.000+0200", author="Malek", account="m")
+    comments[11] = _comment(12, body=doc(para(text("as in comment 110"))), author="Malek", account="m")
+    return comments
+
+
+def test_the_core_file_pins_by_rule_and_shows_the_last_three(tmp_path):
+    core, _ = _write(tmp_path, _mixed_comments())
+    shown = _ids(core, r"^### #(\d+) ")
+    # 101 Ahmed, 103 tag, 104 edited, 105 quote, 107 keyword, 109 Adam, 110 cited; 110-112 are the last three.
+    assert shown == ["101", "103", "104", "105", "107", "109", "110", "111", "112"]
+    assert "### #101 · 2026-11-01T09:01:00.000+0200 · Ahmed Oraby [pinned: author is Ahmed]" in core
+    assert "[pinned: tag handoff]" in core and "[pinned: quotes Ahmed]" in core
+    assert "[pinned: keyword decided]" in core and "[pinned: author is Adam]" in core
+    assert "[pinned: edited after posting]" in core and "[pinned: cited by a later comment]" in core
+    assert "## Comments (9 of 12 shown: pinned by rule, and the last 3; 3 more are in the index below)" in core
+    # The rest are one line each in the index, with their place in the archive; plain comments are not in the core.
+    index = _ids(core, r"^- #(\d+) · ")
+    assert index == ["102", "106", "108"]
+    assert "comment 2\n" not in core and "comment 6\n" not in core
+
+
+def test_every_comment_is_in_the_core_or_the_index_and_the_archive_has_them_all(tmp_path):
+    # BASITA-219 AC-G
+    for day, comments in enumerate((_mixed_comments(), [_comment(n) for n in range(1, 40)], [_comment(1)]), start=1):
+        core, full = _write(tmp_path, comments, updated=f"2026-11-0{day}T00:00:00.000+0200")
+        wanted = {c["id"] for c in comments}
+        in_core = set(_ids(core, r"^### #(\d+) "))
+        in_index = set(_ids(core, r"^- #(\d+) · "))
+        assert in_core | in_index == wanted and not in_core & in_index
+        assert set(_ids(full, r"^### #(\d+) ")) == wanted
+
+
+def test_the_index_points_at_the_archive_lines_that_hold_the_comment(tmp_path):
+    core, full = _write(tmp_path, _mixed_comments())
+    lines = full.split("\n")
+    for number, start, end in re.findall(r"^- #(\d+) · .*\(archive lines (\d+)-(\d+)\)$", core, re.MULTILINE):
+        chunk = lines[int(start) - 1 : int(end)]
+        assert chunk[0].startswith(f"### #{number} · ") and chunk[-1] == f"comment {int(number) - 100}"
+        assert not any(line.startswith("### #") for line in chunk[1:])
+
+
+def test_the_archive_is_verbatim_and_ends_with_the_changelog(tmp_path):
+    comments = [_comment(1, body=doc(para(text("first, long " * 40))))]
+    _, full = _write(tmp_path, comments, histories=HISTORIES, fields=_long_fields())
+    assert full.startswith("# BASITA-7: archive (every comment and the changelog)\n\n<!-- jira-md: ")
+    assert ("first, long " * 40).strip() in full
+    history = full[full.index("## History") :].split("\n")
+    assert history[0] == "## History (4 changes, oldest first: when · who · field: from → to)"
+    assert history[2:6] == [
+        "- 2026-11-02T08:00:00.000+0200 · Sherif · labels: (empty) → high-priority",
+        "- 2026-11-02T08:00:00.000+0200 · Sherif · description: changed",
+        "- 2026-11-03T08:00:00.000+0200 · Malek (Basita AI) · status: To Do → In Progress",
+        "- 2026-11-04T08:00:00.000+0200 · Ahmed Oraby · summary: " + "x" * 80 + " → (empty)",
+    ]
+
+
+def test_current_state_has_the_last_status_change_and_each_authors_latest_comment(tmp_path):
+    long_text = "x" * 1500
+    comments = [_comment(n, author="Sherif" if n == 1 else "Malek") for n in range(1, 8)]
+    comments[0] = _comment(1, body=doc(para(text(long_text))), author="Sherif")
+    core, _ = _write(tmp_path, comments, histories=HISTORIES)
+    state = core[core.index("## Current state") : core.index("## Comments")]
+    assert "- **Last status change:** To Do → In Progress, Malek (Basita AI), 2026-11-03T08:00:00.000+0200" in state
+    assert "- **Last comment:** #107, Malek, 2026-11-01T09:07:00.000+0200" in state
+    assert "- **Latest by Malek:** #107, shown below" in state
+    assert "…full text: archive #101" in state and "x" * 1200 in state and "x" * 1201 not in state
+
+
+def test_the_snapshots_own_link_comment_is_never_pinned_and_is_indexed(tmp_path):
+    link = _comment(
+        2,
+        body=doc(
+            para(text("ملف التيكت للـ agents: basita-ops/work/jira/BASITA-7.md (قرار decision) — Malek (Basita AI)"))
+        ),
+    )
+    core, _ = _write(tmp_path, [_comment(1), link, *[_comment(n) for n in range(3, 8)]])
+    assert "### #102 " not in core and "- #102 · " in core
+
+
+def test_a_comment_another_one_replaces_is_indexed_as_superseded_but_ahmeds_never(tmp_path):
+    old = _comment(1, body=doc(para(text("Decision: use A"))))
+    ahmed = _comment(2, body=doc(para(text("Use B"))), author="Ahmed Oraby", account=AHMED)
+    new = _comment(3, body=doc(para(text("Decision: replaces comment 101 and 102 with C"))))
+    core, _ = _write(tmp_path, [old, ahmed, new, *[_comment(n) for n in range(4, 8)]])
+    assert "[superseded by #103]" in core and "### #101 " not in core
+    assert "### #102 " in core  # any doubt pins: Ahmed's comment stays
+
+
+def test_a_signed_agent_comment_posted_from_ahmeds_account_is_not_his(tmp_path):
+    posted = _comment(1, body=doc(para(text("done — Malek (Basita AI)"))), author="Ahmed Oraby", account=AHMED)
+    core, _ = _write(tmp_path, [posted, *[_comment(n) for n in range(2, 8)]])
+    assert "### #101 " not in core
+
+
+def test_pinned_comments_over_the_cap_go_to_the_index_oldest_first_and_say_so(tmp_path):
+    big = "decision " + "word " * 800
+    comments = [_comment(n, body=doc(para(text(big)))) for n in range(1, 8)]
+    core, _ = _write(tmp_path, comments)
+    over = _ids(core, r"^- #(\d+) · .*\[pinned, over cap\]")
+    assert over and over == sorted(over) and over[0] == "101"
+    assert set(_ids(core, r"^### #(\d+) ")) | set(_ids(core, r"^- #(\d+) · ")) == {str(100 + n) for n in range(1, 8)}
+    assert len(core.encode()) / 3 <= 8000 + 300  # under the cap; the last three always stay
+    assert set(_ids(core, r"^### #(\d+) ")) >= {"105", "106", "107"}
+
+
+def test_attachments_and_the_dates_are_in_the_core(tmp_path):
+    core, _ = _write(tmp_path, [], fields=_long_fields())
+    assert "- **Components:** atl, pickup\n- **Created:** 2026-11-01T08:00:00.000+0200\n" in core
+    assert "- **Due date:** 2026-11-20\n- **Resolution:** Done\n" in core
+    assert "## Attachments (names only; contents are not downloaded)\n\n" in core
+    assert "- plan.pdf (application/pdf, 2048 bytes, Yousef, 2026-11-02T09:00:00.000+0200)\n" in core
+
+
+def test_the_same_comments_give_the_same_files(tmp_path):
+    first = _write(tmp_path, _mixed_comments())
+    second = _write(tmp_path / "again", _mixed_comments()) if (tmp_path / "again").mkdir() is None else None
+    strip = lambda text: re.sub(r"fetched \S+ -->", "fetched X -->", text)  # noqa: E731
+    assert [strip(t) for t in first] == [strip(t) for t in second]
+
+
+def test_every_changelog_page_is_read(tmp_path):
+    first = {"total": 3, "isLast": False, "values": [HISTORIES[1], HISTORIES[0]]}
+    second = {"total": 3, "isLast": True, "values": [HISTORIES[2]]}
+    found = _responses([], post=True)[:3] + [(200, json.dumps(first)), (200, json.dumps(second)), (201, "{}")]
+    transport = FakeTransport(*found)
+    client(transport).jira_md("BASITA-7", tmp_path)
+    assert transport.calls[3][1].endswith("/changelog?startAt=0&maxResults=100")
+    assert transport.calls[4][1].endswith("/changelog?startAt=2&maxResults=100")
+    assert (tmp_path / "work/jira/BASITA-7.full.md").read_text(encoding="utf-8").count("\n- 2026-11-0") == 4
+
+
+def _get_responses(histories=(), comments=None):
+    comments = [_comment(n) for n in range(1, 14)] if comments is None else comments
+    found = [
+        (200, json.dumps({"fields": {**_fields(), "description": doc(para(text("Given")))}})),
+        (200, json.dumps({"total": len(comments), "comments": comments})),
+    ]
+    found.append((200, json.dumps({"issues": [{"key": "BASITA-7"}]})))  # the currentUser() search
+    if histories:
+        found.append((200, json.dumps({"total": len(histories), "isLast": True, "values": list(histories)})))
+    return found
+
+
+def test_jira_get_keeps_all_comments_and_can_limit_or_add_history():
+    full = client(FakeTransport(*_get_responses())).jira_get("BASITA-7")
+    assert len(full["comments"]) == 13 and "comments_total" not in full and "history" not in full
+    last = client(FakeTransport(*_get_responses())).jira_get("BASITA-7", comments="3")
+    assert [c["text"] for c in last["comments"]] == ["comment 11", "comment 12", "comment 13"]
+    assert last["comments_total"] == 13
+    none = client(FakeTransport(*_get_responses())).jira_get("BASITA-7", comments="0")
+    assert none["comments"] == [] and none["comments_total"] == 13
+    with_history = client(FakeTransport(*_get_responses(HISTORIES))).jira_get("BASITA-7", history=True)
+    assert [(h["field"], h["to"]) for h in with_history["history"]] == [
+        ("labels", "high-priority"),
+        ("description", "changed"),
+        ("status", "In Progress"),
+        ("summary", None),
+    ]
+    with pytest.raises(AtlError, match="--comments takes all or a number"):
+        client(FakeTransport()).jira_get("BASITA-7", comments="some")
+
+
+def test_cli_jira_get_json_takes_comments_and_history(capsys):
+    transport = FakeTransport(*_get_responses(HISTORIES))
+    assert _cli(["malek", "jira-get", "BASITA-7", "--json", "--comments", "2", "--history"], transport) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert len(printed["comments"]) == 2 and printed["comments_total"] == 13 and len(printed["history"]) == 4
+    assert {call[0] for call in transport.calls} == {"GET"}
+
+
+def test_cli_jira_get_history_prints_the_lines_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("BASITA_OPS_DIR", str(tmp_path))
+    found = [(200, json.dumps({"total": 3, "isLast": True, "values": list(HISTORIES)}))]
+    transport = FakeTransport(*found)
+    assert _cli(["malek", "jira-get", "BASITA-7", "--history"], transport) == 0
+    lines = capsys.readouterr().out.strip().split("\n")
+    assert len(lines) == 4 and lines[2].endswith("Malek (Basita AI) · status: To Do → In Progress")
+    assert list(tmp_path.iterdir()) == [] and len(transport.calls) == 1
+
+
+def test_cli_history_and_comments_belong_to_jira_get(tmp_path, capsys):
+    cases = (
+        ["malek", "jira-md", "BASITA-7", "--history"],
+        ["malek", "jira-jql", "project = DFP", "--comments", "3"],
+        ["malek", "jira-get", "BASITA-7", "--comments", "3"],
+        ["malek", "jira-get", "BASITA-7", "--history", "--out", str(tmp_path)],
+    )
+    for args in cases:
+        transport = FakeTransport()
+        assert _cli(args, transport) == 2
+        assert transport.calls == []
+    err = capsys.readouterr().err
+    assert "--history and --comments are for jira-get" in err and "--comments is for jira-get --json" in err
+
+
+def test_any_mention_of_ahmed_pins_and_so_does_a_dropped_scope(tmp_path):
+    # The recall check on DFP-169 (#11208): "Ahmed dropped AC5" is a scope decision no verb list should miss.
+    dropped = _comment(1, body=doc(para(text("Scope is now AC1-AC4 only: Ahmed dropped AC5."))), author="Malek")
+    waiting = _comment(2, body=doc(para(text("Still waiting for your review."))), author="Malek")
+    arabic = _comment(3, body=doc(para(text("أحمد طلب نبدأ بالتاني"))), author="Malek")
+    core, _ = _write(tmp_path, [dropped, waiting, arabic, *[_comment(n) for n in range(4, 9)]])
+    assert "### #101 · 2026-11-01T09:01:00.000+0200 · Malek [pinned: mentions Ahmed, keyword dropped]" in core
+    assert "[pinned: keyword waiting for]" in core and "### #103 " in core
+
+
+def test_over_the_cap_ahmeds_own_comment_stays_while_older_ones_leave(tmp_path):
+    big = "decision " + "word " * 800
+    comments = [_comment(n, body=doc(para(text(big)))) for n in range(1, 8)]
+    comments[0] = _comment(1, body=doc(para(text(big))), author="Ahmed Oraby", account=AHMED)
+    core, _ = _write(tmp_path, comments)
+    over = _ids(core, r"^- #(\d+) · .*\[pinned, over cap\]")
+    assert over and "101" not in over and "### #101 " in core  # the oldest pin is Ahmed's: it goes last

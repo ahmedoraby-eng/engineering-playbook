@@ -1,6 +1,6 @@
 """Command line:
 
-    atl <agent> jira-get BASITA-1 [--json] [--out DIR]
+    atl <agent> jira-get BASITA-1 [--json [--comments all|N] [--history]] [--history] [--out DIR]
     atl <agent> jira-md BASITA-1 [--out DIR]
     atl <agent> jira-jql "project = DFP AND status = 'To Do'"
     atl <agent> jira-comment BASITA-1 "text" [--mention <account id> ...]
@@ -51,7 +51,17 @@ BASITA-205 (ADR-B001): `jira-md <KEY>` writes the issue as Markdown to <DIR>/wor
 path, followed by " (unchanged)" when the file already had the issue's latest `updated` (then it makes one small read
 and writes nothing). DIR is --out, else BASITA_OPS_DIR, else ~/Code/basita-ops; a folder inside the app repository
 (origin elbayoumy-farm-nutrition-platform) is refused. The file holds the fields, the description, links, sub-tasks
-and the last 10 comments; Jira stays the master. The first time, it posts one comment on the issue with the file's
+and the comments the rules pin; Jira stays the master. BASITA-219 (Yousef's design, work/yousef/BASITA-219-snapshot-
+design.md): there are two files. `<KEY>.md` is the core: the fields (with Created, Due date, Resolution and Components
+when set), the description, links with the other issue's current status, sub-tasks, attachments by name, a Current
+state block (last status change, last comment, each author's latest comment), then the comments that a deterministic
+rule pins (Ahmed's, quotes of Ahmed, Decision:/Handoff:/State:/Blocked:/AC change: tags, decision-type keywords in
+English and Arabic, Adam's, comments cited by a later one, edited ones; any doubt pins) plus the last three, verbatim,
+and one index line (id, date, author, first 80 characters, archive line range) for every other comment.
+`<KEY>.full.md` is the archive: every comment verbatim, then the changelog, one line per change (when, who, field,
+from, to). Nothing is summarised and no model is called. `jira-get <KEY> --history` prints the changelog read live;
+`jira-get <KEY> --json` takes `--comments N` (the latest N, with `comments_total`) and `--history` (adds `history`).
+The first time, it posts one comment on the issue with the file's
 link, and never a second one. `jira-get <KEY>` refreshes that file the same way and prints it, so every agent read
 goes through the snapshot; `jira-get <KEY> --json` prints the JSON below instead, reads only, and writes nothing.
 The other read commands print JSON and change nothing: `jira-get --json` gives an issue with its comments, sub-tasks
@@ -170,6 +180,14 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         help="jira-md, jira-get: the folder that holds work/jira/ (default BASITA_OPS_DIR, else ~/Code/basita-ops)",
     )
     parser.add_argument("--json", action="store_true", help="jira-get: print the issue as JSON, and write nothing")
+    parser.add_argument(
+        "--comments", default="all", help="jira-get --json: all (default) or N, the latest N comments (BASITA-219)"
+    )
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="jira-get: the changelog, one line per change; with --json, added to the JSON as `history`",
+    )
     parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. sherif")
     parser.add_argument("--cloud-id", default=default_cloud_id())
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
@@ -204,9 +222,17 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     if args.json and args.command != "jira-get":
         print(f"atl: --json is for jira-get, not {args.command}", file=sys.stderr)
         return 2
-    if args.out and (args.command not in ("jira-md", "jira-get") or args.json):
-        print("atl: --out is for jira-md and jira-get (without --json)", file=sys.stderr)
+    if args.out and (args.command not in ("jira-md", "jira-get") or args.json or args.history):
+        print("atl: --out is for jira-md and jira-get (without --json or --history)", file=sys.stderr)
         return 2
+    if (args.history or args.comments != "all") and args.command != "jira-get":
+        print(f"atl: --history and --comments are for jira-get, not {args.command}", file=sys.stderr)
+        return 2
+    if args.comments != "all" and not args.json:
+        print("atl: --comments is for jira-get --json (the Markdown snapshot has every comment)", file=sys.stderr)
+        return 2
+    if args.command == "jira-get" and args.history and not args.json:
+        return _history(args, token_source, transport)
     if args.command == "jira-md" or (args.command == "jira-get" and not args.json):
         return _snapshot(args, token_source, transport)
     if args.command in ("jira-edit", "jira-link"):
@@ -232,6 +258,8 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             )
             if args.command == "confluence-get" and args.storage:  # BASITA-191: the body as storage, to edit it exactly
                 result = client.confluence_get(args.target, storage=True)
+            elif args.command == "jira-get":  # BASITA-219: --comments N, --history
+                result = client.jira_get(args.target, comments=args.comments, history=args.history)
             else:
                 result = READS[args.command](client)(args.target)
             print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -417,6 +445,26 @@ def _snapshot(args, token_source, transport) -> int:
         with open(path, encoding="utf-8") as snapshot:
             sys.stdout.write(snapshot.read())
     except (AtlError, OSError) as error:
+        print(f"atl: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _history(args, token_source, transport) -> int:
+    """jira-get <KEY> --history: the changelog read now, one line per change (BASITA-219). Writes nothing."""
+    try:
+        agent = args.agent.lower()
+        kwargs = {"transport": transport} if transport else {}
+        client = AtlClient(
+            agent,
+            args.cloud_id,
+            token_source(account_for(agent, args.via), "jira"),
+            args.domain,
+            via=args.via,
+            **kwargs,
+        )
+        print("\n".join(client.jira_history(args.target)))
+    except AtlError as error:
         print(f"atl: {error}", file=sys.stderr)
         return 1
     return 0
