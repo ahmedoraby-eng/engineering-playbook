@@ -24,7 +24,7 @@ read_as() { # label, then the atl command
   echo "ok $label: read_by $by"
 }
 if [[ "$product" == jira ]]; then
-  read_as "read" jira-get "${ATL_CHECK_ISSUE:-BASITA-41}"
+  read_as "read" jira-get "${ATL_CHECK_ISSUE:-BASITA-41}" --json
   read_as "search" jira-jql "project = BASITA"
 else
   page="${ATL_CHECK_PAGE:-1835010}"

@@ -522,11 +522,11 @@ def jira_status_with_atl(atl: str, run) -> Callable[[str], str]:
     """A key's Jira status, read as Talia with atl (her own Jira user). A failure refuses the merge."""
 
     def status(key: str) -> str:
-        result = run([atl, "talia", "jira-get", key], capture_output=True, text=True)
+        result = run([atl, "talia", "jira-get", key, "--json"], capture_output=True, text=True)
         try:
             return json.loads(result.stdout)["status"]
         except (ValueError, KeyError, TypeError):
-            raise IdentityError(f"refused: Jira can't be read for {key} (atl talia jira-get)") from None
+            raise IdentityError(f"refused: Jira can't be read for {key} (atl talia jira-get --json)") from None
 
     return status
 
