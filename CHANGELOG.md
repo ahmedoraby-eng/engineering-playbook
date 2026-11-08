@@ -4,6 +4,12 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## Unreleased
 
+### Added (BASITA-208, auto-Released for done DFP issues; Ahmed, 08/11/2026)
+- `python -m atl_agent.release --agent sherif [--dry-run] [--repos a,b,c] [--log FILE]` moves a DFP issue from `Ready for Release` to `Released` when every PR that names its key is merged, or no PR names it (design or QA work), and comments the evidence (the PR links, or "no PR names it"). An open PR leaves it; PRs that were all closed without merging leave it with a `FLAG` line; a failed PR read leaves it. The status and type are read again just before the move, so it never moves from another status and never an Epic. A PR names the key as a whole word in its title, branch or description, outside HTML comments (DFP-15 is not DFP-153). The PRs are read once per repository as `basita-reader` (`agent-gh reader pr list --state all`). `--dry-run` reads only. `--log` appends the moves to their own section of the file. Run hourly by basita-ops `jira-attention.sh` behind `AUTO_RELEASE`.
+
+### Changed
+- `client.list_repo_prs(repo)`: the per-repository PR read of `github_prs` on its own, shared with `release`; `github_prs` behaves as before.
+
 ### Added (BASITA-205, ADR-B001: agents read Jira through a Markdown snapshot)
 - `atl <agent> jira-md <KEY> [--out DIR]` writes the issue as Markdown to `<DIR>/work/jira/<KEY>.md` (DIR: `--out`, else `BASITA_OPS_DIR`, else `~/Code/basita-ops`) and prints only the path, with ` (unchanged)` when not rewritten. One small read of `updated` comes first: when the file already records it, nothing else is read or written. The file has the title, a source line (`<!-- jira-md: <browse URL> · updated … · fetched … -->`; Jira stays the master), the fields, the description with its acceptance criteria, links, sub-tasks and the last 10 comments, oldest of those first; empty sections are left out. It is written atomically. A folder inside a git repository whose `origin` is `elbayoumy-farm-nutrition-platform` is refused (AC4).
 - The first snapshot posts one comment on the issue with the file's link, as the agent; a comment that already holds `work/jira/<KEY>.md` stops any second one (AC3).
