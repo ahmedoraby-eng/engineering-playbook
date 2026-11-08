@@ -1374,7 +1374,7 @@ class AtlClient:
 
     def jira_jql(self, jql: str, limit: int = 100) -> dict:
         """The issues a JQL query matches, as this agent, up to `limit`. Needs read:jira-work."""
-        fields = "summary,status,issuetype,assignee,priority,parent,labels"
+        fields = "summary,status,issuetype,assignee,priority,parent,labels,fixVersions"
         issues: list[dict] = []
         token = ""
         while len(issues) < limit:
@@ -1394,6 +1394,7 @@ class AtlClient:
                         "assignee": (f.get("assignee") or {}).get("displayName"),
                         "parent": (f.get("parent") or {}).get("key"),
                         "labels": f.get("labels", []),
+                        "fix_versions": [v.get("name") for v in f.get("fixVersions") or [] if v.get("name")],
                     }
                 )
             token = page.get("nextPageToken", "")

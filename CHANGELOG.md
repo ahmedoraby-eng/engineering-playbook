@@ -4,6 +4,9 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## Unreleased
 
+### Changed (BASITA-208, only current versions are released; Ahmed, 08/11/2026)
+- `atl_agent.release` now needs `--versions` (the versions open now, comma-separated, e.g. `0.2.1,0.2.1.2`; basita-ops keeps the list in `RELEASE_CURRENT_VERSIONS`). An issue is released only when it has a Fix Version and every Fix Version is in the list: a later version such as 0.2.2 means planned work and is left with the reason, and so is an issue with no Fix Version. The Fix Versions are checked again on the re-read just before the move. An empty `--versions` releases nothing (exit 2). `jira_jql` rows now carry `fix_versions`.
+
 ### Added (BASITA-208, auto-Released for done DFP issues; Ahmed, 08/11/2026)
 - `python -m atl_agent.release --agent sherif [--dry-run] [--repos a,b,c] [--log FILE]` moves a DFP issue from `Ready for Release` to `Released` when every PR that names its key is merged, or no PR names it (design or QA work), and comments the evidence (the PR links, or "no PR names it"). An open PR leaves it; PRs that were all closed without merging leave it with a `FLAG` line; a failed PR read leaves it. The status and type are read again just before the move, so it never moves from another status and never an Epic. A PR names the key as a whole word in its title, branch or description, outside HTML comments (DFP-15 is not DFP-153). The PRs are read once per repository as `basita-reader` (`agent-gh reader pr list --state all`). `--dry-run` reads only. `--log` appends the moves to their own section of the file. Run hourly by basita-ops `jira-attention.sh` behind `AUTO_RELEASE`.
 

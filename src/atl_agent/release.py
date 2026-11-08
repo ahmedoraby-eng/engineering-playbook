@@ -5,7 +5,12 @@ accepted it, and (b) every PR that names its key is merged, or no PR names it (d
 `Closes <KEY>` already moves it (close.py); this catches the rest: an issue whose only PR said `Refs`, and work with no
 code at all. It never moves an issue from any other status, never an Epic, and never on a failed read.
 
-    python -m atl_agent.release --agent sherif [--dry-run] [--repos a,b,c] [--log FILE]
+It also never releases planned work (Ahmed, 08/11/2026): every Fix Version of the issue must be one of the versions
+open now, given by `--versions` (basita-ops `RELEASE_CURRENT_VERSIONS` in jira-agents.conf, e.g. "0.2.1,0.2.1.2"). An
+issue with no Fix Version, or with any Fix Version outside the list (a later version such as 0.2.2 means planned), is
+left with the reason. An empty `--versions` releases nothing.
+
+    python -m atl_agent.release --agent sherif --versions 0.2.1,0.2.1.2 [--dry-run] [--repos a,b,c] [--log FILE]
 
 Run hourly by basita-ops jira-attention.sh, behind AUTO_RELEASE in jira-agents.conf. The PRs are read as basita-reader
 through the playbook's agent-gh (`pr list --state all`, once per repository), never the Mac's own gh login. The token
@@ -113,18 +118,42 @@ def evidence(key: str, merged: list[dict]) -> str:
     return head + "every PR that names it is merged:\n" + "\n".join(_link(p) for p in merged)
 
 
-def _now_status(client: AtlClient, key: str) -> tuple[str, str]:
-    """The issue's status and type, read again now."""
+def _now_status(client: AtlClient, key: str) -> tuple[str, str, list[str]]:
+    """The issue's status, type and Fix Versions, read again now."""
     found = client.jira_jql(f"key = {key}", limit=1)["issues"]
     if not found:
         raise AtlError(f"{key}: not found when read again")
-    return found[0]["status"], found[0]["type"]
+    return found[0]["status"], found[0]["type"], list(found[0].get("fix_versions") or [])
+
+
+def parse_versions(text: str) -> frozenset[str]:
+    """The current versions from a comma-separated list; blanks are dropped."""
+    return frozenset(v.strip() for v in (text or "").split(",") if v.strip())
+
+
+def version_gate(fix_versions: list[str], versions: frozenset[str]) -> str:
+    """Why the Fix Versions keep the issue from release, or "" when they allow it: at least one, and every one of
+    them a current version."""
+    if not versions:
+        return "no current versions are configured (--versions), nothing is released"
+    if not fix_versions:
+        return "it has no Fix Version"
+    planned = [v for v in fix_versions if v not in versions]
+    if planned:
+        current = ", ".join(sorted(versions))
+        return f"Fix Version {', '.join(planned)} is not a current version ({current}), so it is planned work"
+    return ""
 
 
 def release_issues(
-    client: AtlClient, prs_for: PrSource, dry_run: bool = False, issues: list[dict] | None = None
+    client: AtlClient,
+    prs_for: PrSource,
+    dry_run: bool = False,
+    issues: list[dict] | None = None,
+    versions: frozenset[str] = frozenset(),
 ) -> tuple[list[str], list[str], bool]:
-    """Release what qualifies. Returns (one line per issue, the log rows of the moves, whether anything failed)."""
+    """Release what qualifies. Returns (one line per issue, the log rows of the moves, whether anything failed).
+    `versions` are the versions open now; with none, nothing is released."""
     issues = client.jira_jql(JQL, limit=ISSUE_LIMIT)["issues"] if issues is None else issues
     lines: list[str] = []
     moved: list[str] = []
@@ -139,6 +168,10 @@ def release_issues(
             continue
         if (issue.get("status") or "").lower() != FROM.lower():
             lines.append(f"{key}: left in {issue.get('status')}, only {FROM} moves")
+            continue
+        held = version_gate(list(issue.get("fix_versions") or []), versions)
+        if held:
+            lines.append(f"{key}: left, {held}")
             continue
         try:
             prs = [p for p in prs_for(key) if names_key(p, key)]
@@ -156,7 +189,7 @@ def release_issues(
         merged = [p for p in prs if p["state"] == "MERGED"]
         shown = ", ".join(_short(p) for p in merged) or "no PR"
         try:
-            status, kind = _now_status(client, key)
+            status, kind, fix_now = _now_status(client, key)
         except AtlError as error:
             lines.append(f"{key}: left, could not read it again ({error})")
             failed = True
@@ -166,6 +199,10 @@ def release_issues(
             continue
         if kind == "Epic":
             lines.append(f"{key}: left, an Epic is never released automatically")
+            continue
+        held = version_gate(fix_now, versions)
+        if held:
+            lines.append(f"{key}: left, {held} (read again)")
             continue
         if dry_run:
             lines.append(f"{key}: would move {FROM} -> {TO} ({shown})")
@@ -215,11 +252,21 @@ def main(
     parser.add_argument("--dry-run", action="store_true", help="read only: print what would move, write nothing")
     parser.add_argument("--repos", default=",".join(PR_REPOS), help="owner/repo list, comma-separated")
     parser.add_argument("--log", default="", help="append the moves to this Markdown file")
+    parser.add_argument(
+        "--versions",
+        required=True,
+        help="the versions open now, comma-separated (e.g. 0.2.1,0.2.1.2); only issues whose every Fix Version is one "
+        "of them are released",
+    )
     args = parser.parse_args(argv)
     environ = os.environ if environ is None else environ
     repos = tuple(r.strip() for r in args.repos.split(",") if r.strip())
     if not repos:
         print("atl-release: --repos is empty, nothing read", file=sys.stderr)
+        return 2
+    versions = parse_versions(args.versions)
+    if not versions:
+        print("atl-release: --versions is empty, nothing released", file=sys.stderr)
         return 2
     try:
         agent = args.agent.lower()
@@ -228,7 +275,7 @@ def main(
         client = AtlClient(
             agent, default_cloud_id(environ), token, environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"), **kwargs
         )
-        lines, moved, failed = release_issues(client, prs_for or RepoPrs(repos), args.dry_run)
+        lines, moved, failed = release_issues(client, prs_for or RepoPrs(repos), args.dry_run, versions=versions)
     except AtlError as error:
         print(f"atl-release: {error}", file=sys.stderr)
         return 1
