@@ -1,0 +1,98 @@
+# Reusable Merge train (ADR-020 decision 3 and Enforcement E1; BASITA-204). Copy this file to
+# .github/workflows/reusable-merge-train.yml of the playbook: no agent App can push a workflow file
+# (decision D4), so Ahmed installs it. See standards/merge-train.md.
+#
+# After a merge, only the next open pull request in the wave's order (.github/merge-train.json,
+# written by Sherif, changed only in a pull request by Ahmed or Talia) is brought up to date. It
+# then asks for E2E once, and says «جاهز للدمج» on it when it is green. It never merges: only
+# Ahmed merges.
+#
+# Two tokens. Reads use GITHUB_TOKEN with the read permissions below. Writes use the basita-train
+# GitHub App's token (contents and pull-requests write, this repository only), because a push or a
+# label made with GITHUB_TOKEN does not start other workflows, and the train needs CI and E2E to
+# start on the commit it creates. The App's id and private key are the caller's secrets.
+#
+#   # .github/workflows/merge-train.yml  (see templates/merge-train/merge-train.yml)
+#   jobs:
+#     merge-train:
+#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-merge-train.yml@main
+#       secrets:
+#         app-id: ${{ secrets.TRAIN_APP_ID }}
+#         app-private-key: ${{ secrets.TRAIN_APP_PRIVATE_KEY }}
+name: Reusable merge train
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: The wave's merge order, read from the default branch
+        type: string
+        default: .github/merge-train.json
+      playbook-ref:
+        description: Version of the playbook's merge_train to run
+        type: string
+        default: main
+      settle-seconds:
+        description: How long a new head gets for its checks to appear before an absent CI counts as filtered out
+        type: number
+        default: 120
+      dry-run:
+        description: Decide and report, write nothing
+        type: boolean
+        default: false
+    secrets:
+      app-id:
+        description: The basita-train App's id
+        required: true
+      app-private-key:
+        description: The basita-train App's private key
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+jobs:
+  merge-train:
+    name: Merge train
+    runs-on: ubuntu-slim # 1 vCPU, $0.002/min (BASITA cost decision §7, item 2a)
+    timeout-minutes: 15
+    steps:
+      - name: Token of the basita-train App (contents and pull requests, this repository only)
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Check out the repository with its history (to name conflicting files)
+        uses: actions/checkout@v6
+        with:
+          path: repo
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out merge_train from the playbook
+        uses: actions/checkout@v6
+        with:
+          repository: ahmedoraby-eng/engineering-playbook
+          ref: ${{ inputs.playbook-ref }}
+          path: .playbook
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Bring the next pull request up to date
+        env:
+          # Passed through the environment, never interpolated into the script.
+          GH_READ_TOKEN: ${{ github.token }}
+          GH_WRITE_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          SETTLE: ${{ inputs.settle-seconds }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          args=(--repo "$REPO" --repo-dir repo --config-path "$CONFIG_PATH" --settle-seconds "$SETTLE" --summary "$GITHUB_STEP_SUMMARY")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          PYTHONPATH=.playbook/src python -m merge_train "${args[@]}"

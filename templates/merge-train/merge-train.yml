@@ -1,0 +1,41 @@
+# Merge train caller (ADR-020 E1; BASITA-204). Copy to .github/workflows/merge-train.yml of the app
+# repository (Ahmed installs it: no agent App can push a workflow file, decision D4). Needs the repository
+# secrets TRAIN_APP_ID and TRAIN_APP_PRIVATE_KEY of the basita-train App, and a
+# .github/merge-train.json on main (see templates/merge-train/merge-train.json).
+name: Merge train
+
+# It runs on every merge to main and by hand, as the ADR says, and again when the checks of the
+# head pull request finish or Ahmed adds his label, so «جاهز للدمج» is posted when the head turns
+# green. Every run reads the state afresh and writes nothing twice, so extra runs are harmless:
+# about 1 slim-minute each ($0.002).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_run:
+    workflows: [CI, E2E, Owner review]
+    types: [completed]
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+# One train run at a time; a run waiting behind it is replaced by a newer one (state is read afresh).
+# A run that would only be skipped (another label, a workflow_run on main) gets its own group, so a
+# skipped run can never replace a real one that is waiting (as in e2e.yml).
+concurrency:
+  group: >-
+    merge-train${{ ((github.event_name == 'pull_request_target' && github.event.label.name != 'reviewed-by-ahmed') || (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main')) && format('-skip-{0}', github.run_id) || '' }}
+  cancel-in-progress: false
+
+jobs:
+  merge-train:
+    # Keep this condition identical to the one in the concurrency group. A train run is not a required check.
+    if: ${{ !((github.event_name == 'pull_request_target' && github.event.label.name != 'reviewed-by-ahmed') || (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main')) }}
+    uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-merge-train.yml@main
+    secrets:
+      app-id: ${{ secrets.TRAIN_APP_ID }}
+      app-private-key: ${{ secrets.TRAIN_APP_PRIVATE_KEY }}
