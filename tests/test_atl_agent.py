@@ -456,6 +456,53 @@ def test_a_failed_label_says_the_issue_already_moved():
         client(transport, "malek").jira_start("ELB-9")
 
 
+def _issue_with_assignee(status, assignee, category="new"):
+    fields = {"status": {"name": status, "statusCategory": {"key": category}}, "labels": [], "assignee": assignee}
+    return (200, json.dumps({"fields": fields}))
+
+
+def test_start_assigns_an_unassigned_issue_to_the_agent():
+    transport = FakeTransport(
+        _issue_with_assignee("To Do", None), _to(("In Progress", "indeterminate")), (204, ""), (204, ""), (204, "")
+    )
+    assert client(transport, "malek").jira_start("BASITA-216") == "In Progress"
+    assert "assignee" in transport.calls[0][1]
+    method, url, _, body = transport.calls[-1]
+    assert method == "PUT" and url.endswith("/rest/api/3/issue/BASITA-216/assignee")
+    assert body == {"accountId": JIRA_ACCOUNTS["malek"]}
+
+
+def test_start_keeps_an_existing_assignee():
+    transport = FakeTransport(
+        _issue_with_assignee("To Do", {"accountId": "someone"}),
+        _to(("In Progress", "indeterminate")),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(transport, "malek").jira_start("BASITA-216") == "In Progress"
+    assert not any(url.endswith("/assignee") for _, url, _, _ in transport.calls)
+
+
+def test_start_assigns_a_routed_agent_through_its_focal_user():
+    transport = FakeTransport(
+        _issue_with_assignee("To Do", None), _to(("In Progress", "indeterminate")), (204, ""), (204, ""), (204, "")
+    )
+    AtlClient("maya", CLOUD, TOKEN, transport=transport, via="sherif").jira_start("BASITA-9")
+    assert transport.calls[-1][3] == {"accountId": JIRA_ACCOUNTS["sherif"]}
+
+
+def test_a_failed_assignment_says_the_issue_already_moved():
+    transport = FakeTransport(
+        _issue_with_assignee("To Do", None),
+        _to(("In Progress", "indeterminate")),
+        (204, ""),
+        (204, ""),
+        (403, '{"errorMessages":["no"]}'),
+    )
+    with pytest.raises(AtlError, match="moved to 'In Progress' and labelled, but assigning it failed"):
+        client(transport, "malek").jira_start("BASITA-216")
+
+
 def test_a_handoff_in_a_queue_starts_although_the_previous_agent_left_the_label():
     transport = FakeTransport(
         _status_issue("Ready for Testing", "indeterminate", ["agent-picked"]),
