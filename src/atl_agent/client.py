@@ -1413,15 +1413,18 @@ class AtlClient:
         return chosen["to"]["name"]
 
     def jira_start(self, issue: str) -> str:
-        """Pick up an issue: To Do -> In Progress, add the `agent-picked` label, return the new status.
+        """Pick up an issue: To Do -> In Progress, add the `agent-picked` label, return the new status. An unassigned
+        issue is assigned to the agent who starts it (BASITA-216 follow-up: Ahmed saw In Progress issues with no
+        assignee, 08/11/2026); a routed agent's issue goes to its focal user. An assigned issue keeps its assignee.
 
         An agent's own start (Ahmed, 29/10/2026). Done comes from a merged PR with `Closes <KEY>`, or from
         jira-done for work with no open PR (BASITA-178). Refuses an issue that is not in
         a To Do status or was already picked, so a second pickup can't happen.
         Needs read:jira-work and write:jira-work."""
-        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels")
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels,assignee")
         fields = data["fields"]
         status = fields["status"]["name"]
+        unassigned = "assignee" in fields and not fields["assignee"]
         in_testing_queue = status.lower() == TESTING_QUEUE
         # In a `Ready for ...` queue the label comes from the previous agent: this is a handoff, not a second pickup.
         if PICKED_LABEL in fields.get("labels", []) and not status.lower().startswith("ready for"):
@@ -1453,6 +1456,12 @@ class AtlClient:
             self._call("PUT", "jira", f"/rest/api/3/issue/{issue}", {"update": {"labels": [{"add": PICKED_LABEL}]}})
         except AtlError as e:
             raise AtlError(f"{issue}: moved to '{moved_to}', but the '{PICKED_LABEL}' label failed: {e}") from e
+        account = JIRA_ACCOUNTS.get(ROUTED_THROUGH.get(self.agent, self.agent))
+        if unassigned and account:
+            try:
+                self._call("PUT", "jira", f"/rest/api/3/issue/{issue}/assignee", {"accountId": account})
+            except AtlError as e:
+                raise AtlError(f"{issue}: moved to '{moved_to}' and labelled, but assigning it failed: {e}") from e
         return moved_to
 
     def _done_owner(self) -> tuple[str, str]:
