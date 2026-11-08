@@ -22,6 +22,7 @@ from atl_agent.release import (
 TOKEN = "tok-" + "r" * 12  # assembled at runtime; not a real credential
 CLOUD = "cloud-1"
 RFR = "Ready for Release"
+CURRENT = frozenset({"0.2.1", "0.2.1.2"})
 
 
 class FakeJira:
@@ -37,8 +38,9 @@ class FakeJira:
         self.calls = []
 
     @staticmethod
-    def _row(key, status, kind):
+    def _row(key, status, kind, fixes=("0.2.1",)):
         fields = {"summary": "s", "status": {"name": status}, "issuetype": {"name": kind}, "labels": []}
+        fields["fixVersions"] = [{"id": str(i), "name": name} for i, name in enumerate(fixes)]
         return {"key": key, "fields": fields}
 
     def __call__(self, method, url, headers, body):
@@ -56,7 +58,7 @@ class FakeJira:
                 return 200, json.dumps({"issues": found})
             assert jql == JQL
             keys = self.listed if self.listed is not None else [
-                k for k, (s, t) in self.issues.items() if s == RFR and t != "Epic"
+                k for k, (s, t, *_) in self.issues.items() if s == RFR and t != "Epic"
             ]  # fmt: skip
             rows = [self._row(k, *self.issues[k]) for k in keys]
             for key, status in self.after_list.items():
@@ -158,7 +160,7 @@ def test_decide_every_branch():
 def test_merged_prs_move_it_and_the_comment_lists_them():
     jira = FakeJira({"DFP-153": [RFR, "Task"]})
     prs = source(pr(207, "MERGED", title="DFP-153, DFP-154: checklist", body="Refs DFP-153"), pr(9, "MERGED"))
-    lines, moved, failed = release_issues(client(jira), prs)
+    lines, moved, failed = release_issues(client(jira), prs, versions=CURRENT)
     assert lines == ["DFP-153: Ready for Release -> Released (elbayoumy-farm-nutrition-platform#207)"]
     assert jira.moved() == ["DFP-153"] and not failed
     assert moved and "| DFP-153 | Ready for Release -> Released |" in moved[0] and "/pull/207)" in moved[0]
@@ -177,7 +179,9 @@ def test_merged_prs_move_it_and_the_comment_lists_them():
 
 def test_no_pr_moves_it_as_design_or_qa_work():
     jira = FakeJira({"DFP-116": [RFR, "Story"]})
-    lines, moved, _ = release_issues(client(jira), source(pr(5, "MERGED", title="DFP-1160 unrelated")))
+    lines, moved, _ = release_issues(
+        client(jira), source(pr(5, "MERGED", title="DFP-1160 unrelated")), versions=CURRENT
+    )
     assert lines == ["DFP-116: Ready for Release -> Released (no PR)"]
     assert moved[0].endswith("| no PR |")
     [(_, text)] = jira.comments()
@@ -186,14 +190,16 @@ def test_no_pr_moves_it_as_design_or_qa_work():
 
 def test_an_open_pr_leaves_it():
     jira = FakeJira({"DFP-20": [RFR, "Task"]})
-    lines, moved, failed = release_issues(client(jira), source(pr(1, "MERGED", "DFP-20"), pr(3, "OPEN", "DFP-20 more")))
+    lines, moved, failed = release_issues(
+        client(jira), source(pr(1, "MERGED", "DFP-20"), pr(3, "OPEN", "DFP-20 more")), versions=CURRENT
+    )
     assert lines == ["DFP-20: left, open PR elbayoumy-farm-nutrition-platform#3"]
     assert jira.writes() == [] and moved == [] and not failed
 
 
 def test_only_closed_unmerged_prs_leave_it_flagged():
     jira = FakeJira({"DFP-21": [RFR, "Task"]})
-    lines, _, _ = release_issues(client(jira), source(pr(4, "CLOSED", "DFP-21")))
+    lines, _, _ = release_issues(client(jira), source(pr(4, "CLOSED", "DFP-21")), versions=CURRENT)
     assert lines[0].startswith("DFP-21: FLAG left in Ready for Release, its PRs were closed without merging")
     assert jira.writes() == []
 
@@ -204,7 +210,7 @@ def test_a_failed_search_leaves_it_and_counts_as_a_failure():
     def broken(key):
         raise AtlError("could not read the pull requests of o/r: HTTP 401")
 
-    lines, moved, failed = release_issues(client(jira), broken)
+    lines, moved, failed = release_issues(client(jira), broken, versions=CURRENT)
     assert lines == [
         "DFP-22: left, the PR search failed (could not read the pull requests of o/r: HTTP 401)",
         "DFP-23: left, the PR search failed (could not read the pull requests of o/r: HTTP 401)",
@@ -221,7 +227,7 @@ MOVED_ON = ["Ready for Acceptance", "In Testing", "Released", "Closed", "Ready f
 @pytest.mark.parametrize("status", MOVED_ON)
 def test_the_re_read_guard_skips_an_issue_that_moved_meanwhile(status):
     jira = FakeJira({"DFP-30": [RFR, "Task"]}, after_list={"DFP-30": status})
-    lines, moved, failed = release_issues(client(jira), source())
+    lines, moved, failed = release_issues(client(jira), source(), versions=CURRENT)
     assert lines == [f"DFP-30: left, now in {status}"]
     assert jira.writes() == [] and moved == [] and not failed
     reads = [p for m, p, _ in jira.calls if m == "GET" and "search/jql" in p]
@@ -230,7 +236,7 @@ def test_the_re_read_guard_skips_an_issue_that_moved_meanwhile(status):
 
 def test_an_epic_is_never_moved_even_if_the_search_returns_it():
     jira = FakeJira({"DFP-1": [RFR, "Epic"]}, listed=["DFP-1"])
-    lines, _, _ = release_issues(client(jira), source())
+    lines, _, _ = release_issues(client(jira), source(), versions=CURRENT)
     assert lines == ["DFP-1: left, an Epic is never released automatically"]
     assert jira.writes() == []
 
@@ -248,28 +254,28 @@ def test_an_issue_that_became_an_epic_is_not_moved():
             return answer[0], json.dumps(data)
         return answer
 
-    lines, _, _ = release_issues(AtlClient("sherif", CLOUD, TOKEN, transport=turning), source())
+    lines, _, _ = release_issues(AtlClient("sherif", CLOUD, TOKEN, transport=turning), source(), versions=CURRENT)
     assert lines == ["DFP-2: left, an Epic is never released automatically"]
     assert jira.writes() == []
 
 
 def test_never_from_another_status_or_another_project():
     jira = FakeJira({"DFP-3": ["In Testing", "Task"], "ELB-4": [RFR, "Task"]}, listed=["DFP-3", "ELB-4"])
-    lines, _, _ = release_issues(client(jira), source())
+    lines, _, _ = release_issues(client(jira), source(), versions=CURRENT)
     assert lines == ["DFP-3: left in In Testing, only Ready for Release moves", "ELB-4: left, not a DFP issue"]
     assert jira.writes() == []
 
 
 def test_a_failed_move_writes_no_comment_and_counts_as_a_failure():
     jira = FakeJira({"DFP-5": [RFR, "Task"]}, fail={("POST", "/rest/api/3/issue/DFP-5/transitions")})
-    lines, moved, failed = release_issues(client(jira), source())
+    lines, moved, failed = release_issues(client(jira), source(), versions=CURRENT)
     assert lines[0].startswith("DFP-5: left, the move failed")
     assert failed and moved == [] and jira.comments() == []
 
 
 def test_a_failed_comment_after_the_move_is_reported():
     jira = FakeJira({"DFP-6": [RFR, "Task"]}, fail={("POST", "/rest/api/3/issue/DFP-6/comment")})
-    lines, moved, failed = release_issues(client(jira), source())
+    lines, moved, failed = release_issues(client(jira), source(), versions=CURRENT)
     assert lines[0].startswith("DFP-6: Ready for Release -> Released (no PR), but the comment failed")
     assert failed and len(moved) == 1  # it did move, so the log records it
 
@@ -343,7 +349,13 @@ def test_dry_run_makes_no_post_put_or_transition_and_writes_no_log(tmp_path, cap
     jira = FakeJira({"DFP-153": [RFR, "Task"], "DFP-20": [RFR, "Task"]})
     log = tmp_path / "attention.md"
     prs = source(pr(207, "MERGED", "DFP-153"), pr(3, "OPEN", "DFP-20"))
-    code = main(["--agent", "sherif", "--dry-run", "--log", str(log)], ENV, jira, no_keychain, prs)
+    code = main(
+        ["--agent", "sherif", "--versions", "0.2.1,0.2.1.2", "--dry-run", "--log", str(log)],
+        ENV,
+        jira,
+        no_keychain,
+        prs,
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert all(m == "GET" for m, _, _ in jira.calls)
@@ -357,13 +369,19 @@ def test_cli_moves_and_appends_the_log_under_its_heading(tmp_path, capsys):
     jira = FakeJira({"DFP-139": [RFR, "Task"]})
     log = tmp_path / "attention.md"
     log.write_text("# Jira attention\n\n(none)")
-    assert main(["--agent", "sherif", "--log", str(log)], ENV, jira, no_keychain, source()) == 0
+    assert (
+        main(["--agent", "sherif", "--versions", "0.2.1,0.2.1.2", "--log", str(log)], ENV, jira, no_keychain, source())
+        == 0
+    )
     assert "DFP-139: Ready for Release -> Released (no PR)" in capsys.readouterr().out
     text = log.read_text()
     assert text.startswith("# Jira attention\n\n(none)\n\n" + LOG_HEADING + "\n")
     assert "| DFP-139 | Ready for Release -> Released | no PR |" in text
     jira2 = FakeJira({"DFP-140": [RFR, "Task"]})
-    assert main(["--agent", "sherif", "--log", str(log)], ENV, jira2, no_keychain, source()) == 0
+    assert (
+        main(["--agent", "sherif", "--versions", "0.2.1,0.2.1.2", "--log", str(log)], ENV, jira2, no_keychain, source())
+        == 0
+    )
     text = log.read_text()
     assert text.count(LOG_HEADING) == 1 and text.rstrip().endswith("| no PR |") and "DFP-140" in text
 
@@ -379,14 +397,16 @@ def test_cli_exits_1_when_a_read_failed_and_reads_the_keychain_without_atl_token
     def broken(key):
         raise AtlError("HTTP 502")
 
-    assert main(["--agent", "sherif"], {"ATL_CLOUD_ID": CLOUD}, jira, keychain, broken) == 1
+    assert (
+        main(["--agent", "sherif", "--versions", "0.2.1,0.2.1.2"], {"ATL_CLOUD_ID": CLOUD}, jira, keychain, broken) == 1
+    )
     assert asked == [("sherif", "jira")]
     assert "DFP-7: left, the PR search failed (HTTP 502)" in capsys.readouterr().out
 
 
 def test_cli_jira_search_failure_is_an_error(capsys):
     jira = FakeJira({}, fail={("GET", "/rest/api/3/search/jql")})
-    assert main(["--agent", "sherif"], ENV, jira, no_keychain, source()) == 1
+    assert main(["--agent", "sherif", "--versions", "0.2.1,0.2.1.2"], ENV, jira, no_keychain, source()) == 1
     assert "atl-release: GET jira/rest/api/3/search/jql" in capsys.readouterr().err
 
 
@@ -394,3 +414,77 @@ def test_append_log_with_nothing_moved_leaves_the_file_alone(tmp_path):
     log = tmp_path / "a.md"
     append_log(str(log), [])
     assert not log.exists()
+
+
+# ---------- the Fix Version guard (Ahmed, 08/11/2026): only current versions are released ----------
+
+
+@pytest.mark.parametrize(
+    "fixes, reason",
+    [
+        (["0.2.2"], "Fix Version 0.2.2 is not a current version (0.2.1, 0.2.1.2), so it is planned work"),
+        (["0.2.1", "0.2.2"], "Fix Version 0.2.2 is not a current version"),
+        ([], "it has no Fix Version"),
+    ],
+)
+def test_a_planned_or_missing_fix_version_leaves_it(fixes, reason):
+    jira = FakeJira({"DFP-30": [RFR, "Task", fixes]})
+    lines, moved, failed = release_issues(client(jira), source(pr(1, "MERGED", "DFP-30")), versions=CURRENT)
+    assert len(lines) == 1 and lines[0].startswith("DFP-30: left, ") and reason in lines[0]
+    assert jira.writes() == [] and moved == [] and not failed
+
+
+@pytest.mark.parametrize("fixes", [["0.2.1"], ["0.2.1.2"], ["0.2.1", "0.2.1.2"]])
+def test_every_fix_version_current_moves_it(fixes):
+    jira = FakeJira({"DFP-31": [RFR, "Task", fixes]})
+    lines, _, _ = release_issues(client(jira), source(), versions=CURRENT)
+    assert lines == ["DFP-31: Ready for Release -> Released (no PR)"] and jira.moved() == ["DFP-31"]
+
+
+def test_no_current_versions_releases_nothing():
+    jira = FakeJira({"DFP-32": [RFR, "Task"]})
+    lines, moved, failed = release_issues(client(jira), source())
+    assert lines == ["DFP-32: left, no current versions are configured (--versions), nothing is released"]
+    assert jira.writes() == [] and moved == [] and not failed
+
+
+def test_a_fix_version_changed_to_planned_meanwhile_is_caught_on_the_re_read():
+    jira = FakeJira({"DFP-33": [RFR, "Task"]})
+    real = jira._row
+
+    def row(key, status, kind, fixes=("0.2.1",)):
+        reads = sum(1 for m, p, _ in jira.calls if p.startswith("/rest/api/3/search/jql"))
+        return real(key, status, kind, fixes if reads < 2 else ("0.2.2",))
+
+    jira._row = row
+    lines, moved, _ = release_issues(client(jira), source(), versions=CURRENT)
+    assert lines == ["DFP-33: left, Fix Version 0.2.2 is not a current version (0.2.1, 0.2.1.2), so it is planned "
+                     "work (read again)"]  # fmt: skip
+    assert jira.writes() == [] and moved == []
+
+
+def test_parse_versions_drops_blanks():
+    from atl_agent.release import parse_versions
+
+    assert parse_versions(" 0.2.1, ,0.2.1.2 ,") == frozenset({"0.2.1", "0.2.1.2"})
+    assert parse_versions("") == frozenset()
+
+
+def test_cli_needs_versions_and_an_empty_list_reads_nothing(capsys):
+    jira = FakeJira({"DFP-34": [RFR, "Task"]})
+    with pytest.raises(SystemExit) as exit_:
+        main(["--agent", "sherif"], ENV, jira, no_keychain, source())
+    assert exit_.value.code == 2
+    assert main(["--agent", "sherif", "--versions", " , "], ENV, jira, no_keychain, source()) == 2
+    assert "--versions is empty, nothing released" in capsys.readouterr().err
+    assert jira.calls == []
+
+
+def test_cli_leaves_a_planned_issue_in_dry_run_output(capsys):
+    jira = FakeJira({"DFP-35": [RFR, "Task", ["0.2.2"]], "DFP-36": [RFR, "Task", ["0.2.1.2"]]})
+    assert (
+        main(["--agent", "sherif", "--versions", "0.2.1,0.2.1.2", "--dry-run"], ENV, jira, no_keychain, source()) == 0
+    )
+    out = capsys.readouterr().out
+    assert "DFP-35: left, Fix Version 0.2.2 is not a current version" in out
+    assert "DFP-36: would move Ready for Release -> Released (no PR)" in out
