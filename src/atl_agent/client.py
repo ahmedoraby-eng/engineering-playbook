@@ -616,34 +616,39 @@ def mentions(pr: dict, key: str) -> bool:
 AGENT_GH = str(Path(__file__).resolve().parents[2] / "scripts" / "agent-gh")
 
 
+def list_repo_prs(repo: str, run: Callable = subprocess.run) -> list[dict]:
+    """Every PR of one repository, open, closed and merged, as gh gives them (number, title, headRefName, body, state,
+    url), read with `agent-gh reader pr list`. Raises AtlError when the repository can't be read in full (agent-gh
+    refusing the reader included), so a caller never takes "can't tell" for "none". There is no fallback to plain gh."""
+    fields = "number,title,headRefName,body,state,url"
+    command = [AGENT_GH, "reader", "pr", "list", "-R", repo, "--state", "all", "--limit", str(PR_LIST_LIMIT)]
+    try:
+        result = run([*command, "--json", fields], capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise AtlError(f"could not read the pull requests of {repo}: {error}") from None
+    if result.returncode != 0:
+        detail = " ".join((result.stderr or "").split())[:200]
+        reason = detail or f"agent-gh exited {result.returncode}"
+        raise AtlError(f"could not read the pull requests of {repo}: {reason}")
+    try:
+        prs = json.loads(result.stdout or "")
+    except json.JSONDecodeError:
+        raise AtlError(f"could not read the pull requests of {repo}: agent-gh did not answer with JSON") from None
+    if not isinstance(prs, list):
+        raise AtlError(f"could not read the pull requests of {repo}: agent-gh did not answer with a list")
+    if len(prs) >= PR_LIST_LIMIT:
+        raise AtlError(f"{repo} has {PR_LIST_LIMIT} or more pull requests, more than atl reads")
+    return prs
+
+
 def github_prs(key: str, run: Callable = subprocess.run, repos: tuple = PR_REPOS) -> list[dict]:
     """The PRs in PR_REPOS that mention `key`, as {repo, number, state, url}, read with `agent-gh reader pr list`.
-    Raises AtlError when any repository can't be read in full (agent-gh refusing the reader included), so a caller
-    never takes "can't tell" for "none". There is no fallback to plain gh."""
+    Raises AtlError when any repository can't be read in full (see list_repo_prs)."""
     found: list[dict] = []
-    fields = "number,title,headRefName,body,state,url"
     for repo in repos:
-        command = [AGENT_GH, "reader", "pr", "list", "-R", repo, "--state", "all", "--limit", str(PR_LIST_LIMIT)]
-        try:
-            result = run([*command, "--json", fields], capture_output=True, text=True, timeout=120)
-        except (OSError, subprocess.SubprocessError) as error:
-            raise AtlError(f"could not read the pull requests of {repo}: {error}") from None
-        if result.returncode != 0:
-            detail = " ".join((result.stderr or "").split())[:200]
-            raise AtlError(
-                f"could not read the pull requests of {repo}: {detail or f'agent-gh exited {result.returncode}'}"
-            )
-        try:
-            prs = json.loads(result.stdout or "")
-        except json.JSONDecodeError:
-            raise AtlError(f"could not read the pull requests of {repo}: agent-gh did not answer with JSON") from None
-        if not isinstance(prs, list):
-            raise AtlError(f"could not read the pull requests of {repo}: agent-gh did not answer with a list")
-        if len(prs) >= PR_LIST_LIMIT:
-            raise AtlError(f"{repo} has {PR_LIST_LIMIT} or more pull requests, more than atl reads")
         found += [
             {"repo": repo, "number": pr.get("number"), "state": pr.get("state"), "url": pr.get("url")}
-            for pr in prs
+            for pr in list_repo_prs(repo, run)
             if mentions(pr, key)
         ]
     return found
