@@ -4,6 +4,12 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## Unreleased
 
+### Added (BASITA-203, a lead cancels an issue as Won't Do; Sherif, 09/11/2026)
+- `atl <agent> jira-wontdo <KEY> --why "reason" [--ahmed "his words, verbatim"]` cancels a `BASITA` or `ELB` issue: the lead's own issue (jira-done's ownership rules, `needs-ahmed` refused), or, with `--ahmed`, any issue Ahmed cancelled (his words go into the comment verbatim; the signed comment is the trail). It refuses `DFP`, an Epic, an issue already Done, any open PR that mentions the issue (close or merge it first) and PRs it can't read (read as `basita-reader`, like jira-done). It works from To Do or In Progress. It posts the signed comment (reason, Ahmed's words, merged PRs), then moves the issue to the status "Won't Do" when the workflow has one (found by its letters, so Won't Do, Wont Do and Won’t Do match). `BASITA` and `ELB` had none on 09/11/2026, so until Ahmed adds one it moves the issue to Done and adds the label `wont-do` after the move, and the comment says so. It removes no label (`agent-hold` stays) and deletes nothing.
+
+### Changed (BASITA-203)
+- `jira-done` and `jira-wontdo` share the ownership check, the token-user check and the PR check (`_require_own`, `_require_token_user`, `_merged_prs`); `jira-done` behaves as before. `--why` now serves both commands.
+
 ### Changed (BASITA-208, only current versions are released; Ahmed, 08/11/2026)
 - `atl_agent.release` now needs `--versions` (the versions open now, comma-separated, e.g. `0.2.1,0.2.1.2`; basita-ops keeps the list in `RELEASE_CURRENT_VERSIONS`). An issue is released only when it has a Fix Version and every Fix Version is in the list: a later version such as 0.2.2 means planned work and is left with the reason, and so is an issue with no Fix Version. The Fix Versions are checked again on the re-read just before the move. An empty `--versions` releases nothing (exit 2). `jira_jql` rows now carry `fix_versions`.
 
