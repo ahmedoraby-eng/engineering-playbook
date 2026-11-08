@@ -16,6 +16,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -32,10 +33,19 @@ if TYPE_CHECKING:  # the CLI also runs on macOS's system Python 3.9
 
 AGENTS = ("talia", "malek", "salma", "sherif", "haya", "adam", "nora", "maya", "yousef", "basel")
 GATEWAY = "https://api.atlassian.com/ex"
+_UTC = datetime.timezone.utc  # noqa: UP017 - datetime.UTC is Python 3.11, and the CLI also runs on macOS's 3.9
 
 
 class AtlError(Exception):
     """A failed call. The message never contains the token."""
+
+
+class LinkCommentError(AtlError):
+    """jira_md wrote the snapshot at `path`, but its link comment failed. A read can still use the file."""
+
+    def __init__(self, message: str, path: str):
+        super().__init__(message)
+        self.path = path
 
 
 def keychain_token(agent: str, product: str = "", run: Callable = subprocess.run) -> str:
@@ -140,6 +150,322 @@ def _adf_text(node: dict | None) -> str:
     )
     text = separator.join(_adf_text(child) for child in children)
     return f"- {text}" if kind == "listItem" else text
+
+
+# ADF -> Markdown (BASITA-205, ADR-B001). Inline nodes are rendered into a line of text; everything else is a block.
+_MD_INLINE = ("text", "hardBreak", "mention", "emoji", "inlineCard", "status", "date", "placeholder", "mediaInline")
+# What an unknown node with no children of its own still shows, in this order, so it is never dropped.
+_MD_FALLBACK_ATTRS = ("text", "url", "shortName", "alt", "title")
+
+
+def _md_code_span(text: str) -> str:
+    """Text as an inline code span, with a fence longer than any run of backticks inside it."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    padded = f" {text} " if text.startswith("`") or text.endswith("`") else text
+    return f"{fence}{padded}{fence}"
+
+
+def _md_text(node: dict) -> str:
+    """A text node with its marks. Spaces at either end stay outside the markers, which Markdown needs."""
+    text = node.get("text", "")
+    core = text.strip()
+    if not core:
+        return text
+    lead, trail = text[: len(text) - len(text.lstrip())], text[len(text.rstrip()) :]
+    marks = {m.get("type"): m for m in node.get("marks", []) if isinstance(m, dict)}
+    if "code" in marks:
+        core = _md_code_span(core)
+    if "strike" in marks:
+        core = f"~~{core}~~"
+    if "em" in marks:
+        core = f"_{core}_"
+    if "strong" in marks:
+        core = f"**{core}**"
+    href = (marks.get("link") or {}).get("attrs", {}).get("href")
+    if href:
+        target = f"<{href}>" if re.search(r"[\s()<>]", href) else href
+        core = href if core == href else f"[{core}]({target})"
+    return f"{lead}{core}{trail}"
+
+
+def _md_fallback(node: dict) -> str:
+    attrs = node.get("attrs") or {}
+    return next((str(attrs[name]) for name in _MD_FALLBACK_ATTRS if attrs.get(name)), "")
+
+
+def _md_inline(nodes: list) -> str:
+    """Inline nodes as one piece of Markdown text."""
+    parts = []
+    for node in nodes:
+        kind = node.get("type")
+        attrs = node.get("attrs") or {}
+        if kind == "text":
+            parts.append(_md_text(node))
+        elif kind == "hardBreak":
+            parts.append("\n")
+        elif kind == "mention":
+            parts.append(attrs.get("text") or "@?")
+        elif kind == "emoji":
+            parts.append(attrs.get("shortName") or attrs.get("text") or "")
+        elif kind in ("inlineCard", "blockCard", "embedCard"):
+            parts.append(attrs.get("url") or "")
+        elif kind == "status":
+            parts.append(attrs.get("text") or "")
+        elif kind == "date" and str(attrs.get("timestamp", "")).isdigit():
+            moment = datetime.datetime.fromtimestamp(int(attrs["timestamp"]) / 1000, _UTC)
+            parts.append(moment.strftime("%Y-%m-%d"))
+        elif node.get("content"):
+            parts.append(_md_inline(node["content"]))
+        else:
+            parts.append(_md_fallback(node))
+    return "".join(parts)
+
+
+def _md_indent(text: str, prefix: str, first: str | None = None, blank: str = "") -> str:
+    """Every line of `text` after `prefix`, the first one after `first` when given; an empty line becomes `blank`."""
+    lines = text.split("\n")
+    head = (first if first is not None else prefix) + lines[0]
+    return "\n".join([head] + [prefix + line if line else blank for line in lines[1:]])
+
+
+def _md_list(node: dict, offset: int) -> str:
+    """A bullet or ordered list. A nested list is indented by its parent item's marker, as CommonMark reads it."""
+    ordered = node.get("type") == "orderedList"
+    number = int((node.get("attrs") or {}).get("order") or 1)
+    items = []
+    for item in node.get("content", []):
+        marker = f"{number}. " if ordered else "- "
+        number += 1
+        body = "\n".join(_md_blocks(item.get("content", []), offset)) if item.get("content") else ""
+        items.append(_md_indent(body, " " * len(marker), marker))
+    return "\n".join(items)
+
+
+def _md_tasks(node: dict) -> str:
+    """A Jira action list: `- [ ]` or `- [x]` items, a nested list indented under its item."""
+    lines = []
+    for child in node.get("content", []):
+        if child.get("type") == "taskItem":
+            done = (child.get("attrs") or {}).get("state") == "DONE"
+            lines.append(f"- [{'x' if done else ' '}] " + _md_inline(child.get("content", [])))
+        elif child.get("type") == "taskList":
+            lines.append(_md_indent(_md_tasks(child), "  "))
+        else:
+            lines.append(_md_indent("\n".join(_md_blocks([child])), "  "))
+    return "\n".join(lines)
+
+
+def _md_cell(cell: dict, offset: int) -> str:
+    """A table cell on one line: its blocks joined by <br>, and `|` escaped so it can't split the cell."""
+    text = "<br>".join(_md_blocks(cell.get("content", []), offset))
+    return text.replace("|", "\\|").replace("\n", "<br>").strip()
+
+
+def _md_table(node: dict, offset: int) -> str:
+    """A pipe table. The first row is the header, as Markdown needs one; short rows are padded."""
+    rows = [
+        [_md_cell(cell, offset) for cell in row.get("content", [])]
+        for row in node.get("content", [])
+        if row.get("type") == "tableRow"
+    ]
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows) or 1
+    rows = [row + [""] * (width - len(row)) for row in rows]
+    lines = ["| " + " | ".join(row) + " |" for row in rows]
+    lines.insert(1, "|" + "|".join([" --- "] * width) + "|")
+    return "\n".join(lines)
+
+
+def _md_block(node: dict, offset: int) -> str:
+    """One block node as Markdown."""
+    kind = node.get("type")
+    children = node.get("content", [])
+    if kind == "paragraph":
+        return _md_inline(children)
+    if kind == "heading":
+        level = min(6, int((node.get("attrs") or {}).get("level") or 1) + offset)
+        return "#" * level + " " + _md_inline(children)
+    if kind in ("bulletList", "orderedList"):
+        return _md_list(node, offset)
+    if kind == "taskList":
+        return _md_tasks(node)
+    if kind == "codeBlock":
+        code = "".join(child.get("text", "") for child in children)
+        longest = max((len(run) for run in re.findall(r"`{3,}", code)), default=2)
+        fence = "`" * (longest + 1)
+        return f"{fence}{(node.get('attrs') or {}).get('language') or ''}\n{code}\n{fence}"
+    if kind in ("blockquote", "panel"):
+        return _md_indent("\n\n".join(_md_blocks(children, offset)), "> ", blank=">")
+    if kind == "rule":
+        return "---"
+    if kind == "table":
+        return _md_table(node, offset)
+    if kind in ("blockCard", "embedCard"):
+        return (node.get("attrs") or {}).get("url") or ""
+    if kind in ("expand", "nestedExpand"):
+        title = (node.get("attrs") or {}).get("title")
+        return "\n\n".join(([f"**{title}**"] if title else []) + _md_blocks(children, offset))
+    if children:  # unknown: its children, never dropped
+        return "\n\n".join(_md_blocks(children, offset))
+    return _md_fallback(node)
+
+
+def _md_blocks(nodes: list, offset: int = 0) -> list[str]:
+    """Block nodes as Markdown blocks, empty ones left out. Inline nodes found among blocks make one paragraph."""
+    blocks: list[str] = []
+    run: list[dict] = []
+    for node in [*nodes, None]:
+        if node is not None and node.get("type") in _MD_INLINE:
+            run.append(node)
+            continue
+        if run:
+            blocks.append(_md_inline(run))
+            run = []
+        if node is not None:
+            blocks.append(_md_block(node, offset))
+    return [block for block in blocks if block.strip()]
+
+
+def _adf_md(node: dict | None, heading_offset: int = 0) -> str:
+    """An Atlassian Document Format node as Markdown (BASITA-205): headings, nested lists, code blocks, quotes and
+    panels, rules, pipe tables, and the inline marks, links, mentions, cards, emoji and statuses. An unknown node
+    shows its children's text. `heading_offset` moves headings down, so a description's `#` sits under the file's own
+    sections."""
+    if not node:
+        return ""
+    return "\n\n".join(_md_blocks([node], heading_offset)).strip()
+
+
+# jira-md (BASITA-205, ADR-B001): a Markdown read copy of an issue at <out>/work/jira/<KEY>.md. Jira stays the master.
+SITE_URL = "https://basitasolutions.atlassian.net"
+SNAPSHOT_FOLDER = ("work", "jira")
+SNAPSHOT_COMMENTS = 10
+# A snapshot never goes into the app repository (AC4): its origin URL holds this name.
+APP_REPO = "elbayoumy-farm-nutrition-platform"
+_SNAPSHOT_HEADER = re.compile(r"^<!-- jira-md: \S+ · updated (\S+) · fetched \S+ -->$")
+SNAPSHOT_FIELDS = (
+    "summary,status,issuetype,priority,assignee,reporter,labels,parent,fixVersions,description,issuelinks,subtasks,"
+    "updated"
+)
+
+
+def snapshot_marker(issue: str) -> str:
+    """The text that shows an issue already has its link comment."""
+    return f"work/jira/{issue}.md"
+
+
+def snapshot_comment(issue: str) -> str:
+    """The one comment that tells agents where the issue's snapshot is (ADR-B001 decision 5)."""
+    return (
+        f"ملف التيكت للـ agents: basita-ops/{snapshot_marker(issue)} (يتحدث تلقائياً؛ Jira هو المرجع) "
+        f"https://github.com/basitasolutions/basita-ops/blob/main/{snapshot_marker(issue)}"
+    )
+
+
+def refuse_app_repo(folder: Path, run: Callable = subprocess.run) -> None:
+    """AtlError when `folder`, or any folder above it, is a git repository whose origin is the app repository.
+    No git, no repository and no origin are all allowed."""
+    env = {name: value for name, value in os.environ.items() if name not in ("GIT_DIR", "GIT_WORK_TREE")}
+    for place in [folder, *folder.parents]:
+        if not (place / ".git").exists():
+            continue
+        try:
+            result = run(
+                ["git", "-C", str(place), "remote", "get-url", "origin"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+        except OSError:  # no git on this machine
+            return
+        except subprocess.SubprocessError as error:
+            raise AtlError(f"could not tell whether {place} is the app repository: {error}") from None
+        if result.returncode == 0 and APP_REPO in (result.stdout or "").lower():
+            raise AtlError(f"{place} is the app repository ({APP_REPO}): a Jira snapshot never goes there (AC4)")
+
+
+def _snapshot_updated(path: Path) -> str | None:
+    """The `updated` an existing snapshot recorded in its header, or None."""
+    try:
+        with path.open(encoding="utf-8") as handle:
+            head = [handle.readline().rstrip("\n") for _ in range(3)]
+    except OSError:
+        return None
+    match = next((m for m in map(_SNAPSHOT_HEADER.match, head) if m), None)
+    return match.group(1) if match else None
+
+
+def _one_line(text: str | None) -> str:
+    return " ".join((text or "").split())
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Write through a temporary file in the same folder, then replace, so a reader never sees half a file."""
+    handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as out:
+            out.write(text)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def _snapshot_text(issue: str, fields: dict, comments: list[dict], fetched: str) -> str:
+    """The snapshot file: title, source line, field list, then the sections that have something in them."""
+    name = lambda field: (fields.get(field) or {}).get("displayName")  # noqa: E731
+    parent = fields.get("parent") or {}
+    parent_summary = _one_line((parent.get("fields") or {}).get("summary"))
+    listed = [
+        ("Status", (fields.get("status") or {}).get("name")),
+        ("Type", (fields.get("issuetype") or {}).get("name")),
+        ("Priority", (fields.get("priority") or {}).get("name")),
+        ("Assignee", name("assignee") or "Unassigned"),
+        ("Reporter", name("reporter")),
+        ("Fix versions", ", ".join(v.get("name", "") for v in fields.get("fixVersions") or [])),
+        ("Labels", ", ".join(fields.get("labels") or [])),
+        ("Parent", f"{parent['key']}: {parent_summary}" if parent.get("key") and parent_summary else parent.get("key")),
+    ]
+    lines = [
+        f"# {issue}: {_one_line(fields.get('summary'))}",
+        "",
+        f"<!-- jira-md: {SITE_URL}/browse/{issue} · updated {fields.get('updated')} · fetched {fetched} -->",
+        "",
+        *[f"- **{label}:** {value}" for label, value in listed if value],
+    ]
+    description = _adf_md(fields.get("description"), heading_offset=2)
+    if description:
+        lines += ["", "## Description", "", description]
+    links = []
+    for link in fields.get("issuelinks", []):
+        outward = "outwardIssue" in link
+        other = link["outwardIssue"] if outward else link["inwardIssue"]
+        relation = link["type"]["outward" if outward else "inward"]
+        status = other["fields"]["status"]["name"]
+        links.append(f"- {relation} {other['key']}: {_one_line(other['fields'].get('summary'))} ({status})")
+    if links:
+        lines += ["", "## Links", "", *links]
+    subtasks = [
+        f"- {s['key']}: {_one_line(s['fields'].get('summary'))} ({s['fields']['status']['name']})"
+        for s in fields.get("subtasks", [])
+    ]
+    if subtasks:
+        lines += ["", "## Sub-tasks", "", *subtasks]
+    if comments:
+        count = len(comments)
+        heading = f"last {SNAPSHOT_COMMENTS} of {count}" if count > SNAPSHOT_COMMENTS else str(count)
+        lines += ["", f"## Comments ({heading})"]
+        for comment in comments[-SNAPSHOT_COMMENTS:]:
+            author = (comment.get("author") or {}).get("displayName") or "Unknown"
+            lines += ["", f"### {author} · {comment.get('created')}"]
+            body = _adf_md(comment.get("body"), heading_offset=3)
+            if body:
+                lines += ["", body]
+    return "\n".join(lines) + "\n"
 
 
 def _doc_text(item: dict) -> str:
@@ -938,21 +1264,14 @@ class AtlClient:
             raise AtlError(f"'{issue}' is not an issue key")
         fields = "summary,status,issuetype,labels,assignee,reporter,priority,parent,description,issuelinks,subtasks"
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields={fields}")["fields"]
-        comments: list[dict] = []
-        while True:
-            query = f"startAt={len(comments)}&maxResults=100"
-            page = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/comment?{query}")
-            found = page.get("comments", [])
-            comments += [
-                {
-                    "author": (c.get("author") or {}).get("displayName"),
-                    "created": c.get("created"),
-                    "text": _adf_text(c.get("body")),
-                }
-                for c in found
-            ]
-            if not found or len(comments) >= page.get("total", 0):
-                break
+        comments = [
+            {
+                "author": (c.get("author") or {}).get("displayName"),
+                "created": c.get("created"),
+                "text": _adf_text(c.get("body")),
+            }
+            for c in self._comments(issue)
+        ]
         links = []
         for link in data.get("issuelinks", []):
             outward = "outwardIssue" in link
@@ -988,6 +1307,65 @@ class AtlClient:
             "links": links,
             "comments": comments,
         }
+
+    def _comments(self, issue: str) -> list[dict]:
+        """All of an issue's comments as Jira gives them, oldest first, reading every page."""
+        comments: list[dict] = []
+        while True:
+            query = f"startAt={len(comments)}&maxResults=100"
+            page = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/comment?{query}")
+            found = page.get("comments", [])
+            comments += found
+            if not found or len(comments) >= page.get("total", 0):
+                break
+        return comments
+
+    def jira_md(self, issue: str, out_dir: str | Path, run: Callable = subprocess.run) -> dict:
+        """Write the issue as Markdown to <out_dir>/work/jira/<KEY>.md, a read copy for agents (BASITA-205, ADR-B001).
+
+        One cheap read of `updated` first: when the file already records that value, nothing else is read or
+        written. Otherwise the issue and all its comments are read, the file is replaced atomically, and the issue
+        gets its one link comment if no comment holds `work/jira/<KEY>.md` yet. Refuses an out_dir inside the app
+        repository (AC4). Returns {"path", "changed", "commented"}. Needs read:jira-work, and write:comment:jira for
+        the link comment."""
+        if not ISSUE_KEY.match(issue):
+            raise AtlError(f"'{issue}' is not an issue key")
+        root = Path(out_dir).expanduser().resolve()
+        if not root.is_dir():
+            raise AtlError(f"no folder {root} for the snapshot: set BASITA_OPS_DIR or pass --out")
+        folder = root.joinpath(*SNAPSHOT_FOLDER)
+        place = next(p for p in [folder, *folder.parents] if p.exists())
+        refuse_app_repo(place, run)
+        path = folder / f"{issue}.md"
+        updated = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=updated")["fields"].get("updated")
+        if updated and path.is_file() and _snapshot_updated(path) == updated:
+            return {"path": str(path), "changed": False, "commented": False}
+        text, comments = self._snapshot(issue)
+        folder.mkdir(parents=True, exist_ok=True)
+        _write_atomically(path, text)
+        marker = snapshot_marker(issue)
+        if any(marker in _adf_text(c.get("body")) for c in comments):
+            return {"path": str(path), "changed": True, "commented": False}
+        try:
+            self.jira_comment(issue, f"{snapshot_comment(issue)}\n\n— {self.signature}")
+        except AtlError as error:
+            retry = f"tried again when {issue} changes"
+            raise LinkCommentError(f"wrote {path}, but not the link comment ({retry}): {error}", str(path)) from None
+        return {"path": str(path), "changed": True, "commented": True}
+
+    def _snapshot(self, issue: str) -> tuple[str, list[dict]]:
+        """The snapshot's text, read now, and the issue's comments as Jira gave them."""
+        fields = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields={SNAPSHOT_FIELDS}")["fields"]
+        comments = self._comments(issue)
+        fetched = datetime.datetime.now(_UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return _snapshot_text(issue, fields, comments, fetched), comments
+
+    def jira_md_text(self, issue: str) -> str:
+        """The same Markdown as jira_md, read now and kept in memory: no file, no link comment. Only makes GET
+        calls. For jira-get where there is no basita-ops folder (a cloud routine)."""
+        if not ISSUE_KEY.match(issue):
+            raise AtlError(f"'{issue}' is not an issue key")
+        return self._snapshot(issue)[0]
 
     def jira_jql(self, jql: str, limit: int = 100) -> dict:
         """The issues a JQL query matches, as this agent, up to `limit`. Needs read:jira-work."""

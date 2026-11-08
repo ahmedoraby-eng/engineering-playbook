@@ -580,7 +580,7 @@ def test_jira_get_refuses_anything_but_an_issue_key():
 
 def test_cli_jira_get_prints_json_and_needs_no_text(capsys):
     transport = FakeTransport(*_read_responses())
-    args = ["malek", "jira-get", "BASITA-1", "--cloud-id", CLOUD]
+    args = ["malek", "jira-get", "BASITA-1", "--json", "--cloud-id", CLOUD]
     code = main(args, token_source=lambda a, p: TOKEN, transport=transport)
     assert code == 0
     assert json.loads(capsys.readouterr().out)["key"] == "BASITA-1"

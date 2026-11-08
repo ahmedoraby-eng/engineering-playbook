@@ -2,6 +2,16 @@
 
 Notable changes to the playbook, newest first. Each entry links to the pull request that made it.
 
+## Unreleased
+
+### Added (BASITA-205, ADR-B001: agents read Jira through a Markdown snapshot)
+- `atl <agent> jira-md <KEY> [--out DIR]` writes the issue as Markdown to `<DIR>/work/jira/<KEY>.md` (DIR: `--out`, else `BASITA_OPS_DIR`, else `~/Code/basita-ops`) and prints only the path, with ` (unchanged)` when not rewritten. One small read of `updated` comes first: when the file already records it, nothing else is read or written. The file has the title, a source line (`<!-- jira-md: <browse URL> · updated … · fetched … -->`; Jira stays the master), the fields, the description with its acceptance criteria, links, sub-tasks and the last 10 comments, oldest of those first; empty sections are left out. It is written atomically. A folder inside a git repository whose `origin` is `elbayoumy-farm-nutrition-platform` is refused (AC4).
+- The first snapshot posts one comment on the issue with the file's link, as the agent; a comment that already holds `work/jira/<KEY>.md` stops any second one (AC3).
+- An ADF to Markdown renderer for it: headings, nested bullet and ordered lists, action lists, fenced code blocks with their language, quotes and panels, rules, pipe tables (`|` escaped), bold, italic, code, strike, links, mentions, cards, emoji and statuses. An unknown node keeps its children's text. `_adf_text` is unchanged.
+
+### Changed
+- `atl <agent> jira-get <KEY>` refreshes the snapshot the same way and prints the Markdown file (AC6). `jira-get <KEY> --json` prints the JSON as before, reads only and writes nothing. `agent-gh`'s Jira status read for delegations, `scripts/atl-check` and the register-id ledger read in `standards/register-ids.md` now pass `--json` (the ledger needs every comment, not the last 10).
+
 ## 2026-11-03
 
 ### Added (BASITA-163, identities M7: App keys in cloud sessions; waits on M0)

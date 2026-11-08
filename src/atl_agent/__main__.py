@@ -1,6 +1,7 @@
 """Command line:
 
-    atl <agent> jira-get BASITA-1
+    atl <agent> jira-get BASITA-1 [--json] [--out DIR]
+    atl <agent> jira-md BASITA-1 [--out DIR]
     atl <agent> jira-jql "project = DFP AND status = 'To Do'"
     atl <agent> jira-comment BASITA-1 "text" [--mention <account id> ...]
     atl <agent> jira-start BASITA-1 ["text"]
@@ -46,14 +47,20 @@ links there before.
 it is switched on): the table in client.py gives who may, the next status and the next assignee. With FLOW_REVIEW_GUARD
 on in basita-ops jira-agents.conf, submit waits for Architecture review green on the head of every open PR that
 mentions the issue; approve (Yousef's, FLOW_APPROVE) always does (BASITA-151). Both switches are off by default.
-The read commands print
-JSON and change nothing: `jira-get` gives an issue with its comments, sub-tasks and linked issues; `jira-jql` runs a
-JQL query; `confluence-get` gives a page with its body, comments, attachments and children (with --storage, also the
-body in storage format, so a table can be edited and written back exactly with `confluence-edit --storage`, BASITA-191);
-`confluence-search` finds
-pages by words or CQL. Each result names the agent whose token answered (`read_by`). `confluence-create` and
-`confluence-edit` take plain text, or Confluence storage format with --storage. `confluence-edit` replaces the body;
-Confluence keeps every earlier version. Nothing here deletes.
+BASITA-205 (ADR-B001): `jira-md <KEY>` writes the issue as Markdown to <DIR>/work/jira/<KEY>.md and prints only that
+path, followed by " (unchanged)" when the file already had the issue's latest `updated` (then it makes one small read
+and writes nothing). DIR is --out, else BASITA_OPS_DIR, else ~/Code/basita-ops; a folder inside the app repository
+(origin elbayoumy-farm-nutrition-platform) is refused. The file holds the fields, the description, links, sub-tasks
+and the last 10 comments; Jira stays the master. The first time, it posts one comment on the issue with the file's
+link, and never a second one. `jira-get <KEY>` refreshes that file the same way and prints it, so every agent read
+goes through the snapshot; `jira-get <KEY> --json` prints the JSON below instead, reads only, and writes nothing.
+The other read commands print JSON and change nothing: `jira-get --json` gives an issue with its comments, sub-tasks
+and linked issues; `jira-jql` runs a JQL query; `confluence-get` gives a page with its body, comments, attachments and
+children (with --storage, also the body in storage format, so a table can be edited and written back exactly with
+`confluence-edit --storage`, BASITA-191); `confluence-search` finds pages by words or CQL. Each result names the agent
+whose token answered (`read_by`). `confluence-create` and `confluence-edit` take plain text, or Confluence storage
+format with --storage. `confluence-edit` replaces the body; Confluence keeps every earlier version. Nothing here
+deletes.
 BASITA-188: `confluence-attach <page> <file>` uploads a file (up to 25 MB) under its base name, or adds a new version
 when the page already has an attachment of that name, and prints the name to use in `<ri:attachment ri:filename>`
 and a ready `<ac:image>` line. `--label L` (repeatable) on `confluence-create` and `confluence-edit` adds labels
@@ -75,6 +82,7 @@ from .client import (
     ISSUE_KEY,
     AtlClient,
     AtlError,
+    LinkCommentError,
     account_for,
     default_cloud_id,
     github_prs,
@@ -96,6 +104,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         "command",
         choices=[
             "jira-get",
+            "jira-md",
             "jira-jql",
             "jira-comment",
             "jira-start",
@@ -155,6 +164,12 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     parser.add_argument("--due-date", default="", help="jira-edit: YYYY-MM-DD, or none")
     parser.add_argument("--type", dest="link_type", default="", help="jira-link: the link type or phrase (relates to)")
     parser.add_argument("--why", dest="done_why", default="", help="jira-done: what was delivered, or - for stdin")
+    parser.add_argument(
+        "--out",
+        default="",
+        help="jira-md, jira-get: the folder that holds work/jira/ (default BASITA_OPS_DIR, else ~/Code/basita-ops)",
+    )
+    parser.add_argument("--json", action="store_true", help="jira-get: print the issue as JSON, and write nothing")
     parser.add_argument("--via", default="", help="the agent whose Atlassian user to work through, e.g. sherif")
     parser.add_argument("--cloud-id", default=default_cloud_id())
     parser.add_argument("--domain", default=os.environ.get("BASITA_AGENT_DOMAIN", "basitasolutions.com"))
@@ -186,6 +201,14 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     if args.command != "jira-done" and args.done_why:
         print(f"atl: --why is for jira-done, not {args.command}", file=sys.stderr)
         return 2
+    if args.json and args.command != "jira-get":
+        print(f"atl: --json is for jira-get, not {args.command}", file=sys.stderr)
+        return 2
+    if args.out and (args.command not in ("jira-md", "jira-get") or args.json):
+        print("atl: --out is for jira-md and jira-get (without --json)", file=sys.stderr)
+        return 2
+    if args.command == "jira-md" or (args.command == "jira-get" and not args.json):
+        return _snapshot(args, token_source, transport)
     if args.command in ("jira-edit", "jira-link"):
         return _edit_or_link(args, token_source, transport)
     if args.command == "jira-done":
@@ -357,6 +380,46 @@ def _split(value: str | None) -> tuple | None:
     if value is None:
         return None
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _snapshot(args, token_source, transport) -> int:
+    """jira-md prints the snapshot's path; jira-get prints the snapshot itself (BASITA-205)."""
+    others = (args.mention, args.reason, args.title, args.parent, args.label, args.assignee, args.link, args.storage)
+    if args.text or args.why or args.description or any(others):
+        print(f"atl: {args.command} takes the issue key, and --out DIR only", file=sys.stderr)
+        return 2
+    out = args.out or os.environ.get("BASITA_OPS_DIR") or os.path.join(os.path.expanduser("~"), "Code", "basita-ops")
+    try:
+        agent = args.agent.lower()
+        kwargs = {"transport": transport} if transport else {}
+        client = AtlClient(
+            agent,
+            args.cloud_id,
+            token_source(account_for(agent, args.via), "jira"),
+            args.domain,
+            via=args.via,
+            **kwargs,
+        )
+        if args.command == "jira-md":
+            result = client.jira_md(args.target, out)
+            print(result["path"] + ("" if result["changed"] else " (unchanged)"))
+            return 0
+        # jira-get: reading never fails for want of the folder or of the link comment.
+        if not os.path.isdir(os.path.expanduser(out)):
+            sys.stdout.write(client.jira_md_text(args.target))
+            print("jira-get: no basita-ops folder here; printed the ticket without saving a snapshot", file=sys.stderr)
+            return 0
+        try:
+            path = client.jira_md(args.target, out)["path"]
+        except LinkCommentError as error:
+            print(f"jira-get: {error}", file=sys.stderr)
+            path = error.path
+        with open(path, encoding="utf-8") as snapshot:
+            sys.stdout.write(snapshot.read())
+    except (AtlError, OSError) as error:
+        print(f"atl: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _attach(args, token_source, transport) -> int:

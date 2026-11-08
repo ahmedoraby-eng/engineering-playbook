@@ -16,7 +16,7 @@ VOID AA-175 -> DFP-150   (lost a race, or the reservation was a mistake)
 
 ## Reserving (whoever writes the ticket: Adam, Maya through Sherif, Sherif, Talia)
 
-1. `atl <agent> jira-get BASITA-206` and take the highest AA and the highest A ever written in its comments (`BASELINE`, `RESERVE` or `VOID`). Add 1. Pad A to two digits (`A-22`).
+1. `atl <agent> jira-get BASITA-206 --json` (every comment; the Markdown snapshot shows only the last 10) and take the highest AA and the highest A ever written in its comments (`BASELINE`, `RESERVE` or `VOID`). Add 1. Pad A to two digits (`A-22`).
 2. `atl <agent> jira-comment BASITA-206 "RESERVE AA-<n> -> <KEY>"`.
 3. Read BASITA-206 again. If an **earlier** comment holds any of your ids, post `VOID` for yours and reserve the next free ids (step 1 again).
 4. Put the line `Register IDs: AA-<n>, ...` in the ticket: in the description when you create it, or as a comment on an existing ticket. A ticket that needs none says `Register IDs: none`.
