@@ -95,6 +95,80 @@ def test_needs_label_asks_for_a_review_of_the_owners_own_pr():
     assert "labelled 'needs-yousef'" in c.reasons
 
 
+# --- the minor label (BASITA-221) -----------------------------------------------------------------
+
+
+def test_rules_default_minor_label_and_its_validation():
+    assert RULES.minor_label == "minor"
+    arch = {**RULES_JSON["architecture_review"], "minor_label": "polish"}
+    assert Rules.from_json({**RULES_JSON, "architecture_review": arch}).minor_label == "polish"
+    for bad in ("two words", 7, None):
+        with pytest.raises(RulesError, match="minor_label"):
+            Rules.from_json(
+                {**RULES_JSON, "architecture_review": {**RULES_JSON["architecture_review"], "minor_label": bad}}
+            )
+
+
+def test_a_minor_pr_skips_the_architect_with_a_note():
+    c = cls([f("src/app.css", 20), f("src/Title.tsx", 4)], labels=["minor"])
+    assert (c.cls, c.effort, c.required) == ("not-required", "", False)
+    assert c.reasons == ("labelled 'minor': no architecture review",)
+
+
+def test_the_same_pr_without_the_label_is_reviewed():
+    assert cls([f("src/app.css", 20)]).cls == "normal"
+
+
+@pytest.mark.parametrize("path", [".github/workflows/ci.yml", "src/calc/rate.ts", "tools/CLAUDE.md", "package.json"])
+def test_logic_data_security_and_ci_paths_are_never_minor(path):
+    c = cls([f("src/app.css"), f(path)], labels=["minor"])
+    assert (c.cls, c.effort) == ("critical", "max")
+    assert "'minor' ignored: a critical path is never minor" in c.reasons
+
+
+def test_a_file_renamed_off_a_critical_path_is_not_minor():
+    c = cls([f("src/other/rate.ts", previous_filename="src/calc/rate.ts")], labels=["minor"])
+    assert c.cls == "critical"
+
+
+def test_a_cut_short_file_list_is_not_minor():
+    c = cls([f("src/app.css")], labels=["minor"], changed=3001)
+    assert c.cls == "critical"
+    assert "'minor' ignored: the file list is incomplete" in c.reasons
+
+
+def test_a_large_pr_is_not_minor_because_anyone_may_add_the_label():
+    c = cls([f("src/app.css", 401)], labels=["minor"])
+    assert (c.cls, c.effort) == ("large", "xhigh")
+    assert any(r.startswith("'minor' ignored: 401 changed lines") for r in c.reasons)
+    assert cls([f("src/app.css", 400), f("tests/a.test.ts", 5000)], labels=["minor"]).cls == "not-required"
+
+
+def test_needs_label_beats_minor():
+    c = cls([f("src/app.css")], labels=["minor", "needs-yousef"])
+    assert c.cls == "normal"
+    assert "labelled 'needs-yousef'" in c.reasons
+    assert not any("minor" in r for r in c.reasons)
+
+
+def test_a_minor_pr_with_no_outside_commits_and_an_owner_waiver_keep_their_own_reasons():
+    assert cls([f("src/app.css")], authors=[OWNER], labels=["minor"]).reasons[0].startswith("no commits outside")
+    assert cls([f("src/app.css")], labels=["minor", "review-waived"], waived_by=OWNER).cls == "waived"
+
+
+def test_an_empty_minor_label_switches_the_skip_off():
+    arch = {**RULES_JSON["architecture_review"], "minor_label": ""}
+    off = Rules.from_json({**RULES_JSON, "architecture_review": arch})
+    assert cls([f("src/app.css")], labels=["minor", ""], rules=off).cls == "normal"
+
+
+def test_a_decision_on_a_minor_pr_is_green_without_reading_reviews():
+    c = cls([f("src/app.css")], labels=["minor"])
+    d = decide(c, REVIEWER, HEAD, [], lambda _: False)
+    assert d.green and not d.request
+    assert "labelled 'minor'" in d.status
+
+
 def test_unlinked_commit_authors_count_as_outside_the_exempt_list():
     c = cls([f("src/app.ts")], authors=[OWNER, ""])
     assert c.cls == "normal"
@@ -509,6 +583,23 @@ def test_not_required_pr_passes_in_on_mode(capsys):
     gh = FakeGitHub(responses(commits=[{"author": {"login": OWNER}}]))
     assert run(gh) == 0
     assert "class=not-required effort=- state=green" in capsys.readouterr().out
+
+
+def test_minor_pr_is_green_in_on_mode_and_requests_nobody(capsys):
+    pr = {**PR, "labels": [{"name": "minor"}]}
+    gh = FakeGitHub(responses(pr=pr, files=[{"filename": "src/app.css", "changes": 3}]))
+    assert run(gh) == 0
+    assert "class=not-required effort=- state=green" in capsys.readouterr().out
+    assert gh.posts == []
+
+
+def test_minor_label_on_a_critical_path_pr_stays_red_in_on_mode(capsys):
+    pr = {**PR, "labels": [{"name": "minor"}]}
+    gh = FakeGitHub(responses(pr=pr))  # the default file is src/calc/a.ts, a critical path
+    assert run(gh) == 1
+    out = capsys.readouterr().out
+    assert "class=critical effort=max state=waiting" in out
+    assert gh.posts and "requested_reviewers" in gh.posts[0][0]
 
 
 # --- the gh wrapper -------------------------------------------------------------------------------
