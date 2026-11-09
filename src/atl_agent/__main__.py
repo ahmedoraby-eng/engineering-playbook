@@ -65,11 +65,12 @@ design.md): there are two files. `<KEY>.md` is the core: the fields (with Create
 when set), the description, links with the other issue's status at the fetch, sub-tasks, attachments by name, a
 Current state block (last status change, and where each author's latest comment is), then the comments a
 deterministic rule pins, verbatim, and one index line (id, date, author, first 80 characters, archive line range) for
-every other comment. A strong pin (Ahmed's own comment, a quote of him, a Decision:/Handoff:/State:/Blocked:/AC change:
-tag, a comment cited or replacing one) is shown whole; a weak pin (a keyword, a mention of Ahmed, Adam's, an edited
-one) shows its first 600 characters and the archive lines of the rest; the last three are shown whole. The core is
-never bigger than the old "last 10" file of the same issue: past that, weak pins go to the index first and Ahmed's
-comments last, flagged "pinned, over cap".
+every other comment. A strong pin (Ahmed's own comment, a quote of him, an @Ahmed ask, an AC change, a
+Decision:/Handoff:/State:/Blocked:/AC change: tag, a comment cited or replacing one, Yousef's verdict) is shown whole;
+a weak pin (a keyword, a mention of Ahmed, Adam's, an edited one) shows its first 600 characters and the archive lines
+of the rest; the last three are shown whole. Ahmed's words and AC changes are never moved for size below the 8k-token
+cap; the rest of the core stays within 80% of the old "last 10" file of the same issue (weak pins leave first, shown
+in the index with 240 characters and "pinned, over cap"). An AC line a later comment changes says "[see comment #id]".
 `<KEY>.full.md` is the archive: every comment verbatim, then the changelog, one line per change (when, who, field,
 from, to). Nothing is summarised and no model is called. `jira-get <KEY> --history` prints the changelog read live;
 `jira-get <KEY> --json` takes `--comments N` (the latest N, with `comments_total`) and `--history` (adds `history`).

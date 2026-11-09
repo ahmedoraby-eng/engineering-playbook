@@ -500,11 +500,12 @@ def _snapshot_files(
         for c in comments
     ]
     records.sort(key=lambda c: (c["created"] or "", c["id"]))
-    people = {"ahmed": {AHMED_ACCOUNT}, "adam": {ADAM_ACCOUNT}}
+    people = {"ahmed": {AHMED_ACCOUNT}, "adam": {ADAM_ACCOUNT}, "yousef": {JIRA_ACCOUNTS["yousef"]}}
     chosen = snap.select_comments(records, people, snapshot_marker(issue))
-    entries = snap.history_entries(histories)
+    versions = {str(v.get("id")): v.get("name") for v in fields.get("fixVersions") or []}
+    entries = snap.history_entries(histories, versions)
     archive, ranges = snap.render_archive(issue, marker, records, entries)
-    budget = snap.legacy_size(_snapshot_top(issue, fields, fetched, legacy=True), records)
+    budget = int(snap.legacy_size(_snapshot_top(issue, fields, fetched, legacy=True), records) * snap.BUDGET_SHARE)
     top = _snapshot_top(issue, fields, fetched)
     core, _ = snap.render_core(top, records, chosen, ranges, issue, entries, budget=budget)
     return core, archive

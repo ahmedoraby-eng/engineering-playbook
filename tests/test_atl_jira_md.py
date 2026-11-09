@@ -229,7 +229,7 @@ def test_the_core_file_layout(tmp_path):
     assert "## Sub-tasks" not in body  # empty sections are left out
     assert "## Archive" in body
     assert "## Current state" not in body  # no status change, every comment below: nothing to point at
-    assert "work/jira/BASITA-7.full.md: all 3 comments verbatim and the changelog (0 changes)." in body
+    assert "work/jira/BASITA-7.full.md: all 3 comments, 0 changes. Read by lines, `sed -n 'A,Bp' " in body
     # Three comments, no rule matches: the last three are shown, the index is empty and left out.
     assert "## Comments (3 of 3: pinned by rule, and the last 3)" in body and "## Other comments" not in body
 
@@ -484,6 +484,12 @@ def _ids(text, pattern):
     return re.findall(pattern, text, re.MULTILINE)
 
 
+def _index_ids(core):
+    """Every id the index names: its own lines, and the one line for older comments no rule pins."""
+    folded = re.findall(r"^- \d+ older comments no rule pins: ([#\d, ]+) \(archive lines", core, re.MULTILINE)
+    return set(_ids(core, r"^- #(\d+) · ")) | {n for line in folded for n in re.findall(r"#(\d+)", line)}
+
+
 def _mixed_comments():
     """Twelve comments: Ahmed's (101), a tagged one (103), a quote of Ahmed (105), a keyword (107), Adam's (109), a
     comment that is cited (110, by 112), an edited one (104), and plain ones."""
@@ -526,7 +532,7 @@ def test_every_comment_is_in_the_core_or_the_index_and_the_archive_has_them_all(
         core, full = _write(tmp_path, comments, updated=f"2026-11-0{day}T00:00:00.000+0200")
         wanted = {c["id"] for c in comments}
         in_core = set(_ids(core, r"^### #(\d+) "))
-        in_index = set(_ids(core, r"^- #(\d+) · "))
+        in_index = _index_ids(core)
         assert in_core | in_index == wanted and not in_core & in_index
         assert set(_ids(full, r"^### #(\d+) ")) == wanted
 
@@ -718,18 +724,22 @@ def test_any_mention_of_ahmed_pins_and_so_does_a_dropped_scope(tmp_path, no_budg
     waiting = _comment(2, body=doc(para(text("Still waiting for your review."))), author="Malek")
     arabic = _comment(3, body=doc(para(text("أحمد طلب نبدأ بالتاني"))), author="Malek")
     core, _ = _write(tmp_path, [dropped, waiting, arabic, *[_comment(n) for n in range(4, 9)]])
-    assert "### #101 · 2026-11-01T09:01:00.000+0200 · Malek [pinned: mentions Ahmed, keyword dropped]" in core
+    assert (
+        "### #101 · 2026-11-01T09:01:00.000+0200 · Malek [pinned: mentions Ahmed, AC change, keyword dropped]" in core
+    )
     assert "[pinned: keyword waiting for]" in core and "### #103 " in core
 
 
 def test_over_the_cap_ahmeds_own_comment_stays_while_older_ones_leave(tmp_path):
-    big = "Decision: " + "word " * 1000
+    big = "Decision: " + "word " * 900
     comments = [_comment(n, body=doc(para(text(big)))) for n in range(1, 12)]
     comments[0] = _comment(1, body=doc(para(text(big))), author="Ahmed Oraby", account=AHMED)
     core, _ = _write(tmp_path, comments)
     over = _ids(core, r"^- #(\d+) · .*\[pinned, over cap\]")
-    assert over and "101" not in over and "### #101 " in core  # the oldest pin is Ahmed's: it goes last
+    cut = _ids(core, r"^### #(\d+) [^\n]*\n\n[^\n]*\n…rest: archive lines")
+    assert (over or cut) and "101" not in over + cut and "### #101 " in core  # Ahmed's own goes last
     assert core.count(big.strip()) == 4  # and whole: Ahmed's own and the last three
+    assert len(core.encode()) / 3 <= 8000
 
 
 # --- Yousef's review of PR #52 (09/11/2026): two strengths of pin, narrow keywords, pointers, a size budget ----------
@@ -758,7 +768,7 @@ def test_generic_keywords_pin_only_at_the_start_of_a_line_and_specific_ones_anyw
     assert reasons("Done.\n- Blocked on the token scope") == ["keyword blocked"]
     assert reasons("Decision (Ahmed, 08/11): use B") == ["mentions Ahmed", "keyword decision"]
     assert reasons("We decided to keep A.") == ["keyword decided"]
-    assert reasons("Ahmed dropped AC5.") == ["mentions Ahmed", "keyword dropped"]
+    assert reasons("Ahmed dropped AC5.") == ["mentions Ahmed", "AC change", "keyword dropped"]
     assert reasons("ده قرار نهائي") == ["keyword قرار"]
     assert snap.is_strong(["mentions Ahmed", "keyword dropped", "author is Adam", "edited after posting"]) is False
     for strong in ("author is Ahmed", "quotes Ahmed", "tag handoff", "cited by a later comment", "replaces #101"):
@@ -802,30 +812,26 @@ def _core_with_budget(comments, budget):
     return snap.render_core(["# BASITA-7: t"], records, chosen, ranges, "BASITA-7", [], budget=budget)
 
 
-def test_over_the_budget_weak_pins_leave_first_then_strong_ones_are_cut_and_ahmed_goes_last():
+def test_over_the_budget_weak_pins_leave_first_then_strong_ones_and_ahmeds_words_stay():
+    # Yousef's second review: Ahmed's words and AC changes are outside the per-ticket budget; only the cap moves them.
     comments = _budget_comments()
     full, stats = _core_with_budget(comments, 10**9)
-    assert stats["strong"] == ["103", "104"] and stats["weak"] == ["101", "102", "108"]
+    assert stats["strong"] == ["103", "104"] and stats["weak"] == ["101", "102", "108"] and stats["outside"] == ["104"]
     assert stats["cut"] == ["101", "102"] and stats["over_cap"] == []  # 108 is one of the last three: whole
     assert _core_with_budget(comments, len(full.encode()))[1]["over_cap"] == []  # it fits: nothing moves
     seen = set()
-    for budget in range(len(full.encode()), 2000, -100):
+    for budget in range(len(full.encode()), 1000, -100):
         core, stats = _core_with_budget(comments, budget)
         over, cut = set(stats["over_cap"]), set(stats["cut"])
         moved = over | cut
-        exhausted = over == {"101", "102", "103", "104"} and cut == {"108", "109"}
+        exhausted = over == {"101", "102", "103"} and cut == {"108", "109"}
         assert len(core.encode()) <= budget or exhausted
-        assert {"108", "109", "110"} <= set(stats["shown"]) and "110" not in cut  # the last three; the newest whole
-        if "103" in moved:  # a strong pin is touched only after a weak one left and the two fresh ones were cut
-            assert "101" in over and {"108", "109"} <= cut
-        if "104" in moved:  # Ahmed's own comment is touched last
-            assert "103" in moved
-        if "104" in over:
-            assert {"101", "102", "103"} <= over
-        seen.add(("103" in moved, "104" in over))
+        assert {"104", "108", "109", "110"} <= set(stats["shown"]) and not {"104", "110"} & cut  # never moved
+        if "103" in moved:  # a strong pin is touched only after the weak ones left and the two fresh ones were cut
+            assert {"101", "102"} <= over and {"108", "109"} <= cut
+        seen.add(("103" in moved, "103" in over))
     assert seen == {(False, False), (True, False), (True, True)}  # every stage was reached
-    core, _ = _core_with_budget(comments, 2000)
-    assert set(_ids(core, r"^### #(\d+) ")) == {"108", "109", "110"}  # the last three never leave
+    assert "Do B. " + ("lorem ipsum dolor " * 84).strip() in core  # Ahmed's own comment, whole at any budget
 
 
 # Size acceptance (Yousef's review, point 4): over sample tickets shaped like the design's eight (BASITA-216, DFP-178,
@@ -889,7 +895,19 @@ SAY = (
 KINDS = {
     # kind: (author, account, opening words, characters)
     "report": ("Malek", "m", "PR 2 of 2 is open; approved by Yousef, CI green, Ahmed's test can start.", 1400),
-    "qa": ("Salma", "s", "QA result: PASSED AC1 to AC4. Ahmed said «the wording must match» and it does.", 2400),
+    "qa": ("Salma", "s", "QA result: PASSED AC1 to AC4; the chip reads «مطبَّق» as the design says.", 2400),
+    "quote": (
+        "Adam",
+        ADAM,
+        "Ahmed (N-44, 08/11, verbatim key part): «خلي الكلمة صادرة لأنها اللي المستخدم ضغطها»",
+        700,
+    ),
+    "acedit": (
+        "Adam",
+        ADAM,
+        "Per Haya's redesign, accepted 08/11: AC5 dialog title: «فيه ملف جاهز ولم يُطبَّق». Final.",
+        200,
+    ),
     "accept": ("Adam", ADAM, "accept: moved to Ready for Release. AC1 to AC4 pass on the evidence.", 900),
     "decision": ("Adam", ADAM, "Adam (08/11): Ahmed dropped AC5, so it is out of scope.", 500),
     "ahmed": ("Ahmed Oraby", AHMED, "Keep the old wording until the client answers.", 120),
@@ -899,12 +917,12 @@ KINDS = {
     "review": ("Yousef", "y", "Yousef, design review: approve with two non-blocking notes on the cache.", 1800),
 }
 SAMPLES = {
-    "large-1": "report qa pickup review accept report decision qa report handoff ahmed qa report accept report qa "
-    "pickup qa",
+    "large-1": "report qa pickup review accept quote report decision qa report handoff ahmed qa report accept "
+    "acedit report qa pickup qa",
     "large-2": "pickup report review report qa accept report handoff qa report decision accept report qa report qa "
     "report pickup qa accept report qa",
-    "mid-1": "accept handoff pickup report review report decision report ahmed qa qa accept pickup report qa report "
-    "qa pickup report handoff accept report qa accept",
+    "mid-1": "accept handoff pickup report review quote report decision report ahmed qa qa accept pickup report "
+    "acedit qa report qa pickup report handoff accept report qa accept",
     "mid-2": "accept pickup report review handoff report qa decision report qa accept pickup report qa report qa "
     "accept report qa",
     "mid-3": "accept pickup report review report handoff qa report qa accept pickup report report qa report qa "
@@ -912,7 +930,9 @@ SAMPLES = {
     "mid-4": "review report qa report accept report qa report ahmed accept report",
     "small-1": "reserve reserve reserve reserve reserve reserve pickup decision reserve reserve reserve reserve",
     "small-2": "pickup report accept handoff",
+    "many-1": " ".join(["pickup"] * 26 + ["report", "accept", "qa", "pickup", "report"]),
 }
+OUTSIDE_KINDS = ("quote", "acedit", "ahmed", "decision")  # Ahmed's words and AC changes: never moved by the budget
 
 
 def _sample(name):
@@ -927,20 +947,84 @@ def _sample(name):
     return {**_fields(description=description)}, comments
 
 
-def test_the_core_is_not_bigger_than_the_old_snapshot_on_the_sample_tickets(tmp_path):
+def test_over_the_sample_tickets_the_cores_stay_within_105_percent_and_ahmeds_words_are_whole(tmp_path):
+    # Yousef's second review: the "no more consumption" check is the total (at most 1.05 of the old files); Ahmed's
+    # words and AC changes are shown whole whatever the ticket's size; nothing is lost.
     old_total = core_total = 0
     for day, name in enumerate(SAMPLES, start=1):
         fields, comments = _sample(name)
-        core, full = _write(tmp_path, comments, fields=fields, updated=f"2026-11-0{day}T00:00:00.000+0200")
-        old = len(_old_snapshot("BASITA-7", fields, comments).encode())
-        new = len(core.encode())
-        assert new <= 1.25 * old, (name, old, new)
-        if name.startswith("large"):
-            assert new < old, (name, old, new)
-        old_total, core_total = old_total + old, core_total + new
+        core, full = _write(tmp_path, comments, fields=fields, updated=f"2026-11-{day:02d}T00:00:00.000+0200")
+        old_total += len(_old_snapshot("BASITA-7", fields, comments).encode())
+        core_total += len(core.encode())
         ids = {c["id"] for c in comments}
-        assert set(_ids(core, r"^### #(\d+) ")) | set(_ids(core, r"^- #(\d+) · ")) == ids  # nothing is lost
+        shown = set(_ids(core, r"^### #(\d+) "))
+        assert shown | _index_ids(core) == ids and not shown & _index_ids(core)  # nothing is lost
         assert set(_ids(full, r"^### #(\d+) ")) == ids
-        if "decision" in SAMPLES[name]:  # the scope decision is shown, or its sentence is in its index line
-            assert "Ahmed dropped AC5, so it is out of scope" in core
-    assert core_total <= old_total, (old_total, core_total)
+        for comment, kind in zip(comments, SAMPLES[name].split(), strict=True):
+            if kind in OUTSIDE_KINDS:
+                assert _adf_md(comment["body"], heading_offset=3) in core, (name, comment["id"])
+    assert core_total <= 1.05 * old_total, (old_total, core_total)
+
+
+def test_the_index_lists_at_most_20_comments_no_rule_pins_and_one_line_for_the_older_ones(tmp_path):
+    fields, comments = _sample("many-1")  # 31 comments, 27 of them "Picked up" lines no rule pins
+    core, full = _write(tmp_path, comments, fields=fields)
+    folded = re.search(r"^- (\d+) older comments no rule pins: ([#\d, ]+) \(archive lines (\d+)-(\d+)\)$", core, re.M)
+    plain = [line for line in core.split("\n") if line.startswith("- #") and "Picked up" in line]
+    assert folded and len(plain) == snap.INDEX_PLAIN_CAP
+    ids = re.findall(r"#(\d+)", folded.group(2))
+    assert int(folded.group(1)) == len(ids) and ids == sorted(ids) and max(ids) < min(_ids(core, r"^- #(\d+) · "))
+    lines = full.split("\n")
+    assert lines[int(folded.group(3)) - 1].startswith(f"### #{ids[0]} ") and int(folded.group(4)) <= len(lines)
+
+
+def test_a_pin_that_left_the_core_shows_240_characters_and_says_when_it_was_cut():
+    pinned = {"id": "101", "created": "2026-11-01T09:01:00.000+0200", "author": "Adam", "text": "x " * 200}
+    line = snap._index_line(pinned, {"101": (7, 9)}, ["pinned, over cap"], pinned=True)
+    assert "x " * 119 + "x… [first 240 characters] [pinned, over cap] (lines 7-9)" in line
+    plain = snap._index_line(pinned, {"101": (7, 9)}, [])
+    assert "x " * 39 + "x… (lines 7-9)" in plain
+    short = snap._index_line(
+        {**pinned, "text": "Ahmed dropped AC5."}, {"101": (7, 9)}, ["pinned, over cap"], pinned=True
+    )
+    assert "Ahmed dropped AC5. [pinned, over cap]" in short and "first 240" not in short
+
+
+def test_ac_changes_and_quotes_of_ahmed_are_strong_and_mark_the_ac_lines_they_change(tmp_path, no_budget):
+    people = {"ahmed": set(), "adam": set()}
+    reasons = lambda words: snap.pin_reasons({"id": "1", "text": words}, [], people)  # noqa: E731
+    for change in (
+        "add AC7: a locked plan says so",
+        "NEW AC8: four row states",
+        "AC5 dialog title: «x»",
+        "AC1 wording:",
+        "AC9 text is corrected.",
+        "final AC:",
+        "AC change: AC2 now reads y",
+    ):
+        assert "AC change" in reasons(change) or "tag ac change" in reasons(change), change
+        assert snap.is_strong(reasons(change)), change
+    for routine in (
+        "AC1-AC4 pass on the evidence.",
+        "AC3: only those entries changed",
+        "add the AC5 test",
+        "AC1 to AC4",
+    ):
+        assert "AC change" not in reasons(routine), routine
+    assert reasons("Ahmed's clarification (N-49, 08/11/2026, verbatim key part): «نجحت بنسبة»") == ["quotes Ahmed"]
+    assert reasons("Evidence: the chip «مطبَّق».\nAhmed's test is next.") == ["mentions Ahmed"]  # not the same line
+    assert reasons("@Ahmed please merge #65 then #66") == ["asks Ahmed"]
+    description = doc(para(text("AC1. Given A, Then B.")), para(text("AC2. Given C, Then D.")))
+    change = _comment(2, body=doc(para(text("Per Haya: AC2 wording: «E». Final."))), author="Adam", account=ADAM)
+    core, _ = _write(tmp_path, [_comment(1), change, _comment(3)], fields=_fields(description=description))
+    assert "AC1. Given A, Then B.\n" in core and "AC2. Given C, Then D. [see comment #102]\n" in core
+    assert "[pinned: AC change, author is Adam]" in core
+
+
+def test_a_renamed_fix_version_reads_with_its_name_now():
+    history = [
+        _history(2, [{"field": "Fix Version", "from": None, "fromString": None, "to": "10041", "toString": "W46"}])
+    ]
+    entries = snap.history_entries(history, {"10041": "BASITA Nov-2026"})
+    assert snap.history_line(entries[0]).endswith("Fix Version: (empty) → W46 (now BASITA Nov-2026)")
+    assert snap.history_entries(history)[0]["to"] == "W46"
