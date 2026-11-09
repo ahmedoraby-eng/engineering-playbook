@@ -17,8 +17,9 @@ The `needs-yousef` label, which anyone may add, turns `not-required` into a revi
 The `minor` label (BASITA-221; Ahmed, 09/11/2026, operating model 2.2) marks a small UI or wording
 change that skips the architect: `not-required`, with a note. It never outranks the rules above it: a
 minor PR on a critical path (logic, data, security, calculation or CI files) stays `critical`, and a minor
-PR over `large_lines` changed lines is reviewed as `large`, because anyone may add the label. `needs-yousef`
-beats it. `minor_label` in the rules renames it; an empty name switches it off.
+PR over `minor_max_lines` (default 80, never above `large_lines`) changed lines outside docs and tests is
+reviewed as before, because anyone may add the label. `needs-yousef` beats it. `minor_label` in the rules
+renames it; an empty name switches it off.
 `reviewer_own_bots` lists the bots the reviewer pushes with (his docs App): his approval never counts on
 a PR they opened or committed to, so he can't approve his own work (BASITA-161, plan 10.2).
 A docs or test file on a critical path (an agent rule in `CLAUDE.md`, a CI file) is critical, never
@@ -99,8 +100,14 @@ class Rules:
     waive_label: str = "review-waived"
     needs_label: str = "needs-yousef"
     minor_label: str = "minor"
+    minor_max_lines: int = 80
     effort: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT))
     reviewer_own_bots: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def minor_limit(self) -> int:
+        """Changed lines a `minor` PR may have: `minor_max_lines`, but never more than `large_lines`."""
+        return min(self.minor_max_lines, self.large_lines)
 
     @classmethod
     def from_json(cls, data: dict) -> Rules:
@@ -119,6 +126,9 @@ class Rules:
         minor = arch.get("minor_label", "minor")
         if not isinstance(minor, str) or re.search(r"\s", minor):
             raise RulesError("'architecture_review.minor_label' must be a label name without spaces (or empty)")
+        minor_max = arch.get("minor_max_lines", 80)
+        if not isinstance(minor_max, int) or isinstance(minor_max, bool) or minor_max < 1:
+            raise RulesError("'architecture_review.minor_max_lines' must be a positive whole number")
         effort = {**DEFAULT_EFFORT, **(arch.get("effort") or {})}
         exempt = arch.get("exempt_authors", [owner])
         own = arch.get("reviewer_own_bots", [])
@@ -137,6 +147,7 @@ class Rules:
             waive_label=arch.get("waive_label", "review-waived"),
             needs_label=arch.get("needs_label", "needs-yousef"),
             minor_label=minor,
+            minor_max_lines=minor_max,
             effort=effort,
             reviewer_own_bots=frozenset(b.lower() for b in own),
         )
@@ -227,11 +238,11 @@ def classify(
         return Classification(NOT_REQUIRED, "", (skip, *notes))
 
     size = sum(f.changes for f in files if not rules.size_exclude.search(f.filename))
-    if minor and size <= rules.large_lines:
+    if minor and size <= rules.minor_limit:
         return Classification(NOT_REQUIRED, "", (f"labelled '{rules.minor_label}': no architecture review", *notes))
     if minor:
         notes.append(
-            f"'{rules.minor_label}' ignored: {size} changed lines outside docs and tests (limit {rules.large_lines})"
+            f"'{rules.minor_label}' ignored: {size} changed lines outside docs and tests (limit {rules.minor_limit})"
         )
     reasons = [f"labelled '{rules.needs_label}'"] if asked else []
     if others:
