@@ -130,16 +130,38 @@ def source(*prs):
         ({"headRefName": "malek/DFP-15-short-name"}, True),
         ({"headRefName": "feat/dfp-15-lowercase"}, True),
         ({"headRefName": "malek/DFP-150-other"}, False),
+        ({"headRefName": "malek/DFP-15"}, True),
+        ({"headRefName": "malek/DFP 15-short"}, False),
+        ({"title": "Builds on DFP 15", "body": "Refs DFP 15"}, False),
+        ({"title": "DFP 15: spaced"}, False),
+        # description: only a Refs / Closes line counts (BASITA-228)
         ({"body": "Refs DFP-15"}, True),
-        ({"body": "Builds on DFP-15, see there."}, True),
+        ({"body": "Closes DFP-15"}, True),
+        ({"body": "## Summary\nDid things.\n\nRefs DFP-15\n\n## Tests\nran them"}, True),
+        ({"body": "closes dfp-15"}, True),
+        ({"body": "REFS: DFP-15"}, True),
+        ({"body": "  Closes DFP-15"}, True),
+        ({"body": "- Refs DFP-15"}, True),
+        ({"body": "Refs DFP-16, DFP-15"}, True),
+        ({"body": "Refs DFP-16 and DFP-15"}, True),
+        ({"body": "Builds on DFP-15, see there."}, False),
+        ({"body": "DFP-195 / DFP-15 do not conflict"}, False),
+        ({"body": "Related to DFP-15"}, False),
+        ({"body": "This PR refs DFP-15 in passing"}, False),
+        ({"body": "Refs DFP 15"}, False),
+        ({"body": "Builds on DFP 15, see there."}, False),
+        ({"body": "Refs DFP-153"}, False),
         ({"body": "Closes DFP-151"}, False),
+        ({"body": "Refs DFP-15a"}, False),
+        ({"body": "Refs XDFP-15"}, False),
+        ({"body": "Refs DFP-16\nand also DFP-15 is mentioned here"}, False),
         ({"body": "<!-- Closes DFP-15 -->\nCloses DFP-16"}, False),
         ({"body": "<!--\nRefs DFP-15\n-->"}, False),
         ({}, False),
         ({"title": None, "headRefName": None, "body": None}, False),
     ],
 )
-def test_names_key_is_a_whole_word_outside_html_comments(fields, named):
+def test_names_key_counts_title_branch_and_refs_closes_lines_only(fields, named):
     assert names_key(fields, "DFP-15") is named
 
 
@@ -186,6 +208,22 @@ def test_no_pr_moves_it_as_design_or_qa_work():
     assert moved[0].endswith("| no PR |")
     [(_, text)] = jira.comments()
     assert "accepted (Ready for Release) and no PR names DFP-116 (design or QA work)." in text
+
+
+def test_an_open_pr_that_only_mentions_the_key_in_prose_does_not_hold_it():
+    """BASITA-228: elbayoumy#250 said "DFP-195 / DFP-192 do not conflict" and must not count as DFP-192's PR."""
+    mention = pr(
+        250, "OPEN", title="DFP-195: other work", branch="malek/DFP-195-x", body="DFP-195 / DFP-192 do not conflict"
+    )
+    spaced = pr(251, "OPEN", title="DFP-196: more", body="Refs DFP-196\nAlso touches DFP 192.")
+    own = pr(252, "OPEN", title="DFP-192: its own PR")
+    jira = FakeJira({"DFP-192": [RFR, "Task"]})
+    lines, _, _ = release_issues(client(jira), source(mention, spaced), versions=CURRENT)
+    assert lines == ["DFP-192: Ready for Release -> Released (no PR)"]
+    jira = FakeJira({"DFP-192": [RFR, "Task"]})
+    lines, _, _ = release_issues(client(jira), source(mention, spaced, own), versions=CURRENT)
+    assert lines == ["DFP-192: left, open PR elbayoumy-farm-nutrition-platform#252"]
+    assert jira.moved() == []
 
 
 def test_an_open_pr_leaves_it():

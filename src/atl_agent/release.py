@@ -16,8 +16,10 @@ Run hourly by basita-ops jira-attention.sh, behind AUTO_RELEASE in jira-agents.c
 through the playbook's agent-gh (`pr list --state all`, once per repository), never the Mac's own gh login. The token
 is ATL_TOKEN when set, else the agent's Jira token from the Keychain, as atl reads it.
 
-A PR names an issue when its title, branch or description has the key as a whole word (DFP-15 is not DFP-153),
-outside HTML comments. For each issue:
+A PR names an issue only when the hyphenated key is, as a whole word (DFP-15 is not DFP-153), in its title, in its head
+branch name, or on a `Refs` / `Closes` line of its description (outside HTML comments; BASITA-228). A key mentioned
+anywhere else in the description ("DFP-195 and DFP-192 do not conflict") does not count, and neither does a key written
+with a space ("DFP 192"). For each issue:
   - any open PR names it: left ("open PR ...");
   - PRs name it but every one was closed without merging: left and flagged;
   - otherwise, at least one merged PR and none open, or no PR at all: moved to Released, then commented with the
@@ -54,12 +56,26 @@ LOG_INTRO = (
 PrSource = Callable[[str], list]
 
 
+_KEY = r"[A-Za-z][A-Za-z0-9]*-\d+"
+# A description line that starts with Refs / Closes (an optional list bullet or quote mark first, an optional colon)
+# and then the keys it names, separated by commas, "and" or "&".
+_LINK_LINE = re.compile(
+    r"^[ \t]*(?:[-*>][ \t]*)?(?:refs?|closes)\b:?[ \t]+"
+    rf"({_KEY}(?:[ \t]*(?:,|&|\band\b)[ \t]*{_KEY})*)(?![A-Za-z0-9_-])",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
 def names_key(pr: dict, key: str) -> bool:
-    """Whether the PR names the issue: the key as a whole word in its title, branch or description, outside HTML
-    comments (the PR template's own instructions). DFP-15 never matches DFP-153 or XDFP-15."""
+    """Whether the PR names the issue (BASITA-228): the key as a whole word in its title or head branch name, or on a
+    `Refs` / `Closes` line of its description, outside HTML comments (the PR template's own instructions). A key
+    mentioned elsewhere in the description, or written with a space, doesn't count. DFP-15 never matches DFP-153 or
+    XDFP-15."""
     word = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])", re.IGNORECASE)
+    if any(word.search(text) for text in (pr.get("title") or "", pr.get("headRefName") or "")):
+        return True
     body = re.sub(r"<!--.*?-->", "", pr.get("body") or "", flags=re.DOTALL)
-    return any(word.search(text) for text in (pr.get("title") or "", pr.get("headRefName") or "", body))
+    return any(word.search(line.group(1)) for line in _LINK_LINE.finditer(body))
 
 
 class RepoPrs:
