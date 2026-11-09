@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
+from . import snapshot as snap
+
 if TYPE_CHECKING:  # the CLI also runs on macOS's system Python 3.9
     from collections.abc import Callable
 
@@ -341,14 +343,22 @@ def _adf_md(node: dict | None, heading_offset: int = 0) -> str:
 # jira-md (BASITA-205, ADR-B001): a Markdown read copy of an issue at <out>/work/jira/<KEY>.md. Jira stays the master.
 SITE_URL = "https://basitasolutions.atlassian.net"
 SNAPSHOT_FOLDER = ("work", "jira")
-SNAPSHOT_COMMENTS = 10
 # A snapshot never goes into the app repository (AC4): its origin URL holds this name.
 APP_REPO = "elbayoumy-farm-nutrition-platform"
 _SNAPSHOT_HEADER = re.compile(r"^<!-- jira-md: \S+ · updated (\S+) · fetched \S+ -->$")
 SNAPSHOT_FIELDS = (
     "summary,status,issuetype,priority,assignee,reporter,labels,parent,fixVersions,description,issuelinks,subtasks,"
-    "updated"
+    "updated,created,duedate,resolution,components,attachment"
 )
+
+
+def comment_limit(value: str) -> int | None:
+    """jira-get --comments: None for "all", else how many of the latest comments (0 or more)."""
+    if str(value).lower() == "all":
+        return None
+    if not str(value).isdigit():
+        raise AtlError(f"--comments takes all or a number, not '{value}'")
+    return int(value)
 
 
 def snapshot_marker(issue: str) -> str:
@@ -415,8 +425,10 @@ def _write_atomically(path: Path, text: str) -> None:
         raise
 
 
-def _snapshot_text(issue: str, fields: dict, comments: list[dict], fetched: str) -> str:
-    """The snapshot file: title, source line, field list, then the sections that have something in them."""
+def _snapshot_top(issue: str, fields: dict, fetched: str, legacy: bool = False) -> list[str]:
+    """The top of the core file, up to the attachments: title, source line, field list, then the sections that have
+    something in them. `legacy` gives the top of the file before BASITA-219 (no Components, Created, Due date,
+    Resolution or Attachments, a plain Links heading), only to measure the core's size budget."""
     name = lambda field: (fields.get(field) or {}).get("displayName")  # noqa: E731
     parent = fields.get("parent") or {}
     parent_summary = _one_line((parent.get("fields") or {}).get("summary"))
@@ -429,7 +441,11 @@ def _snapshot_text(issue: str, fields: dict, comments: list[dict], fetched: str)
         ("Fix versions", ", ".join(v.get("name", "") for v in fields.get("fixVersions") or [])),
         ("Labels", ", ".join(fields.get("labels") or [])),
         ("Parent", f"{parent['key']}: {parent_summary}" if parent.get("key") and parent_summary else parent.get("key")),
-    ]
+        ("Components", ", ".join(c.get("name", "") for c in fields.get("components") or [])),
+        ("Created", fields.get("created")),
+        ("Due date", fields.get("duedate")),
+        ("Resolution", (fields.get("resolution") or {}).get("name")),
+    ][: 8 if legacy else None]
     lines = [
         f"# {issue}: {_one_line(fields.get('summary'))}",
         "",
@@ -448,24 +464,51 @@ def _snapshot_text(issue: str, fields: dict, comments: list[dict], fetched: str)
         status = other["fields"]["status"]["name"]
         links.append(f"- {relation} {other['key']}: {_one_line(other['fields'].get('summary'))} ({status})")
     if links:
-        lines += ["", "## Links", "", *links]
+        # The other issue's status is the one read at `fetched` (header line); `updated` of this issue does not move
+        # when a linked issue does, so the heading says so (Yousef's review of PR #52, non-blocking a).
+        lines += ["", "## Links" if legacy else f"## Links (status as of {fetched})", "", *links]
     subtasks = [
         f"- {s['key']}: {_one_line(s['fields'].get('summary'))} ({s['fields']['status']['name']})"
         for s in fields.get("subtasks", [])
     ]
     if subtasks:
         lines += ["", "## Sub-tasks", "", *subtasks]
-    if comments:
-        count = len(comments)
-        heading = f"last {SNAPSHOT_COMMENTS} of {count}" if count > SNAPSHOT_COMMENTS else str(count)
-        lines += ["", f"## Comments ({heading})"]
-        for comment in comments[-SNAPSHOT_COMMENTS:]:
-            author = (comment.get("author") or {}).get("displayName") or "Unknown"
-            lines += ["", f"### {author} · {comment.get('created')}"]
-            body = _adf_md(comment.get("body"), heading_offset=3)
-            if body:
-                lines += ["", body]
-    return "\n".join(lines) + "\n"
+    attachments = [
+        f"- {a.get('filename')} ({a.get('mimeType')}, {a.get('size')} bytes, "
+        f"{(a.get('author') or {}).get('displayName') or 'Unknown'}, {a.get('created')})"
+        for a in fields.get("attachment") or []
+    ]
+    if attachments and not legacy:
+        lines += ["", "## Attachments (names only; contents are not downloaded)", "", *attachments]
+    return lines
+
+
+def _snapshot_files(
+    issue: str, fields: dict, comments: list[dict], histories: list[dict], fetched: str
+) -> tuple[str, str]:
+    """The core file and the archive (BASITA-219): see snapshot.py for what each holds and how comments are chosen."""
+    marker = f"<!-- jira-md: {SITE_URL}/browse/{issue} · updated {fields.get('updated')} · fetched {fetched} -->"
+    records = [
+        {
+            "id": str(c.get("id")),
+            "created": c.get("created"),
+            "updated": c.get("updated"),
+            "author": (c.get("author") or {}).get("displayName") or "Unknown",
+            "account": (c.get("author") or {}).get("accountId"),
+            "text": _adf_md(c.get("body"), heading_offset=3),
+        }
+        for c in comments
+    ]
+    records.sort(key=lambda c: (c["created"] or "", c["id"]))
+    people = {"ahmed": {AHMED_ACCOUNT}, "adam": {ADAM_ACCOUNT}, "yousef": {JIRA_ACCOUNTS["yousef"]}}
+    chosen = snap.select_comments(records, people, snapshot_marker(issue))
+    versions = {str(v.get("id")): v.get("name") for v in fields.get("fixVersions") or []}
+    entries = snap.history_entries(histories, versions)
+    archive, ranges = snap.render_archive(issue, marker, records, entries)
+    budget = int(snap.legacy_size(_snapshot_top(issue, fields, fetched, legacy=True), records) * snap.BUDGET_SHARE)
+    top = _snapshot_top(issue, fields, fetched)
+    core, _ = snap.render_core(top, records, chosen, ranges, issue, entries, budget=budget)
+    return core, archive
 
 
 def _doc_text(item: dict) -> str:
@@ -1278,22 +1321,28 @@ class AtlClient:
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions")
         return [{"to": t["to"]["name"], "global": bool(t.get("isGlobal"))} for t in data.get("transitions", [])]
 
-    def jira_get(self, issue: str) -> dict:
+    def jira_get(self, issue: str, comments: str = "all", history: bool = False) -> dict:
         """An issue's fields, comments and linked issues, read as this agent. Only makes GET calls.
         `assigned_to_reader` comes from a currentUser() search, which shows whose token this is, since these
-        tokens can't call /myself. Needs read:jira-work."""
+        tokens can't call /myself. `comments` is "all" or a number N for the last N (then `comments_total` says how
+        many there are); `history` adds the changelog, one entry per change (BASITA-219). Needs read:jira-work."""
         if not ISSUE_KEY.match(issue):
             raise AtlError(f"'{issue}' is not an issue key")
+        keep = comment_limit(comments)
         fields = "summary,status,issuetype,labels,assignee,reporter,priority,parent,description,issuelinks,subtasks"
         data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields={fields}")["fields"]
         comments = [
             {
+                "id": c.get("id"),
                 "author": (c.get("author") or {}).get("displayName"),
                 "created": c.get("created"),
                 "text": _adf_text(c.get("body")),
             }
             for c in self._comments(issue)
         ]
+        total = len(comments)
+        if keep is not None:
+            comments = comments[-keep:] if keep else []
         links = []
         for link in data.get("issuelinks", []):
             outward = "outwardIssue" in link
@@ -1309,6 +1358,9 @@ class AtlClient:
         jql = quote(f"key = {issue} AND assignee = currentUser()")
         mine = self._call("GET", "jira", f"/rest/api/3/search/jql?jql={jql}&fields=key")
         name = lambda field: (data.get(field) or {}).get("displayName")  # noqa: E731
+        extra = {"comments_total": total} if total != len(comments) else {}
+        if history:
+            extra["history"] = snap.history_entries(self._changelog(issue))
         return {
             "key": issue,
             "read_by": self.reader,
@@ -1328,7 +1380,14 @@ class AtlClient:
             ],
             "links": links,
             "comments": comments,
+            **extra,
         }
+
+    def jira_history(self, issue: str) -> list[str]:
+        """The issue's changelog as lines, one per change: when, who, field, from, to. Only makes GET calls."""
+        if not ISSUE_KEY.match(issue):
+            raise AtlError(f"'{issue}' is not an issue key")
+        return [snap.history_line(entry) for entry in snap.history_entries(self._changelog(issue))]
 
     def _comments(self, issue: str) -> list[dict]:
         """All of an issue's comments as Jira gives them, oldest first, reading every page."""
@@ -1341,6 +1400,19 @@ class AtlClient:
             if not found or len(comments) >= page.get("total", 0):
                 break
         return comments
+
+    def _changelog(self, issue: str) -> list[dict]:
+        """All of an issue's change records as Jira gives them (BASITA-219), reading every page."""
+        histories: list[dict] = []
+        while True:
+            page = self._call(
+                "GET", "jira", f"/rest/api/3/issue/{issue}/changelog?startAt={len(histories)}&maxResults=100"
+            )
+            found = page.get("values", [])
+            histories += found
+            if not found or page.get("isLast", True) or len(histories) >= page.get("total", 0):
+                break
+        return histories
 
     def jira_md(self, issue: str, out_dir: str | Path, run: Callable = subprocess.run) -> dict:
         """Write the issue as Markdown to <out_dir>/work/jira/<KEY>.md, a read copy for agents (BASITA-205, ADR-B001).
@@ -1359,11 +1431,13 @@ class AtlClient:
         place = next(p for p in [folder, *folder.parents] if p.exists())
         refuse_app_repo(place, run)
         path = folder / f"{issue}.md"
+        archive = folder / f"{issue}.full.md"
         updated = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=updated")["fields"].get("updated")
-        if updated and path.is_file() and _snapshot_updated(path) == updated:
+        if updated and all(p.is_file() and _snapshot_updated(p) == updated for p in (path, archive)):
             return {"path": str(path), "changed": False, "commented": False}
-        text, comments = self._snapshot(issue)
+        text, full, comments = self._snapshot(issue)
         folder.mkdir(parents=True, exist_ok=True)
+        _write_atomically(archive, full)  # first, so a core file at this `updated` always has its archive
         _write_atomically(path, text)
         marker = snapshot_marker(issue)
         if any(marker in _adf_text(c.get("body")) for c in comments):
@@ -1375,12 +1449,14 @@ class AtlClient:
             raise LinkCommentError(f"wrote {path}, but not the link comment ({retry}): {error}", str(path)) from None
         return {"path": str(path), "changed": True, "commented": True}
 
-    def _snapshot(self, issue: str) -> tuple[str, list[dict]]:
-        """The snapshot's text, read now, and the issue's comments as Jira gave them."""
+    def _snapshot(self, issue: str) -> tuple[str, str, list[dict]]:
+        """The core file's text, the archive's text, read now, and the issue's comments as Jira gave them."""
         fields = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields={SNAPSHOT_FIELDS}")["fields"]
         comments = self._comments(issue)
+        histories = self._changelog(issue)
         fetched = datetime.datetime.now(_UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        return _snapshot_text(issue, fields, comments, fetched), comments
+        core, full = _snapshot_files(issue, fields, comments, histories, fetched)
+        return core, full, comments
 
     def jira_md_text(self, issue: str) -> str:
         """The same Markdown as jira_md, read now and kept in memory: no file, no link comment. Only makes GET
