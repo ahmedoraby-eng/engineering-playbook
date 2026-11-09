@@ -151,6 +151,17 @@
       },
       "manifest": {"name": "basita-sync", "public": false, "description": "basita-ops sync.sh on Ahmed's Mac: updates main of basita-ops, never forced"}
     },
+    "train": {
+      "kind": "app",
+      "slug": "basita-train",
+      "_merge_train": "the merge train's token in GitHub Actions (BASITA-204, ADR-020 E1): the reusable merge-train workflow mints it with actions/create-github-app-token from the repository secrets TRAIN_APP_ID and TRAIN_APP_PRIVATE_KEY, so no agent uses it through agent-gh or agent-git. It updates pull-request branches (update-branch), adds labels and posts comments, and it never merges and never pushes main (the branch_prefix fences agent-git and agent-gh to train/*, which nothing uses, if it were ever run as an identity). Installed on the one repository whose waves it runs. Ahmed creates it (scripts/gh-app-new train) and copies the key into the two secrets",
+      "branch_prefix": "train/",
+      "permissions": {"contents": "write", "metadata": "read", "pull_requests": "write"},
+      "app_id": null,
+      "keychain": "basita-gh-train-app",
+      "installations": {},
+      "manifest": {"name": "basita-train", "public": false, "description": "Basita merge train in GitHub Actions: brings the next pull request in the wave's order up to date, never merges"}
+    },
     "reader": {
       "kind": "app",
       "slug": "basita-reader",
