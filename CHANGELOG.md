@@ -4,6 +4,9 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## Unreleased
 
+### Added (BASITA-224, cost rules in one place; Ahmed, 09/11/2026)
+- `standards/07-cost-rules.md`: the cost rules for every repository and consumption area, written once: GitHub Actions (C1 Slim runner, C2 path filters, C3 concurrency, C4 no runs on bot and sync commits, C5 the one-minute billing minimum, C6 long suites once, C7 only the events a job reads, C8 no runner on a Mac), Claude tokens (model and effort by complexity, the default per role, session logging and renewal), the Mac (session cap, worktrees, test runs and dev servers, disk and swap alerts) and preview deploys. Exceptions are rows in basita-ops' coverage register, which `actions-coverage-check.sh` checks daily.
+
 ### Changed (BASITA-208, only current versions are released; Ahmed, 08/11/2026)
 - `atl_agent.release` now needs `--versions` (the versions open now, comma-separated, e.g. `0.2.1,0.2.1.2`; basita-ops keeps the list in `RELEASE_CURRENT_VERSIONS`). An issue is released only when it has a Fix Version and every Fix Version is in the list: a later version such as 0.2.2 means planned work and is left with the reason, and so is an issue with no Fix Version. The Fix Versions are checked again on the re-read just before the move. An empty `--versions` releases nothing (exit 2). `jira_jql` rows now carry `fix_versions`.
 
