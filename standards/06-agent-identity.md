@@ -12,6 +12,7 @@ AI agents that write code are teammates with their own names, not ghosts inside 
    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
    ```
 3. **Issue key** in the branch name or PR title (`DFP-123-short-name`), so Jira links the work.
+   - **The hyphenated key belongs to the PR's own ticket only** (BASITA-228, Ahmed, 09/11/2026): in the title, the branch name and the `Refs <KEY>` / `Closes <KEY>` line of the description. To mention another ticket in a PR title or description, or in a commit message, write the key with a space (`DFP 192`, not `DFP-192`). Jira's development panel links any hyphenated key it finds, and the auto-Released job (`atl_agent.release`) counts a PR for an issue only when the key is in its title, branch or a `Refs` / `Closes` line, so a hyphenated mention in prose can hold or mislead another ticket's release.
 4. **No Jira Smart Commit commands** (`#done`, `#comment`, `#time`) in agent commits. Jira changes go through the team's approval rules, not through commit messages.
 5. **Pull requests opened under a human's account** that contain agent commits carry an `Agent: <Name>` line in the description.
 6. Where an agent has its own GitHub App, it pushes and opens pull requests with that app's short-lived installation token, so the push and the pull request are attributed too.
