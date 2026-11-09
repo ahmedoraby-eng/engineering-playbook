@@ -633,6 +633,23 @@ DONE_PROJECTS = ("BASITA", "ELB")
 ROUTED_THROUGH = {"maya": "sherif"}
 # Labels that hold an issue for Ahmed: jira-done leaves such an issue as it is.
 WAITS_FOR_AHMED = ("needs-ahmed",)
+# jira-wontdo (BASITA-203; Sherif's scope, 09/11/2026): a lead cancels an issue as Won't Do, with a reason. The BASITA
+# and ELB workflows had no Won't Do status on 09/11/2026 (To Do, In Progress, Done only), so until Ahmed adds one
+# the issue goes to Done and carries WONT_DO_LABEL, which tells a cancelled issue from a delivered one. The status is
+# looked up by name at each call, so adding it to the workflow needs no change here.
+WONT_DO_STATUS = "Won't Do"
+WONT_DO_LABEL = "wont-do"
+# Who may pass --ahmed to jira-wontdo. `atl` cannot verify Ahmed's words, so this power is not every agent's: it is
+# the named agents' (Sherif, whose scope this is; add Talia when she has a Jira seat). Any other lead cancels only
+# its own issue, with --why (Yousef's review of PR 53, 09/11/2026).
+WONT_DO_ON_AHMEDS_WORD = ("sherif",)
+
+
+def _status_key(name: str) -> str:
+    """A status name as letters only, so Won't Do, Wont Do and Won’t Do are one name."""
+    return re.sub(r"[^a-z]", "", name.lower())
+
+
 # The repositories whose PRs name Basita's issues: the same list as REPOS in basita-ops jira-attention.sh.
 PR_REPOS = (
     "basitasolutions/basita-ops",
@@ -1559,6 +1576,52 @@ class AtlClient:
             raise AtlError(f"{self.display} has no Jira user, so no issue of {self.display}'s to close")
         return JIRA_ACCOUNTS[self.agent], ""
 
+    def _require_own(self, issue: str, fields: dict, account: str, agent_label: str, command: str) -> list[str]:
+        """The issue must be this agent's own (see _done_owner): assigned to `account`, and carrying `agent_label` when
+        the agent is routed, and no routed agent's label otherwise. Returns the labels. Shared by jira-done and
+        jira-wontdo, so a lead closes only its own work either way."""
+        assignee = fields.get("assignee") or {}
+        if assignee.get("accountId") != account:
+            who = assignee.get("displayName") or "no one"
+            raise AtlError(
+                f"{issue}: assigned to {who}, not {self.reader}; {command} closes only the agent's own issue"
+            )
+        labels = fields.get("labels") or []
+        routed = [f"agent-{name}" for name in ROUTED_THROUGH]
+        if agent_label and agent_label not in labels:
+            raise AtlError(f"{issue}: no '{agent_label}' label, so it is {self.via}'s own issue, not {self.display}'s")
+        if not agent_label and any(label in routed for label in labels):
+            mine = next(label for label in labels if label in routed)
+            name = mine.removeprefix("agent-")
+            raise AtlError(
+                f"{issue}: labelled '{mine}', so it is {name.capitalize()}'s: "
+                f"atl {name} --via {ROUTED_THROUGH[name]} {command}"
+            )
+        return labels
+
+    def _require_token_user(self, issue: str) -> None:
+        jql = quote(f"key = {issue} AND assignee = currentUser()")
+        if not self._call("GET", "jira", f"/rest/api/3/search/jql?jql={jql}&fields=key").get("issues"):
+            raise AtlError(f"{issue}: not assigned to the user whose token this is ({self.reader})")
+
+    def _merged_prs(self, issue: str, prs: Callable[[str], list[dict]], open_hint: str) -> list[dict]:
+        """The merged PRs that mention the issue, refusing (fail closed) when any is open, in an unknown state, or when
+        the PRs can't be read. Closed-unmerged PRs are abandoned work and don't count, as in jira-attention.sh."""
+        try:
+            found = prs(issue)
+        except AtlError as error:
+            raise AtlError(
+                f"{issue}: not closed, because atl can't tell whether every PR that mentions it is merged ({error})"
+            ) from None
+        unknown = [p for p in found if p.get("state") not in ("OPEN", "MERGED", "CLOSED")]
+        if unknown:
+            raise AtlError(f"{issue}: a PR that mentions it is in an unknown state: {unknown[0].get('url')}")
+        still_open = [p for p in found if p["state"] == "OPEN"]
+        if still_open:
+            urls = ", ".join(p.get("url") or f"{p.get('repo')}#{p.get('number')}" for p in still_open)
+            raise AtlError(f"{issue}: an open PR mentions it ({urls}); {open_hint}")
+        return [p for p in found if p["state"] == "MERGED"]
+
     def jira_done(self, issue: str, why: str, prs: Callable[[str], list[dict]] = github_prs) -> tuple[str, list[dict]]:
         """A lead's own issue from In Progress to Done, for work with no open PR (BASITA-178; Ahmed, 03/11/2026).
 
@@ -1587,23 +1650,7 @@ class AtlClient:
         ]
         if (fields.get("issuetype") or {}).get("name") == "Epic":
             raise AtlError(f"{issue}: an Epic is never worked as a ticket, jira-done does not close it")
-        assignee = fields.get("assignee") or {}
-        if assignee.get("accountId") != account:
-            who = assignee.get("displayName") or "no one"
-            raise AtlError(
-                f"{issue}: assigned to {who}, not {self.reader}; jira-done closes only the agent's own issue"
-            )
-        labels = fields.get("labels") or []
-        routed = [f"agent-{name}" for name in ROUTED_THROUGH]
-        if agent_label and agent_label not in labels:
-            raise AtlError(f"{issue}: no '{agent_label}' label, so it is {self.via}'s own issue, not {self.display}'s")
-        if not agent_label and any(label in routed for label in labels):
-            mine = next(label for label in labels if label in routed)
-            name = mine.removeprefix("agent-")
-            raise AtlError(
-                f"{issue}: labelled '{mine}', so it is {name.capitalize()}'s: "
-                f"atl {name} --via {ROUTED_THROUGH[name]} jira-done"
-            )
+        labels = self._require_own(issue, fields, account, agent_label, "jira-done")
         held = [label for label in labels if label.lower() in WAITS_FOR_AHMED]
         if held:
             raise AtlError(f"{issue}: labelled '{held[0]}', it waits for Ahmed; jira-done leaves it as it is")
@@ -1612,25 +1659,8 @@ class AtlClient:
             raise AtlError(f"{issue}: already {status['name']}")
         if status["statusCategory"]["key"] != "indeterminate":
             raise AtlError(f"{issue}: status is '{status['name']}', jira-done only closes an issue In Progress")
-        jql = quote(f"key = {issue} AND assignee = currentUser()")
-        if not self._call("GET", "jira", f"/rest/api/3/search/jql?jql={jql}&fields=key").get("issues"):
-            raise AtlError(f"{issue}: not assigned to the user whose token this is ({self.reader})")
-        try:
-            found = prs(issue)
-        except AtlError as error:
-            raise AtlError(
-                f"{issue}: not closed, because atl can't tell whether every PR that mentions it is merged ({error})"
-            ) from None
-        unknown = [p for p in found if p.get("state") not in ("OPEN", "MERGED", "CLOSED")]
-        if unknown:
-            raise AtlError(f"{issue}: a PR that mentions it is in an unknown state: {unknown[0].get('url')}")
-        still_open = [p for p in found if p["state"] == "OPEN"]
-        if still_open:
-            urls = ", ".join(p.get("url") or f"{p.get('repo')}#{p.get('number')}" for p in still_open)
-            raise AtlError(
-                f"{issue}: an open PR mentions it ({urls}); PR work closes through 'Closes {issue}' on its merge"
-            )
-        merged = [p for p in found if p["state"] == "MERGED"]
+        self._require_token_user(issue)
+        merged = self._merged_prs(issue, prs, f"PR work closes through 'Closes {issue}' on its merge")
         moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
         options = [t for t in moves if t["to"]["statusCategory"]["key"] == "done"]
         if not options:
@@ -1650,6 +1680,104 @@ class AtlClient:
                 f"{issue}: the comment is posted, but the move to '{chosen['to']['name']}' failed: {error}"
             ) from error
         return chosen["to"]["name"], merged
+
+    def jira_wontdo(
+        self, issue: str, why: str, ahmed: str = "", prs: Callable[[str], list[dict]] = github_prs
+    ) -> tuple[str, bool, list[dict]]:
+        """A lead cancels a BASITA or ELB issue as Won't Do, with the reason (BASITA-203). Two cases:
+
+        - the lead's own issue (no `ahmed`): the same ownership rules as jira-done (assigned to this agent; Maya's
+          through Sherif; not held by needs-ahmed; the token's user is the assignee);
+        - an issue Ahmed cancelled (`ahmed` = his words, kept verbatim in the comment): any assignee, because the
+          cancellation is his and the signed comment is the trail. Only the agents in WONT_DO_ON_AHMEDS_WORD may use
+          it (`atl` can't verify his words); any other agent is refused before any call, and the comment names the
+          agent that ran it next to his words.
+
+        Refuses, before any write: DFP (it keeps jira-flow and the merge) and other projects; an Epic; an issue already
+        Done; an open PR that mentions it (close or merge the PR first); PRs it can't read (fail closed). From any
+        status that is not Done, so a To Do or In Progress issue may be cancelled. Then it posts a signed comment
+        (the reason, Ahmed's words, the merged PRs), moves the issue to the status "Won't Do" when its workflow has
+        one, and otherwise to Done with the label `wont-do` added after the move (WONT_DO_LABEL). It removes no label
+        (agent-hold stays) and deletes nothing. Returns the new status, whether the label was added, and the merged PRs.
+        Needs read:jira-work, write:jira-work and write:comment:jira."""
+        if not ISSUE_KEY.match(issue):
+            raise AtlError(f"'{issue}' is not an issue key")
+        project = issue.split("-")[0]
+        if project == "DFP":
+            raise AtlError(f"{issue}: DFP issues move through jira-flow and close on the merge, not with jira-wontdo")
+        if project not in DONE_PROJECTS:
+            raise AtlError(f"{issue}: jira-wontdo is for {' and '.join(DONE_PROJECTS)} issues only")
+        why = why.strip()
+        if not why:
+            raise AtlError("say why it is cancelled, with --why")
+        ahmed = ahmed.strip()
+        if ahmed and self.agent not in WONT_DO_ON_AHMEDS_WORD:
+            raise AtlError(
+                f"{issue}: only {', '.join(WONT_DO_ON_AHMEDS_WORD)} cancel on Ahmed's word (--ahmed); "
+                f"{self.display} cancels its own issue with --why alone"
+            )
+        account, agent_label = ("", "") if ahmed else self._done_owner()
+        fields = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,assignee,labels,issuetype")[
+            "fields"
+        ]
+        if (fields.get("issuetype") or {}).get("name") == "Epic":
+            raise AtlError(f"{issue}: an Epic is never worked as a ticket, jira-wontdo does not cancel it")
+        status = fields["status"]
+        if status["statusCategory"]["key"] == "done":
+            raise AtlError(f"{issue}: already {status['name']}")
+        if not ahmed:
+            labels = self._require_own(issue, fields, account, agent_label, "jira-wontdo")
+            held = [label for label in labels if label.lower() in WAITS_FOR_AHMED]
+            if held:
+                raise AtlError(
+                    f"{issue}: labelled '{held[0]}', it waits for Ahmed; cancel it with his words (--ahmed) or leave it"
+                )
+            self._require_token_user(issue)
+        merged = self._merged_prs(issue, prs, "close or merge that PR first, then cancel the issue")
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        wanted = _status_key(WONT_DO_STATUS)
+        chosen = next((t for t in moves if _status_key(t["to"]["name"]) == wanted), None)
+        labelled = chosen is None
+        if chosen is None:
+            options = [t for t in moves if t["to"]["statusCategory"]["key"] == "done"]
+            if not options:
+                raise AtlError(
+                    f"{issue}: no transition to {WONT_DO_STATUS} or to a Done status from '{status['name']}'"
+                )
+            chosen = next((t for t in options if t["to"]["name"] == "Done"), options[0])
+        lines = [f"{WONT_DO_STATUS}: {why}"]
+        if ahmed:
+            lines.append(f"Cancelled by Ahmed, in his words: «{ahmed}»")
+            lines.append(f"Run by {self.display} on Ahmed's word.")
+        if merged:
+            listed = "\n".join(p.get("url") or f"{p.get('repo')}#{p.get('number')}" for p in merged)
+            lines.append(f"Pull requests that mention {issue}, all merged:\n{listed}")
+        else:
+            lines.append(f"No pull request mentions {issue}.")
+        if labelled:
+            lines.append(
+                f"This workflow has no '{WONT_DO_STATUS}' status, so the issue is closed as {chosen['to']['name']} and "
+                f"labelled '{WONT_DO_LABEL}': it was cancelled, not delivered."
+            )
+        self.jira_comment(issue, "\n\n".join(lines) + f"\n\n— {self.signature}")
+        try:
+            self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        except AtlError as error:
+            raise AtlError(
+                f"{issue}: the comment is posted, but the move to '{chosen['to']['name']}' failed: {error}"
+            ) from error
+        moved_to = chosen["to"]["name"]
+        if labelled:
+            try:
+                self._call(
+                    "PUT", "jira", f"/rest/api/3/issue/{issue}", {"update": {"labels": [{"add": WONT_DO_LABEL}]}}
+                )
+            except AtlError as error:
+                raise AtlError(
+                    f"{issue}: moved to '{moved_to}', but the '{WONT_DO_LABEL}' label failed: {error}; "
+                    "add it with jira-edit"
+                ) from error
+        return moved_to, labelled, merged
 
     def jira_ready(self, issue: str, assignee: str = "") -> str:
         """Refinement -> Ready (or Ready for Development in DFP), the one transition an agent makes on a

@@ -70,6 +70,11 @@ Merging stays Ahmed's. The one exception is Talia, while Ahmed has delegated (pl
 - **The merge** is a squash with the checked head pinned (`sha`), so a push in between fails it. Its message says "Merged by Talia on Ahmed's delegation: <issue>". The PR gets the label `merged-on-delegation` and a comment with the checks. Talia then lists the merge on the delegation issue, comments on the Jira issue, and briefs Ahmed when the window ends.
 - **Afterwards:** Main guard accepts `basita-talia[bot]` only for a push that is a merged PR's merge commit (`--merge-only`, `--pr-merge`); `scripts/agent-gh reader delegation-covers <ISO time>` tells basita-ops `main-guard-check.sh` which delegation, if any, held at the time of a merge.
 
+## Playbook `main` is a deployment path to the Mac (BASITA-215)
+Nothing merges to this repository's `main` without Ahmed. The Mac's checkout of this repository holds `agent-gh`, `agent-git` and `atl`, which use the agents' keys and tokens, and basita-ops' `playbook-sync.sh` fast-forwards that checkout to `origin/main` at every sync. So a merge here reaches the Mac at the next sync with no Mac-side review.
+- Do not add an auto-merge, a bypass or a looser branch rule for `main` here without Ahmed.
+- The same rule is in the header of basita-ops' `playbook-sync.sh`.
+
 ## Jira and Confluence as the agent (trial)
 The cloud id defaults to Basita's site (`basitasolutions.atlassian.net`), so `atl` needs no environment setup in an autonomous session; `ATL_CLOUD_ID` or `--cloud-id` override it.
 

@@ -6,6 +6,7 @@
     atl <agent> jira-comment BASITA-1 "text" [--mention <account id> ...]
     atl <agent> jira-start BASITA-1 ["text"]
     atl <agent> jira-done BASITA-1 --why "what was delivered"
+    atl <agent> jira-wontdo BASITA-1 --why "reason" [--ahmed "his words, verbatim"]
     atl <agent> jira-ready BASITA-1 ["text"]
     atl adam jira-return DFP-1 "reason"
     atl salma jira-dismiss DFP-1 --reason "Not a Bug" ["text"]
@@ -32,6 +33,14 @@ comments. `jira-done <KEY> --why "..."` moves the agent's own BASITA or ELB issu
 that mentions the issue (PR work closes through `Closes` on merge) and PRs it can't read; it comments, then moves,
 and changes no label. Maya's issues (assigned to Sherif, labelled agent-maya) take --via sherif. `jira-ready` moves
 a Refinement issue to Ready (never an Epic) and comments.
+BASITA-203: `jira-wontdo <KEY> --why "reason" [--ahmed "his words"]` cancels a BASITA or ELB issue (a lead's own
+issue, or any issue Ahmed cancelled, whose words go in `--ahmed` and into the comment verbatim, with the agent that
+ran it; only Sherif may use `--ahmed`, any other agent is refused). It refuses DFP, an
+Epic, an issue already Done, any open PR that mentions the issue and PRs it can't read; for the agent's own issue it
+also applies jira-done's ownership rules and `needs-ahmed`. It posts a signed comment (reason, Ahmed's words, the
+merged PRs), then moves the issue to the status "Won't Do" when its workflow has one. Until then (BASITA and ELB have
+none) it moves the issue to Done and adds the label `wont-do`, saying so in the comment. It removes no label and
+deletes nothing.
 `jira-create <PROJECT> <Story|Task|Bug|Sub-task|Epic> "summary" "description"` creates an issue, signed in its
 description and unassigned unless --assignee says otherwise.
 `jira-edit <KEY>` changes the fields named by its options in one request, as the agent's own user (BASITA-169):
@@ -93,6 +102,7 @@ import sys
 from .client import (
     CLOSE_REASONS,
     ISSUE_KEY,
+    WONT_DO_LABEL,
     AtlClient,
     AtlError,
     LinkCommentError,
@@ -122,6 +132,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "jira-comment",
             "jira-start",
             "jira-done",
+            "jira-wontdo",
             "jira-ready",
             "jira-flow",
             "jira-create",
@@ -176,7 +187,13 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     parser.add_argument("--summary", default="", help="jira-edit: the new summary")
     parser.add_argument("--due-date", default="", help="jira-edit: YYYY-MM-DD, or none")
     parser.add_argument("--type", dest="link_type", default="", help="jira-link: the link type or phrase (relates to)")
-    parser.add_argument("--why", dest="done_why", default="", help="jira-done: what was delivered, or - for stdin")
+    parser.add_argument(
+        "--why",
+        dest="done_why",
+        default="",
+        help="jira-done: what was delivered; jira-wontdo: why it is cancelled (or - for stdin)",
+    )
+    parser.add_argument("--ahmed", default="", help="jira-wontdo: Ahmed's words when he cancelled the issue, verbatim")
     parser.add_argument(
         "--out",
         default="",
@@ -219,8 +236,14 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             file=sys.stderr,
         )
         return 2
-    if args.command != "jira-done" and args.done_why:
-        print(f"atl: --why is for jira-done, not {args.command}", file=sys.stderr)
+    if args.command not in ("jira-done", "jira-wontdo") and args.done_why:
+        print(f"atl: --why is for jira-done and jira-wontdo, not {args.command}", file=sys.stderr)
+        return 2
+    if args.command != "jira-wontdo" and args.ahmed:
+        print(f"atl: --ahmed is for jira-wontdo, not {args.command}", file=sys.stderr)
+        return 2
+    if args.command == "jira-wontdo" and args.ahmed and not args.ahmed.strip():
+        print("atl: --ahmed needs his words, not an empty text", file=sys.stderr)
         return 2
     if args.json and args.command != "jira-get":
         print(f"atl: --json is for jira-get, not {args.command}", file=sys.stderr)
@@ -240,7 +263,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         return _snapshot(args, token_source, transport)
     if args.command in ("jira-edit", "jira-link"):
         return _edit_or_link(args, token_source, transport)
-    if args.command == "jira-done":
+    if args.command in ("jira-done", "jira-wontdo"):
         return _done(args, token_source, transport, pr_source)
 
     if args.command in READS:
@@ -500,13 +523,18 @@ def _attach(args, token_source, transport) -> int:
 
 
 def _done(args, token_source, transport, pr_source) -> int:
+    """jira-done and jira-wontdo: both take the issue key and --why, and close the issue with the PR checks."""
     others = (args.mention, args.reason, args.title, args.parent, args.label, args.assignee, args.link, args.storage)
+    wontdo = args.command == "jira-wontdo"
     if args.text or args.why or args.description or any(others):
-        print('atl: jira-done takes the issue key and --why "what was delivered" only', file=sys.stderr)
+        meaning = "why it is cancelled" if wontdo else "what was delivered"
+        extra = ' [--ahmed "his words"]' if wontdo else ""
+        print(f'atl: {args.command} takes the issue key and --why "{meaning}"{extra} only', file=sys.stderr)
         return 2
     why = sys.stdin.read() if args.done_why == "-" else args.done_why
     if not why.strip():
-        print('atl: jira-done needs --why "what was delivered"', file=sys.stderr)
+        meaning = "why it is cancelled" if wontdo else "what was delivered"
+        print(f'atl: {args.command} needs --why "{meaning}"', file=sys.stderr)
         return 2
     try:
         agent = args.agent.lower()
@@ -519,6 +547,13 @@ def _done(args, token_source, transport, pr_source) -> int:
             via=args.via,
             **kwargs,
         )
+        if wontdo:
+            status, labelled, merged = client.jira_wontdo(args.target, why, args.ahmed, pr_source)
+            prs = f", {len(merged)} merged PR(s)" if merged else ", no PR"
+            how = f" (no Won't Do status here: labelled {WONT_DO_LABEL})" if labelled else ""
+            by_ahmed = ", on Ahmed's word" if args.ahmed.strip() else ""
+            print(f"{args.target} -> {status}{how}{prs}{by_ahmed}, by {client.display}")
+            return 0
         status, merged = client.jira_done(args.target, why, pr_source)
         prs = f", {len(merged)} merged PR(s)" if merged else ", no PR"
         print(f"{args.target} -> {status}{prs}, by {client.display}")
