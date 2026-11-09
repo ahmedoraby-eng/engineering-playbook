@@ -46,7 +46,7 @@ def test_nothing_from_the_event_is_interpolated_into_a_script():
 
 
 def test_third_party_code_is_pinned_to_a_major_version():
-    for use in re.findall(r"uses: (\S+)", REUSABLE):
+    for use in re.findall(r"^\s*(?:- )?uses: (\S+)", REUSABLE, re.M):
         assert re.search(r"@v\d+$|@main$", use), use
 
 
@@ -85,3 +85,26 @@ def test_the_train_app_is_fenced_in_the_identity_config():
     assert train["branch_prefix"] == "train/", "if run as an identity it could push train/* only, never main"
     assert not train.get("updates_main") and not train.get("read_only")
     assert train["app_id"] is None, "pending until Ahmed creates it (scripts/gh-app-new train)"
+
+
+def test_the_playbook_code_that_gets_the_app_key_is_pinned_not_a_branch():
+    assert "@main" not in CALLER.replace("branches: [main]", ""), "the caller never runs the playbook's main"
+    assert re.search(r"reusable-merge-train\.yml@PLAYBOOK_COMMIT_SHA$", CALLER, re.M)
+    assert re.search(r"^\s+playbook-ref: PLAYBOOK_COMMIT_SHA$", CALLER, re.M)
+    assert CALLER.count("PLAYBOOK_COMMIT_SHA") >= 2
+    ref = re.search(r"^      playbook-ref:\n((?:        .*\n)+)", REUSABLE, re.M).group(1)
+    assert "default:" not in ref and "required: true" in ref, "no default ref, so it cannot fall back to main"
+    assert "ref: ${{ inputs.playbook-ref }}" in REUSABLE
+
+
+def test_a_playbook_ref_that_is_not_a_full_sha_stops_the_run_before_the_key_is_minted():
+    guard = REUSABLE.index("^[0-9a-f]{40}$")
+    assert guard < REUSABLE.index("actions/create-github-app-token")
+    block = step_run_blocks(REUSABLE)[0]
+    assert "${{" not in block and "$PLAYBOOK_REF" in block, "the input reaches the script through the environment"
+
+
+def test_commit_statuses_are_readable_by_the_job_and_allowed_by_the_caller():
+    for text in (REUSABLE, CALLER):
+        block = re.search(r"^permissions:\n((?:  .*\n)+)", text, re.M).group(1)
+        assert "statuses: read" in block and "write" not in block

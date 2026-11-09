@@ -58,6 +58,7 @@ class FakeGH:
         self.moved_to = moved_to
         self.writes: list[tuple] = []
         self.commit_age = 1000.0
+        self.statuses: dict[str, str] = {}
 
     def default_branch(self):
         return "main"
@@ -79,6 +80,9 @@ class FakeGH:
 
     def check_runs(self, sha):
         return list(self.runs.get(sha, []))
+
+    def commit_statuses(self, sha):
+        return dict(self.statuses)
 
     def update_branch(self, n, sha):
         self.writes.append(("update", n, sha))
@@ -296,6 +300,23 @@ def test_ready_is_announced_once_per_head_and_the_train_never_merges():
     assert not any("merge" in k for k in kinds(gh))
 
 
+def test_the_ready_comment_says_what_it_covers_and_names_commit_statuses_that_are_not_green():
+    gh = FakeGH([pr(35)], runs={SHA: [*GREEN, check("ai-guard", "", "in_progress")]})
+    gh.statuses = {"Jira status": "failure", "Some other": "success", "Waiting one": "pending"}
+    go(gh, [35])
+    text = gh.writes[0][2]
+    assert "جاهز للدمج: #35" in text and "الإعلان يشمل CI وE2E وOwner review فقط" in text
+    assert "Jira status (failure)" in text and "Some other" not in text
+    assert "ai-guard" in text and "Waiting one" in text, "a check that is still running is named too"
+
+
+def test_an_all_green_head_still_says_what_the_announcement_does_not_cover():
+    gh = FakeGH([pr(36)])
+    go(gh, [36])
+    text = gh.writes[0][2]
+    assert "الإعلان يشمل CI وE2E وOwner review فقط" in text and "حمراء" not in text
+
+
 def test_a_new_head_is_announced_again():
     runs = {SHA: list(GREEN), NEW: list(GREEN)}
     gh = FakeGH([pr(31)], runs=runs)
@@ -381,6 +402,27 @@ def test_writes_use_the_app_token_and_reads_use_the_read_token_and_nothing_can_m
     writers = {"update_branch", "add_label", "remove_label", "comment"}
     assert not any("merge" in n for n in public)
     assert writers <= public
+
+
+def test_only_the_trains_own_comments_count_as_markers():
+    items = [
+        {"body": "mine", "user": {"login": "basita-train[bot]"}},
+        {"body": "<!-- merge-train:ready:x --> faked", "user": {"login": "someone"}},
+        {"body": "no user", "user": None},
+        {"body": "no user key"},
+    ]
+    gh, calls = client(lambda m, u: Response(200, items))
+    assert gh.comments(7) == ["mine"]
+    assert calls[0][1].startswith("https://api.github.com/repos/o/r/issues/7/comments")
+    gh2 = GitHub("o/r", "READ", "WRITE", transport=lambda r: Response(200, items), train_login="someone")
+    assert gh2.comments(7) == ["<!-- merge-train:ready:x --> faked"]
+
+
+def test_commit_statuses_are_read_with_the_read_token():
+    body = {"statuses": [{"context": "Jira status", "state": "failure"}, {"context": "x", "state": "success"}]}
+    gh, calls = client(lambda m, u: Response(200, body))
+    assert gh.commit_statuses(SHA) == {"Jira status": "failure", "x": "success"}
+    assert calls[0][0] == "GET" and calls[0][2] == "Bearer READ" and calls[0][1].endswith(f"/commits/{SHA}/status")
 
 
 def test_update_branch_outcomes():

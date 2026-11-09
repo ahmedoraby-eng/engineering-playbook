@@ -2,6 +2,11 @@
 # repository (Ahmed installs it: no agent App can push a workflow file, decision D4). Needs the repository
 # secrets TRAIN_APP_ID and TRAIN_APP_PRIVATE_KEY of the basita-train App, and a
 # .github/merge-train.json on main (see templates/merge-train/merge-train.json).
+#
+# PIN: replace both PLAYBOOK_COMMIT_SHA below with the same full 40-character commit SHA of the
+# engineering-playbook (the commit that has reusable-merge-train.yml and merge_train/). This workflow
+# hands the reusable one the App's private key, so it must run a reviewed commit, never `main`; bump
+# the SHA in a pull request. Until it is replaced the workflow fails closed.
 name: Merge train
 
 # It runs on every merge to main and by hand, as the ADR says, and again when the checks of the
@@ -22,6 +27,7 @@ permissions:
   contents: read
   pull-requests: read
   checks: read
+  statuses: read
 
 # One train run at a time; a run waiting behind it is replaced by a newer one (state is read afresh).
 # A run that would only be skipped (another label, a workflow_run on main) gets its own group, so a
@@ -35,7 +41,9 @@ jobs:
   merge-train:
     # Keep this condition identical to the one in the concurrency group. A train run is not a required check.
     if: ${{ !((github.event_name == 'pull_request_target' && github.event.label.name != 'reviewed-by-ahmed') || (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main')) }}
-    uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-merge-train.yml@main
+    uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-merge-train.yml@PLAYBOOK_COMMIT_SHA
+    with:
+      playbook-ref: PLAYBOOK_COMMIT_SHA
     secrets:
       app-id: ${{ secrets.TRAIN_APP_ID }}
       app-private-key: ${{ secrets.TRAIN_APP_PRIVATE_KEY }}

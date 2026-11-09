@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .config import Config
-from .github import CheckRun, GitHub, PullRequest
+from .github import CheckRun, GitHub, GitHubError, PullRequest
 
 E2E_LABEL = "run-e2e"
 CONFLICT_LABEL = "train-conflict"
@@ -253,17 +253,38 @@ def run(
             passed = ["CI"] + (["E2E"] if wants_e2e else []) + ["Owner review"]
             if REVIEW_LABEL in head.labels:
                 passed.append(REVIEW_LABEL)
-            soft = sorted(
-                r.name
-                for r in runs
-                if r.status == "completed"
-                and r.conclusion not in _GOOD | _NEUTRAL
-                and r.name not in (options.ci_check, options.owner_review_check, options.e2e_check)
-            )
-            note = f"لا تزال حمراء وغير مطلوبة للإشارة: {'، '.join(soft)}." if soft else ""
+            note = _not_covered_note(gh, head, runs, options)
             gh.comment(head.number, ready_comment(head, base, passed, note))
             report.did(f"announced #{head.number} as ready ({head.head_sha[:7]})")
     return report
+
+
+def _not_covered_note(gh: GitHub, head: PullRequest, runs: list[CheckRun], options: Options) -> str:
+    """The ready signal covers CI, E2E (when labelled) and Owner review only. Anything else that is red or
+    still running, including commit statuses such as `Jira status` (a DFP issue not yet Ready for Release),
+    is named, so «جاهز للدمج» is never read as «كل شيء أخضر»."""
+    own = (options.ci_check, options.owner_review_check, options.e2e_check)
+    red = sorted(
+        r.name for r in runs if r.status == "completed" and r.conclusion not in _GOOD | _NEUTRAL and r.name not in own
+    )
+    running = sorted(r.name for r in runs if r.status != "completed" and r.name not in own)
+    try:
+        statuses = gh.commit_statuses(head.head_sha)
+    except GitHubError:
+        statuses = {}
+        unreadable = True
+    else:
+        unreadable = False
+    red += sorted(f"{c} ({state})" for c, state in statuses.items() if state in ("failure", "error"))
+    running += sorted(c for c, state in statuses.items() if state == "pending")
+    lines = ["الإعلان يشمل CI وE2E وOwner review فقط."]
+    if red:
+        lines.append(f"حمراء وغير مشمولة: {'، '.join(red)}.")
+    if running:
+        lines.append(f"لم تنتهِ بعد وغير مشمولة: {'، '.join(running)}.")
+    if unreadable:
+        lines.append("تعذّرت قراءة الـ commit statuses (مثل Jira status)؛ راجعها قبل الدمج.")
+    return " ".join(lines)
 
 
 def _wait_for_new_head(gh: GitHub, old: PullRequest, sleep: Callable[[float], None]) -> PullRequest | None:

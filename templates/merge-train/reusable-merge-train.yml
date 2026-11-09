@@ -12,10 +12,16 @@
 # label made with GITHUB_TOKEN does not start other workflows, and the train needs CI and E2E to
 # start on the commit it creates. The App's id and private key are the caller's secrets.
 #
+# The caller pins this workflow and the merge_train code to ONE playbook commit (the same full SHA after
+# the @ of the workflow reference and in `playbook-ref`), because the caller hands this workflow the App's private key: a push
+# to the playbook's main must not start running with that key. Bump the SHA in a reviewed pull request.
+#
 #   # .github/workflows/merge-train.yml  (see templates/merge-train/merge-train.yml)
 #   jobs:
 #     merge-train:
-#       uses: ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-merge-train.yml@main
+#       (reference) ahmedoraby-eng/engineering-playbook/.github/workflows/reusable-merge-train.yml@<40-hex sha>
+#       with:
+#         playbook-ref: <the same 40-hex sha>
 #       secrets:
 #         app-id: ${{ secrets.TRAIN_APP_ID }}
 #         app-private-key: ${{ secrets.TRAIN_APP_PRIVATE_KEY }}
@@ -29,9 +35,9 @@ on:
         type: string
         default: .github/merge-train.json
       playbook-ref:
-        description: Version of the playbook's merge_train to run
+        description: Full commit SHA (40 hex) of the playbook whose merge_train to run; no default, never a branch
         type: string
-        default: main
+        required: true
       settle-seconds:
         description: How long a new head gets for its checks to appear before an absent CI counts as filtered out
         type: number
@@ -52,6 +58,7 @@ permissions:
   contents: read
   pull-requests: read
   checks: read
+  statuses: read # commit statuses such as "Jira status" (the check-runs API does not list them)
 
 jobs:
   merge-train:
@@ -59,6 +66,14 @@ jobs:
     runs-on: ubuntu-slim # 1 vCPU, $0.002/min (BASITA cost decision §7, item 2a)
     timeout-minutes: 15
     steps:
+      - name: Refuse a playbook-ref that is not a full commit SHA
+        env:
+          PLAYBOOK_REF: ${{ inputs.playbook-ref }}
+        run: |
+          if [[ ! "$PLAYBOOK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=Merge train::playbook-ref must be a full 40-character commit SHA, not '$PLAYBOOK_REF'"
+            exit 1
+          fi
       - name: Token of the basita-train App (contents and pull requests, this repository only)
         id: app
         uses: actions/create-github-app-token@v2

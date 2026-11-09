@@ -23,6 +23,9 @@ from typing import Any
 
 API = "https://api.github.com"
 PER_PAGE = 100
+# Only comments written by the train's own App count as its markers (a human comment must not be able
+# to suppress or fake «جاهز للدمج»). The REST API names a GitHub App's comments "<slug>[bot]".
+TRAIN_LOGIN = "basita-train[bot]"
 
 
 class GitHubError(RuntimeError):
@@ -66,6 +69,7 @@ class GitHub:
         *,
         transport: Transport = _open,
         sleep: Callable[[float], None] = time.sleep,
+        train_login: str = TRAIN_LOGIN,
     ) -> None:
         if not repo or repo.count("/") != 1:
             raise ValueError("repo must be 'owner/name'")
@@ -74,6 +78,7 @@ class GitHub:
         self._write_token = write_token
         self._transport = transport
         self._sleep = sleep
+        self._train_login = train_login
 
     # --- transport ------------------------------------------------------------------------------
 
@@ -194,8 +199,20 @@ class GitHub:
         return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
 
     def comments(self, number: int) -> list[str]:
+        """The bodies of the comments the train itself wrote (its markers live there); anyone else's
+        comment, human or bot, is not read as a marker."""
         items = self._paged(f"/repos/{self.repo}/issues/{number}/comments")
-        return [str(item.get("body", "")) for item in items]
+        return [
+            str(item.get("body", "")) for item in items if (item.get("user") or {}).get("login") == self._train_login
+        ]
+
+    def commit_statuses(self, sha: str) -> dict[str, str]:
+        """The latest state of each commit status context (success, pending, failure, error). The check-runs
+        API does not show these, e.g. `Jira status`. Needs the `statuses: read` permission."""
+        path = f"/repos/{self.repo}/commits/{sha}/status"
+        status, payload = self._read(path)
+        payload = self._ok("GET", path, status, payload, (200,))
+        return {str(item["context"]): str(item["state"]) for item in payload.get("statuses", [])}
 
     def check_runs(self, sha: str) -> list[CheckRun]:
         items = self._paged(f"/repos/{self.repo}/commits/{sha}/check-runs", "check_runs")
