@@ -425,9 +425,10 @@ def _write_atomically(path: Path, text: str) -> None:
         raise
 
 
-def _snapshot_top(issue: str, fields: dict, fetched: str) -> list[str]:
+def _snapshot_top(issue: str, fields: dict, fetched: str, legacy: bool = False) -> list[str]:
     """The top of the core file, up to the attachments: title, source line, field list, then the sections that have
-    something in them."""
+    something in them. `legacy` gives the top of the file before BASITA-219 (no Components, Created, Due date,
+    Resolution or Attachments, a plain Links heading), only to measure the core's size budget."""
     name = lambda field: (fields.get(field) or {}).get("displayName")  # noqa: E731
     parent = fields.get("parent") or {}
     parent_summary = _one_line((parent.get("fields") or {}).get("summary"))
@@ -444,7 +445,7 @@ def _snapshot_top(issue: str, fields: dict, fetched: str) -> list[str]:
         ("Created", fields.get("created")),
         ("Due date", fields.get("duedate")),
         ("Resolution", (fields.get("resolution") or {}).get("name")),
-    ]
+    ][: 8 if legacy else None]
     lines = [
         f"# {issue}: {_one_line(fields.get('summary'))}",
         "",
@@ -463,7 +464,9 @@ def _snapshot_top(issue: str, fields: dict, fetched: str) -> list[str]:
         status = other["fields"]["status"]["name"]
         links.append(f"- {relation} {other['key']}: {_one_line(other['fields'].get('summary'))} ({status})")
     if links:
-        lines += ["", "## Links", "", *links]
+        # The other issue's status is the one read at `fetched` (header line); `updated` of this issue does not move
+        # when a linked issue does, so the heading says so (Yousef's review of PR #52, non-blocking a).
+        lines += ["", "## Links" if legacy else f"## Links (status as of {fetched})", "", *links]
     subtasks = [
         f"- {s['key']}: {_one_line(s['fields'].get('summary'))} ({s['fields']['status']['name']})"
         for s in fields.get("subtasks", [])
@@ -475,7 +478,7 @@ def _snapshot_top(issue: str, fields: dict, fetched: str) -> list[str]:
         f"{(a.get('author') or {}).get('displayName') or 'Unknown'}, {a.get('created')})"
         for a in fields.get("attachment") or []
     ]
-    if attachments:
+    if attachments and not legacy:
         lines += ["", "## Attachments (names only; contents are not downloaded)", "", *attachments]
     return lines
 
@@ -501,7 +504,9 @@ def _snapshot_files(
     chosen = snap.select_comments(records, people, snapshot_marker(issue))
     entries = snap.history_entries(histories)
     archive, ranges = snap.render_archive(issue, marker, records, entries)
-    core, _ = snap.render_core(_snapshot_top(issue, fields, fetched), records, chosen, ranges, issue, entries)
+    budget = snap.legacy_size(_snapshot_top(issue, fields, fetched, legacy=True), records)
+    top = _snapshot_top(issue, fields, fetched)
+    core, _ = snap.render_core(top, records, chosen, ranges, issue, entries, budget=budget)
     return core, archive
 
 

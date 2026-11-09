@@ -53,11 +53,14 @@ and writes nothing). DIR is --out, else BASITA_OPS_DIR, else ~/Code/basita-ops; 
 (origin elbayoumy-farm-nutrition-platform) is refused. The file holds the fields, the description, links, sub-tasks
 and the comments the rules pin; Jira stays the master. BASITA-219 (Yousef's design, work/yousef/BASITA-219-snapshot-
 design.md): there are two files. `<KEY>.md` is the core: the fields (with Created, Due date, Resolution and Components
-when set), the description, links with the other issue's current status, sub-tasks, attachments by name, a Current
-state block (last status change, last comment, each author's latest comment), then the comments that a deterministic
-rule pins (Ahmed's, quotes of Ahmed, Decision:/Handoff:/State:/Blocked:/AC change: tags, decision-type keywords in
-English and Arabic, Adam's, comments cited by a later one, edited ones; any doubt pins) plus the last three, verbatim,
-and one index line (id, date, author, first 80 characters, archive line range) for every other comment.
+when set), the description, links with the other issue's status at the fetch, sub-tasks, attachments by name, a
+Current state block (last status change, and where each author's latest comment is), then the comments a
+deterministic rule pins, verbatim, and one index line (id, date, author, first 80 characters, archive line range) for
+every other comment. A strong pin (Ahmed's own comment, a quote of him, a Decision:/Handoff:/State:/Blocked:/AC change:
+tag, a comment cited or replacing one) is shown whole; a weak pin (a keyword, a mention of Ahmed, Adam's, an edited
+one) shows its first 600 characters and the archive lines of the rest; the last three are shown whole. The core is
+never bigger than the old "last 10" file of the same issue: past that, weak pins go to the index first and Ahmed's
+comments last, flagged "pinned, over cap".
 `<KEY>.full.md` is the archive: every comment verbatim, then the changelog, one line per change (when, who, field,
 from, to). Nothing is summarised and no model is called. `jira-get <KEY> --history` prints the changelog read live;
 `jira-get <KEY> --json` takes `--comments N` (the latest N, with `comments_total`) and `--history` (adds `history`).
