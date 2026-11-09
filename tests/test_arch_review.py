@@ -137,11 +137,36 @@ def test_a_cut_short_file_list_is_not_minor():
     assert "'minor' ignored: the file list is incomplete" in c.reasons
 
 
-def test_a_large_pr_is_not_minor_because_anyone_may_add_the_label():
+def test_a_pr_over_the_minor_limit_is_not_minor_because_anyone_may_add_the_label():
+    c = cls([f("src/app.css", 81)], labels=["minor"])
+    assert (c.cls, c.effort) == ("normal", "high")
+    assert "'minor' ignored: 81 changed lines outside docs and tests (limit 80)" in c.reasons
+    assert cls([f("src/app.css", 80), f("tests/a.test.ts", 5000)], labels=["minor"]).cls == "not-required"
     c = cls([f("src/app.css", 401)], labels=["minor"])
     assert (c.cls, c.effort) == ("large", "xhigh")
-    assert any(r.startswith("'minor' ignored: 401 changed lines") for r in c.reasons)
-    assert cls([f("src/app.css", 400), f("tests/a.test.ts", 5000)], labels=["minor"]).cls == "not-required"
+    assert "'minor' ignored: 401 changed lines outside docs and tests (limit 80)" in c.reasons
+
+
+def test_minor_max_lines_defaults_to_80_and_is_configurable():
+    assert RULES.minor_max_lines == 80 and RULES.minor_limit == 80
+    arch = {**RULES_JSON["architecture_review"], "minor_max_lines": 120}
+    wide = Rules.from_json({**RULES_JSON, "architecture_review": arch})
+    assert cls([f("src/app.css", 120)], labels=["minor"], rules=wide).cls == "not-required"
+    assert cls([f("src/app.css", 121)], labels=["minor"], rules=wide).cls == "normal"
+
+
+def test_the_minor_limit_never_exceeds_large_lines():
+    arch = {**RULES_JSON["architecture_review"], "minor_max_lines": 900}
+    wide = Rules.from_json({**RULES_JSON, "architecture_review": arch})
+    assert wide.minor_limit == 400
+    assert cls([f("src/app.css", 401)], labels=["minor"], rules=wide).cls == "large"
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "80", 1.5])
+def test_minor_max_lines_must_be_a_positive_whole_number(bad):
+    data = {**RULES_JSON, "architecture_review": {**RULES_JSON["architecture_review"], "minor_max_lines": bad}}
+    with pytest.raises(RulesError, match="minor_max_lines"):
+        Rules.from_json(data)
 
 
 def test_needs_label_beats_minor():
