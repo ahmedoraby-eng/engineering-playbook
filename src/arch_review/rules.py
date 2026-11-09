@@ -14,6 +14,11 @@ Classes, first match wins:
 - `large`: more than `large_lines` changed lines outside `size_exclude`. Effort `xhigh`.
 - `normal`: everything else. Effort `high`.
 The `needs-yousef` label, which anyone may add, turns `not-required` into a review.
+The `minor` label (BASITA-221; Ahmed, 09/11/2026, operating model 2.2) marks a small UI or wording
+change that skips the architect: `not-required`, with a note. It never outranks the rules above it: a
+minor PR on a critical path (logic, data, security, calculation or CI files) stays `critical`, and a minor
+PR over `large_lines` changed lines is reviewed as `large`, because anyone may add the label. `needs-yousef`
+beats it. `minor_label` in the rules renames it; an empty name switches it off.
 `reviewer_own_bots` lists the bots the reviewer pushes with (his docs App): his approval never counts on
 a PR they opened or committed to, so he can't approve his own work (BASITA-161, plan 10.2).
 A docs or test file on a critical path (an agent rule in `CLAUDE.md`, a CI file) is critical, never
@@ -93,6 +98,7 @@ class Rules:
     skip_test_only: bool = False
     waive_label: str = "review-waived"
     needs_label: str = "needs-yousef"
+    minor_label: str = "minor"
     effort: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT))
     reviewer_own_bots: frozenset[str] = field(default_factory=frozenset)
 
@@ -110,6 +116,9 @@ class Rules:
         large = arch.get("large_lines", 400)
         if not isinstance(large, int) or isinstance(large, bool) or large < 1:
             raise RulesError("'architecture_review.large_lines' must be a positive whole number")
+        minor = arch.get("minor_label", "minor")
+        if not isinstance(minor, str) or re.search(r"\s", minor):
+            raise RulesError("'architecture_review.minor_label' must be a label name without spaces (or empty)")
         effort = {**DEFAULT_EFFORT, **(arch.get("effort") or {})}
         exempt = arch.get("exempt_authors", [owner])
         own = arch.get("reviewer_own_bots", [])
@@ -127,6 +136,7 @@ class Rules:
             skip_test_only=arch.get("skip_test_only") is True,
             waive_label=arch.get("waive_label", "review-waived"),
             needs_label=arch.get("needs_label", "needs-yousef"),
+            minor_label=minor,
             effort=effort,
             reviewer_own_bots=frozenset(b.lower() for b in own),
         )
@@ -190,10 +200,18 @@ def classify(
         exempt = ", ".join(sorted(rules.exempt_authors)) or "nobody"
         return Classification(NOT_REQUIRED, "", (f"no commits outside {exempt}", *notes))
 
+    # BASITA-221: a minor PR skips the architect, but never past the critical paths, the file-list limit or the size
+    # limit below, and never when the architect was asked for by name.
+    minor = bool(rules.minor_label) and rules.minor_label in labels and not asked
+
     critical = sorted({n for f in files for n in f.names() if rules.critical.search(n)})
     if critical:
+        if minor:
+            notes.append(f"'{rules.minor_label}' ignored: a critical path is never minor")
         return done(CRITICAL, f"critical paths: {', '.join(critical)}")
     if changed_files is not None and changed_files > len(files):
+        if minor:
+            notes.append(f"'{rules.minor_label}' ignored: the file list is incomplete")
         return done(CRITICAL, f"only {len(files)} of {changed_files} changed files could be read")
 
     # Both names of a renamed file must match: code renamed to `docs/x.md` is not docs only.
@@ -209,6 +227,12 @@ def classify(
         return Classification(NOT_REQUIRED, "", (skip, *notes))
 
     size = sum(f.changes for f in files if not rules.size_exclude.search(f.filename))
+    if minor and size <= rules.large_lines:
+        return Classification(NOT_REQUIRED, "", (f"labelled '{rules.minor_label}': no architecture review", *notes))
+    if minor:
+        notes.append(
+            f"'{rules.minor_label}' ignored: {size} changed lines outside docs and tests (limit {rules.large_lines})"
+        )
     reasons = [f"labelled '{rules.needs_label}'"] if asked else []
     if others:
         reasons.append(f"commits by {', '.join(others)}")
