@@ -597,6 +597,10 @@ WAITS_FOR_AHMED = ("needs-ahmed",)
 # looked up by name at each call, so adding it to the workflow needs no change here.
 WONT_DO_STATUS = "Won't Do"
 WONT_DO_LABEL = "wont-do"
+# Who may pass --ahmed to jira-wontdo. `atl` cannot verify Ahmed's words, so this power is not every agent's: it is
+# the named agents' (Sherif, whose scope this is; add Talia when she has a Jira seat). Any other lead cancels only
+# its own issue, with --why (Yousef's review of PR 53, 09/11/2026).
+WONT_DO_ON_AHMEDS_WORD = ("sherif",)
 
 
 def _status_key(name: str) -> str:
@@ -1610,7 +1614,9 @@ class AtlClient:
         - the lead's own issue (no `ahmed`): the same ownership rules as jira-done (assigned to this agent; Maya's
           through Sherif; not held by needs-ahmed; the token's user is the assignee);
         - an issue Ahmed cancelled (`ahmed` = his words, kept verbatim in the comment): any assignee, because the
-          cancellation is his and the signed comment is the trail.
+          cancellation is his and the signed comment is the trail. Only the agents in WONT_DO_ON_AHMEDS_WORD may use
+          it (`atl` can't verify his words); any other agent is refused before any call, and the comment names the
+          agent that ran it next to his words.
 
         Refuses, before any write: DFP (it keeps jira-flow and the merge) and other projects; an Epic; an issue already
         Done; an open PR that mentions it (close or merge the PR first); PRs it can't read (fail closed). From any
@@ -1630,6 +1636,11 @@ class AtlClient:
         if not why:
             raise AtlError("say why it is cancelled, with --why")
         ahmed = ahmed.strip()
+        if ahmed and self.agent not in WONT_DO_ON_AHMEDS_WORD:
+            raise AtlError(
+                f"{issue}: only {', '.join(WONT_DO_ON_AHMEDS_WORD)} cancel on Ahmed's word (--ahmed); "
+                f"{self.display} cancels its own issue with --why alone"
+            )
         account, agent_label = ("", "") if ahmed else self._done_owner()
         fields = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,assignee,labels,issuetype")[
             "fields"
@@ -1662,6 +1673,7 @@ class AtlClient:
         lines = [f"{WONT_DO_STATUS}: {why}"]
         if ahmed:
             lines.append(f"Cancelled by Ahmed, in his words: «{ahmed}»")
+            lines.append(f"Run by {self.display} on Ahmed's word.")
         if merged:
             listed = "\n".join(p.get("url") or f"{p.get('repo')}#{p.get('number')}" for p in merged)
             lines.append(f"Pull requests that mention {issue}, all merged:\n{listed}")

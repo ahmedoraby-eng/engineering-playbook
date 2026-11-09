@@ -34,7 +34,8 @@ that mentions the issue (PR work closes through `Closes` on merge) and PRs it ca
 and changes no label. Maya's issues (assigned to Sherif, labelled agent-maya) take --via sherif. `jira-ready` moves
 a Refinement issue to Ready (never an Epic) and comments.
 BASITA-203: `jira-wontdo <KEY> --why "reason" [--ahmed "his words"]` cancels a BASITA or ELB issue (a lead's own
-issue, or any issue Ahmed cancelled, whose words go in `--ahmed` and into the comment verbatim). It refuses DFP, an
+issue, or any issue Ahmed cancelled, whose words go in `--ahmed` and into the comment verbatim, with the agent that
+ran it; only Sherif may use `--ahmed`, any other agent is refused). It refuses DFP, an
 Epic, an issue already Done, any open PR that mentions the issue and PRs it can't read; for the agent's own issue it
 also applies jira-done's ownership rules and `needs-ahmed`. It posts a signed comment (reason, Ahmed's words, the
 merged PRs), then moves the issue to the status "Won't Do" when its workflow has one. Until then (BASITA and ELB have

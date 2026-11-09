@@ -22,7 +22,7 @@ from test_atl_done import (
 
 from atl_agent import AtlError
 from atl_agent.__main__ import main
-from atl_agent.client import JIRA_ACCOUNTS, WONT_DO_LABEL, github_prs
+from atl_agent.client import JIRA_ACCOUNTS, WONT_DO_LABEL, WONT_DO_ON_AHMEDS_WORD, github_prs
 
 ADAM = JIRA_ACCOUNTS["adam"]
 AHMED_WORDS = "دي مش محتاجها ... لو أوريدي رجعت حاجة مرة وكده هبقى واخد بالي إن أنا رجعتها قبل كده"
@@ -123,11 +123,44 @@ def test_ahmeds_cancellation_quotes_his_words_and_works_on_anyones_issue():
     assert f"Cancelled by Ahmed, in his words: \u00ab{AHMED_WORDS}\u00bb" in lines  # verbatim, one paragraph
     text = comment_text(transport.calls[2])
     assert "— Sherif (Basita AI)" in text
+    assert "Run by Sherif on Ahmed's word." in lines  # the trail names the agent next to his words
 
 
 def test_ahmeds_cancellation_may_cancel_an_issue_held_for_him():
     transport = ahmeds(LABELLED, response=issue(account=ADAM, labels=["needs-ahmed", "agent-hold"]))
-    assert client(transport, "talia").jira_wontdo("BASITA-198", "Cancelled.", "No.", no_prs)[0] == "Done"
+    assert client(transport, "sherif").jira_wontdo("BASITA-198", "Cancelled.", "No.", no_prs)[0] == "Done"
+
+
+def test_only_sherif_may_cancel_on_ahmeds_word():
+    assert WONT_DO_ON_AHMEDS_WORD == ("sherif",)
+
+
+@pytest.mark.parametrize("agent", ["malek", "adam", "talia", "salma", "yousef", "nora", "haya"])
+def test_other_agents_are_refused_on_ahmeds_word_before_any_call(agent):
+    transport = FakeTransport()
+    refused(
+        transport,
+        r"only sherif cancel on Ahmed's word \(--ahmed\).*cancels its own issue with --why",
+        agent,
+        ahmed=AHMED_WORDS,
+    )
+    assert transport.calls == []
+
+
+def test_maya_via_sherif_is_refused_on_ahmeds_word_too():
+    transport = FakeTransport()
+    refused(transport, "only sherif cancel on Ahmed's word", agent="maya", via="sherif", ahmed=AHMED_WORDS)
+    assert transport.calls == []
+
+
+def test_a_refused_agent_still_cancels_its_own_issue_with_why_alone():
+    assert client(own(LABELLED)).jira_wontdo("BASITA-198", "Mine.", prs=no_prs)[0] == "Done"
+
+
+def test_sherif_cancels_an_issue_assigned_to_someone_else_on_ahmeds_word():
+    transport = ahmeds(LABELLED, response=issue(account=ADAM, labels=["agent-adam"]))
+    assert client(transport, "sherif").jira_wontdo("BASITA-198", "Cancelled.", AHMED_WORDS, no_prs)[0] == "Done"
+    assert not any("/search/jql" in c[1] for c in transport.calls)
 
 
 def test_merged_prs_may_not_stop_it_and_are_listed():
@@ -154,7 +187,8 @@ def test_removes_no_label_and_deletes_nothing():
 # ---------- refusals: nothing is written ----------
 
 
-def refused(transport, message, agent="malek", via="", key="BASITA-198", source=no_prs, ahmed=""):
+def refused(transport, message, agent="", via="", key="BASITA-198", source=no_prs, ahmed=""):
+    agent = agent or ("sherif" if ahmed else "malek")  # only Sherif may use --ahmed
     with pytest.raises(AtlError, match=message):
         client(transport, agent, via).jira_wontdo(key, "Not needed.", ahmed, source)
     assert not [c for c in transport.calls if c[0] != "GET"]
@@ -241,9 +275,9 @@ def test_sherif_refuses_mayas_issue_and_says_how_to_cancel_it():
     refused(transport, "atl maya --via sherif jira-wontdo", agent="sherif")
 
 
-def test_an_agent_with_no_jira_user_cannot_cancel_its_own_but_can_on_ahmeds_word():
+def test_an_agent_with_no_jira_user_can_neither_cancel_its_own_nor_use_ahmeds_word():
     refused(FakeTransport(), "has no Jira user", agent="talia")
-    assert client(ahmeds(LABELLED), "talia").jira_wontdo("BASITA-198", "x", AHMED_WORDS, no_prs)[0] == "Done"
+    refused(FakeTransport(), "only sherif cancel on Ahmed's word", agent="talia", ahmed=AHMED_WORDS)
 
 
 def test_a_failed_move_after_the_comment_says_so():
@@ -291,6 +325,13 @@ def test_cli_prints_the_status_and_ahmeds_word(capsys):
     transport = ahmeds(transitions=WITH_STATUS)
     assert run(["sherif", "jira-wontdo", "BASITA-198", "--why", "W.", "--ahmed", AHMED_WORDS], transport) == 0
     assert capsys.readouterr().out.strip() == "BASITA-198 -> Won’t Do, no PR, on Ahmed's word, by Sherif"
+
+
+def test_cli_refuses_ahmed_for_another_agent_exit_1(capsys):
+    transport = FakeTransport()
+    args = ["malek", "jira-wontdo", "BASITA-198", "--why", "W.", "--ahmed", AHMED_WORDS]
+    assert run(args, transport) == 1
+    assert "only sherif cancel on Ahmed's word" in capsys.readouterr().err and transport.calls == []
 
 
 def test_cli_reads_why_from_stdin(monkeypatch):
