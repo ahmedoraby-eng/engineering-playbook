@@ -18,6 +18,7 @@
     "test_paths": ["^tests/"],
     "skip_test_only": false,
     "large_lines": 400,
+    "minor_max_lines": 80,
     "effort": {"critical": "max", "large": "xhigh", "normal": "high"},
     "$comment_reviewer_own_bots": "BASITA-161: the reviewer's approval never counts on a PR that one of these bots opened or committed to; the check then waits for the owner.",
     "reviewer_own_bots": ["basita-yousef-docs[bot]"],
