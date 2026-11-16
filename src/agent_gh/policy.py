@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from atl_agent.scope import ScopeError, check_marked_review
+
 from .identity import PR_WRITE, PUSH, IdentityError, read_permissions
 
 GITHUB_URL = re.compile(r"^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?(?:/|$)")
@@ -231,6 +233,60 @@ def _approves(args: list[str]) -> bool:
     return any(a.startswith("--approve") or (re.fullmatch(r"-[A-Za-z]+", a) and "a" in a[1:]) for a in args)
 
 
+def _read_body_file(path: str) -> str:
+    if path in ("-", ""):
+        raise _refuse("a request-changes body from stdin can't be checked; pass --body-file <file>")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError as error:
+        raise _refuse(f"the request-changes body file {path} can't be read ({error.strerror})") from error
+
+
+def _scope_gate(body: str) -> None:
+    """BASITA-245 B2: a request-changes review carries only the text atl's jira-changes issued, unchanged."""
+    try:
+        check_marked_review(body)
+    except ScopeError as error:
+        raise _refuse(str(error)) from error
+
+
+def _gh_review_body(args: list[str]) -> str:
+    """The body of `gh pr review`: exactly one of --body/-b or --body-file/-F."""
+    texts = _flag_values(args, {"-b", "--body"})
+    files = _flag_values(args, {"-F", "--body-file"})
+    if len(texts) + len(files) != 1:
+        raise _refuse("a request-changes review needs exactly one body (--body-file <file from jira-changes>)")
+    return texts[0] if texts else _read_body_file(files[0])
+
+
+def _api_typed_fields(rest: list[str]) -> list[tuple[str, str]]:
+    """(kind, key=value) for every api field: kind is "raw" (-f, --raw-field: taken literally) or "typed" (-F,
+    --field: a value starting with @ is read from that file)."""
+    kinds = {"-f": "raw", "--raw-field": "raw", "-F": "typed", "--field": "typed"}
+    out, i = [], 0
+    while i < len(rest):
+        arg = rest[i]
+        name, eq, value = arg.partition("=")
+        if arg in kinds and i + 1 < len(rest):
+            out.append((kinds[arg], rest[i + 1]))
+            i += 1
+        elif eq and name in ("--raw-field", "--field"):
+            out.append((kinds[name], value))
+        elif len(arg) > 2 and arg[:2] in ("-f", "-F") and arg[1] != "-":
+            out.append((kinds[arg[:2]], arg[2:]))
+        i += 1
+    return out
+
+
+def _api_review_body(rest: list[str]) -> str:
+    bodies = [(kind, f.partition("=")[2]) for kind, f in _api_typed_fields(rest) if f.partition("=")[0] == "body"]
+    if len(bodies) != 1:
+        raise _refuse("a REQUEST_CHANGES review needs exactly one body field (-F body=@<file from jira-changes>)")
+    kind, value = bodies[0]
+    return _read_body_file(value[1:]) if kind == "typed" and value.startswith("@") else value
+
+
 def _subcommand(args: list[str]) -> tuple[str, str]:
     command = args[0] if args else ""
     rest = args[1:]
@@ -284,6 +340,8 @@ def plan_gh(agent: str, entry: dict, args: list[str], default_repo: str | None, 
     _check_labels(_flag_values(rest, LABEL_FLAGS), config.get("ahmed_only_labels", []))
     if command == "pr" and sub == "review" and entry["kind"] == "app" and _approves(rest[1:]):
         raise _refuse("an App does not approve pull requests; Yousef reviews")
+    if command == "pr" and sub == "review" and any(a in ("-r", "--request-changes") for a in rest[1:]):
+        _scope_gate(_gh_review_body(rest[1:]))
     if command == "pr" and sub == "edit" and _flag_values(rest, {"-B", "--base"}):
         raise _refuse("retargeting a pull request; open a new one instead")
     repo = _repo_of(rest[1:], default_repo)
@@ -349,6 +407,8 @@ def _plan_api(agent: str, entry: dict, rest: list[str], default_repo: str | None
         raise _refuse("closing or retargeting a pull request through the API")
     if path.endswith("/reviews") and entry["kind"] == "app" and any(f.upper() == "EVENT=APPROVE" for f in fields):
         raise _refuse("an App does not approve pull requests; Yousef reviews")
+    if path.endswith("/reviews") and any(f.upper() == "EVENT=REQUEST_CHANGES" for f in fields):
+        _scope_gate(_api_review_body(rest))
     if _flag_values(rest, {"--input"}):
         raise _refuse("--input on a write; pass the fields with -f so they can be checked")
     _check_labels([f.partition("=")[2] for f in fields if f.startswith("labels")], config.get("ahmed_only_labels", []))

@@ -1976,11 +1976,12 @@ class AtlClient:
         self.jira_comment(issue, "\n".join(lines) + signed)
         review_text = ""
         if action == "changes" and inside:
-            review_text = "\n".join(
+            review_text = sc.mark_review(issue, "\n".join(
                 [f"Changes needed, each against {issue}'s acceptance criteria:", *map(sc.finding_line, inside)]
                 + ([f"Out of scope (their own tickets, not for this PR): "
                     + ", ".join(dict.fromkeys(f["out_of_scope"] for f in outside)) + "."] if outside else [])
-            )
+            ))
+            sc.record_issued(issue, review_text, datetime.datetime.now(_UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
         return {"status": status, "in_scope": inside, "out_of_scope": outside, "review_text": review_text}
 
     def jira_dismiss(self, issue: str, reason: str) -> str:

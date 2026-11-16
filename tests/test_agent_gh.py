@@ -667,7 +667,7 @@ def test_review_hardening_refusals(args, why):
 
 def test_yousef_only_reads_reviews_and_comments():
     for args in (
-        ["pr", "review", "3", "--request-changes", "-b", "x"],
+        ["pr", "review", "3", "--comment", "-b", "x"],
         ["pr", "comment", "3", "-b", "x"],
         ["issue", "comment", "3", "-b", "x"],
         ["api", "repos/a/b/pulls/3/reviews", "-f", "event=APPROVE"],
@@ -682,6 +682,9 @@ def test_yousef_only_reads_reviews_and_comments():
     ):
         with pytest.raises(IdentityError, match="not on agent-gh's list"):
             plan("yousef", *args)
+    # BASITA-245 B2: request-changes only with jira-changes' issued text (tests/test_atl_scope.py has the passing case)
+    with pytest.raises(IdentityError, match="takes only the text jira-changes printed"):
+        plan("yousef", "pr", "review", "3", "--request-changes", "-b", "x")
 
 
 def test_gh_check_flags_a_webhook_and_pages_installations(key):

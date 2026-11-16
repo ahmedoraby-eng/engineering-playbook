@@ -104,6 +104,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 from .client import (
     CLOSE_REASONS,
@@ -214,6 +215,12 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         "--json", action="store_true", help="jira-get, jira-scope: print it as JSON, and write nothing"
     )
     parser.add_argument(
+        "--review-out",
+        default="",
+        help="jira-changes: also write the PR review text (with its BASITA-245 marker) to this file, for "
+        "agent-gh yousef pr review <N> --request-changes --body-file <file>",
+    )
+    parser.add_argument(
         "--findings",
         default="",
         help="jira-flow fail|reject, jira-changes: the findings file (BASITA-245), - for stdin; each finding cites "
@@ -280,6 +287,9 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "criteria (AC1…) or an open linked issue; see atl --help",
             file=sys.stderr,
         )
+        return 2
+    if args.review_out and args.command != "jira-changes":
+        print("atl: --review-out is for jira-changes", file=sys.stderr)
         return 2
     if send_back:
         return _send_back(args, token_source, transport, pr_source)
@@ -515,7 +525,10 @@ def _send_back(args, token_source, transport, pr_source) -> int:
             f"{len(result['out_of_scope'])} out of scope (posted on {outside}), by {client.display}"
         )
         if result["review_text"]:
-            print("--- PR review text (post it when GitHub writes resume) ---")
+            if args.review_out:
+                Path(args.review_out).write_text(result["review_text"] + "\n", encoding="utf-8")
+                print(f"PR review text written to {args.review_out}")
+            print("--- PR review text (post it when GitHub writes resume, unchanged: agent-gh checks its marker) ---")
             print(result["review_text"])
     except AtlError as error:
         print(f"atl: {error}", file=sys.stderr)

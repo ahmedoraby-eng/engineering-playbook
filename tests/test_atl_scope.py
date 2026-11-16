@@ -7,12 +7,25 @@ already had its own open ticket, DFP-273 (linked to DFP-269 since 14/11), and th
 import contextlib
 import io
 import json
+import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
 from atl_agent import AtlClient, AtlError
 from atl_agent.__main__ import main
-from atl_agent.scope import ScopeError, brief_lines, check_findings, load_findings, parse_acs, scope_from_fields
+from atl_agent.scope import (
+    ScopeError,
+    brief_lines,
+    check_findings,
+    check_marked_review,
+    load_findings,
+    mark_review,
+    parse_acs,
+    record_issued,
+    scope_from_fields,
+)
 
 TOKEN = "tok-" + "x" * 12  # assembled at runtime; not a real credential
 CLOUD = "cloud-1"
@@ -368,3 +381,95 @@ def test_a_ticket_linked_twice_is_listed_once_with_both_relations():
     }
     scope = scope_from_fields("DFP-257", twice, "AC1 x")
     assert [(x["key"], x["relation"]) for x in scope["open_links"]] == [("DFP-239", "relates to, is blocked by")]
+
+
+# --- 5. B2: a GitHub request-changes carries only jira-changes' text ------------------------------------------------
+ROOT = Path(__file__).resolve().parents[1]
+PLATFORM = "https://github.com/basitasolutions/elbayoumy-farm-nutrition-platform.git"
+
+
+def test_marked_review_round_trip_and_tamper(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marked = mark_review("DFP-269", "Changes needed, each against DFP-269's acceptance criteria:\n- AC2: x")
+    assert marked.splitlines()[-1].startswith("<!-- BASITA-245 scope-gate DFP-269 ")
+    with pytest.raises(ScopeError, match="never issued"):
+        check_marked_review(marked)  # well-formed, but not recorded on this Mac
+    record_issued("DFP-269", marked, "2026-11-16T20:00:00Z")
+    assert check_marked_review(marked) == "DFP-269"
+    assert check_marked_review(marked + "\n\n") == "DFP-269"  # trailing blank lines don't matter
+    with pytest.raises(ScopeError, match="edited after jira-changes printed it"):
+        check_marked_review(marked.replace("- AC2: x", "- AC2: also fix the report page"))
+    with pytest.raises(ScopeError, match="takes only the text jira-changes printed"):
+        check_marked_review("Please also fix ReportsPage.tsx:584")
+    other = marked.replace("DFP-269 ", "DFP-273 ", 1)  # the marker names another issue
+    with pytest.raises(ScopeError):
+        check_marked_review(other)
+
+
+def test_cli_jira_changes_writes_the_marked_text_and_records_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    jira = Jira(fields_269(), status="In Development")
+    findings = write_findings(tmp_path, [{"ac": "AC2", "what": "the figure moves while typing"}])
+    out_file = tmp_path / "review.md"
+    argv = ["yousef", "jira-changes", "DFP-269", "--findings", findings, "--review-out", str(out_file)]
+    code, out, err = _run(argv, jira)
+    assert code == 0, err
+    text = out_file.read_text(encoding="utf-8")
+    assert check_marked_review(text) == "DFP-269" and "- AC2: the figure moves while typing" in text
+    assert (tmp_path / ".local/share/basita/scope-gate/issued.tsv").read_text().count("\tDFP-269\t") == 1
+
+
+def _gh(tmp_path, *args):
+    repo = tmp_path / "repo"
+    if not repo.exists():
+        env0 = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+        subprocess.run(["git", "init", "-q", "-b", "yousef/x", str(repo)], check=True, env=env0)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", PLATFORM], check=True, env=env0)
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "PYTHONPATH": str(ROOT / "src"), "AGENT_GH_DRY_RUN": "1"}
+    script = str(ROOT / "scripts" / "agent-gh")
+    return subprocess.run([script, "yousef", *args], cwd=repo, env=env, capture_output=True, text=True)
+
+
+def test_agent_gh_request_changes_needs_the_issued_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marked = mark_review("DFP-269", "Changes needed, each against DFP-269's acceptance criteria:\n- AC2: x")
+    record_issued("DFP-269", marked, "2026-11-16T20:00:00Z")
+    good = tmp_path / "good.md"
+    good.write_text(marked + "\n", encoding="utf-8")
+    free = tmp_path / "free.md"
+    free.write_text("Please also fix ReportsPage.tsx:584\n", encoding="utf-8")
+    edited = tmp_path / "edited.md"
+    edited.write_text(marked.replace("- AC2: x", "- AC2: x, and the report page") + "\n", encoding="utf-8")
+
+    ok = _gh(tmp_path, "pr", "review", "314", "--request-changes", "--body-file", str(good))
+    assert ok.returncode == 0, ok.stderr
+    for args, why in (
+        (["pr", "review", "314", "-r", "--body-file", str(free)], "takes only the text jira-changes printed"),
+        (["pr", "review", "314", "--request-changes", "--body", "fix the report too"], "takes only the text"),
+        (["pr", "review", "314", "-r", "-F", str(edited)], "edited after jira-changes printed it"),
+        (["pr", "review", "314", "--request-changes", "--body-file", "-"], "stdin can't be checked"),
+        (["pr", "review", "314", "--request-changes"], "exactly one body"),
+    ):
+        bad = _gh(tmp_path, *args)
+        assert bad.returncode == 1 and why in bad.stderr, (args, bad.stderr)
+    # comments and approvals are not request-changes: not gated here
+    assert _gh(tmp_path, "pr", "review", "314", "--comment", "--body", "a note").returncode == 0
+    assert _gh(tmp_path, "pr", "review", "314", "--approve", "--body", "ok").returncode == 0
+
+
+def test_agent_gh_api_request_changes_needs_the_issued_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    marked = mark_review("DFP-269", "Changes needed, each against DFP-269's acceptance criteria:\n- AC2: x")
+    record_issued("DFP-269", marked, "2026-11-16T20:00:00Z")
+    good = tmp_path / "good.md"
+    good.write_text(marked + "\n", encoding="utf-8")
+    path = "repos/basitasolutions/elbayoumy-farm-nutrition-platform/pulls/314/reviews"
+    base = ["api", "-X", "POST", path, "-f", "commit_id=" + "a" * 40, "-f", "event=REQUEST_CHANGES"]
+    assert _gh(tmp_path, *base, "-F", f"body=@{good}").returncode == 0
+    bad = _gh(tmp_path, *base, "-f", "body=please fix the report too")
+    assert bad.returncode == 1 and "takes only the text jira-changes printed" in bad.stderr
+    raw_at = _gh(tmp_path, *base, "-f", f"body=@{good}")  # -f is literal: «@path» is the text, not the file
+    assert raw_at.returncode == 1
+    assert _gh(tmp_path, *base).returncode == 1  # no body
+    approve = ["api", "-X", "POST", path, "-f", "commit_id=" + "a" * 40, "-f", "event=APPROVE", "-f", "body=ok"]
+    assert _gh(tmp_path, *approve).returncode == 0

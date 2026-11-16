@@ -14,7 +14,9 @@ Pure functions here; the Jira calls are in client.py (issue_scope, send_back).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -199,3 +201,53 @@ def check_findings(scope: dict, findings: list[dict], agent: str = "<you>") -> t
 def finding_line(f: dict) -> str:
     where = f" ({f['file']})" if f.get("file") else ""
     return f"- {f.get('ac') or f.get('out_of_scope')}{where}: {f['what']}"
+
+
+# --- B2 (Yousef, before restore step F): a GitHub request-changes carries only jira-changes' text -----------------
+# jira-changes ends its review text with a marker line naming the issue and a hash of the text above it, and records
+# the hash in ISSUED (outside every repo). agent-gh refuses a request-changes review whose body isn't such a text: free
+# text, an edited text (the hash no longer matches) or a text jira-changes never issued.
+MARKER = re.compile(r"^<!-- BASITA-245 scope-gate ([A-Z][A-Z0-9]+-[0-9]+) ([0-9a-f]{16}) -->$")
+ISSUED = "~/.local/share/basita/scope-gate/issued.tsv"
+
+
+def _digest(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+
+
+def mark_review(issue: str, body: str) -> str:
+    """The review text with its marker line, as jira-changes prints it and agent-gh checks it."""
+    body = body.rstrip("\n")
+    return f"{body}\n\n<!-- BASITA-245 scope-gate {issue} {_digest(body)} -->"
+
+
+def record_issued(issue: str, marked: str, when: str) -> None:
+    path = Path(os.path.expanduser(ISSUED))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    digest = MARKER.match(marked.rstrip("\n").rsplit("\n", 1)[-1]).group(2)  # type: ignore[union-attr]
+    with path.open("a", encoding="utf-8") as out:
+        out.write(f"{digest}\t{issue}\t{when}\n")
+
+
+def check_marked_review(text: str) -> str:
+    """The issue a request-changes body was issued for, or ScopeError. Only jira-changes' own text passes."""
+    text = text.rstrip("\n")
+    head, _, last = text.rpartition("\n")
+    match = MARKER.match(last.strip())
+    if not match:
+        raise ScopeError(
+            "a request-changes review takes only the text jira-changes printed (BASITA-245): "
+            "atl yousef jira-changes <KEY> --findings <file> --review-out <file>, then --body-file <that file>"
+        )
+    issue, digest = match.groups()
+    if _digest(head.rstrip("\n")) != digest:
+        raise ScopeError(
+            "the request-changes text was edited after jira-changes printed it (its hash no longer matches)"
+        )
+    try:
+        issued = Path(os.path.expanduser(ISSUED)).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        issued = []
+    if not any(line.split("\t")[:2] == [digest, issue] for line in issued):
+        raise ScopeError(f"jira-changes never issued this request-changes text for {issue} on this Mac")
+    return issue
