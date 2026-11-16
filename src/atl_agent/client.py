@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
+from . import scope as sc
 from . import snapshot as snap
 
 if TYPE_CHECKING:  # the CLI also runs on macOS's system Python 3.9
@@ -620,6 +621,8 @@ FLOW = {
 # open PR that mentions the issue; approve always does, and needs at least one such PR. A PR whose review isn't required
 # is green, so submit works as before for it, and an issue with no open PR (work that isn't code) submits as before.
 REVIEW_GUARDED = ("submit", "approve")
+# BASITA-245 (G2): who sends work back, and how. fail and reject are FLOW rows; changes is the architect's review.
+SEND_BACK_AGENTS = {"fail": FLOW["fail"]["agents"], "reject": FLOW["reject"]["agents"], "changes": ("yousef",)}
 # The switches, in basita-ops jira-agents.conf; missing means off. The file is read, never run: only NAME="value" or
 # NAME=value lines count, and the last one wins. ATL_AGENTS_CONF points to another file (tests).
 FLOW_SWITCHES = ("FLOW_REVIEW_GUARD", "FLOW_APPROVE")
@@ -1902,6 +1905,75 @@ class AtlClient:
         self._call("PUT", "jira", f"/rest/api/3/issue/{issue}/assignee", {"accountId": assignee})
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
+
+    def issue_scope(self, issue: str) -> dict:
+        """G1 (BASITA-245): the issue's numbered ACs, open and closed linked issues, parent and open sub-tasks, from
+        Jira's own fields (status categories, not names). Only one GET. Needs read:jira-work."""
+        if not ISSUE_KEY.match(issue):
+            raise AtlError(f"'{issue}' is not an issue key")
+        fields = "status,description,issuelinks,parent,subtasks"
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields={fields}")["fields"]
+        return sc.scope_from_fields(issue, data, _adf_text(data.get("description")))
+
+    def send_back(
+        self,
+        issue: str,
+        action: str,
+        findings: list[dict],
+        why: str = "",
+        prs: Callable[[str], list[dict]] = github_prs,
+        review: Callable[[str, int], dict] = arch_review_state,
+        settings: dict | None = None,
+    ) -> dict:
+        """G2 (BASITA-245): Salma's fail, Adam's reject and the architect's changes take findings, not free text.
+        Every finding must cite one of this issue's ACs or name an open linked issue; otherwise nothing is written.
+        Out-of-scope findings are posted on their own tickets. Only in-scope findings move the issue back (fail,
+        reject) and reach its developer; with none, the issue stays where it is. `changes` moves nothing: it posts
+        the in-scope findings on the issue and returns the PR review text (posted on GitHub when writes resume)."""
+        agents = SEND_BACK_AGENTS.get(action)
+        if agents is None:
+            raise AtlError(f"unknown send-back '{action}' (known: {', '.join(SEND_BACK_AGENTS)})")
+        if self.agent not in agents:
+            raise AtlError(f"{action} is for {' or '.join(a.capitalize() for a in agents)}, not {self.display}")
+        scope = self.issue_scope(issue)
+        try:
+            inside, outside = sc.check_findings(scope, findings, self.agent)
+        except sc.ScopeError as error:
+            raise AtlError(f"{issue}: {error}") from error
+        label = {"fail": "Test failed", "reject": "Not accepted", "changes": "Changes needed"}[action]
+        status = None
+        if inside and action in FLOW:
+            status = self.jira_flow(issue, action, prs, review, settings)  # its checks come before its writes
+        signed = f"\n\n— {self.signature}"
+        for f in outside:
+            where = f" ({f['file']})" if f.get("file") else ""
+            self.jira_comment(
+                f["out_of_scope"],
+                f"Out-of-scope finding from {self.display}'s {action} on {issue}{where}: {f['what']}\n"
+                f"It belongs to this ticket, not to {issue}'s branch; it was not sent to {issue}'s developer "
+                f"(BASITA-245 scope gate).{signed}",
+            )
+        moved = f"{action}: moved to {status}. " if status else ""
+        lines = [f"{moved}{label}, each against {issue}'s acceptance criteria:", *map(sc.finding_line, inside)]
+        if not inside:
+            lines = [
+                f"{label}: no finding is within {issue}'s acceptance criteria, so nothing goes back to its "
+                f"developer and {issue} stays where it is."
+            ]
+        if why.strip():
+            lines += ["", why.strip()]
+        if outside:
+            lines += ["", "Out of scope, posted on their own tickets: "
+                      + ", ".join(dict.fromkeys(f["out_of_scope"] for f in outside)) + "."]
+        self.jira_comment(issue, "\n".join(lines) + signed)
+        review_text = ""
+        if action == "changes" and inside:
+            review_text = "\n".join(
+                [f"Changes needed, each against {issue}'s acceptance criteria:", *map(sc.finding_line, inside)]
+                + ([f"Out of scope (their own tickets, not for this PR): "
+                    + ", ".join(dict.fromkeys(f["out_of_scope"] for f in outside)) + "."] if outside else [])
+            )
+        return {"status": status, "in_scope": inside, "out_of_scope": outside, "review_text": review_text}
 
     def jira_dismiss(self, issue: str, reason: str) -> str:
         """Salma's closing (4.3 item 12): In Testing -> Closed with one of CLOSE_REASONS (the CLI posts
