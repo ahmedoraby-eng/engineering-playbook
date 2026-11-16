@@ -55,6 +55,12 @@ class Workflow:
                 "issuetype": {"name": self.type},
                 "labels": [],
                 "fixVersions": [{"id": "5", "released": False}],
+                # jira-ready needs numbered acceptance criteria (BASITA-245 B1); the flow under test is the statuses.
+                "description": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "AC1 the step works"}]}],
+                },
             }
             return 200, json.dumps({"fields": fields})
         return 204, ""  # assignee, labels
