@@ -787,9 +787,24 @@ def test_pause_never_blocks_the_sync_identity():
 
 
 def test_pause_check_in_process(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    pause = tmp_path / "paused"
+    monkeypatch.setenv("GITHUB_WRITES_PAUSE_FILE", str(pause))
     cli.refuse_if_paused("malek", {"contents": "write"})  # no file: no refusal
-    _pause(tmp_path)
+    pause.write_text("paused\n")
     cli.refuse_if_paused("malek", {"contents": "read", "pull_requests": "read"})  # a read stays allowed
     with pytest.raises(cli.IdentityError, match="paused until the Mac runner"):
         cli.refuse_if_paused("malek", {"contents": "read", "pull_requests": "write"})
+
+
+def test_pause_file_env_override_and_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("GITHUB_WRITES_PAUSE_FILE", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert cli.pause_file() == str(tmp_path / ".config" / "basita" / "github-writes-paused")
+    monkeypatch.setenv("GITHUB_WRITES_PAUSE_FILE", str(tmp_path / "x"))
+    assert cli.pause_file() == str(tmp_path / "x")
+
+
+def test_the_suite_never_sees_the_real_pause_file():
+    # the autouse fixture in conftest.py points the override at an absent temp file (Yousef P1)
+    assert not os.path.exists(cli.pause_file())
+    assert "github-writes-paused" in os.environ["GITHUB_WRITES_PAUSE_FILE"]
