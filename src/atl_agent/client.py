@@ -1789,9 +1789,11 @@ class AtlClient:
 
         Refuses an Epic (never worked as a ticket) and any issue that is not in Refinement, and only ever
         takes a transition that lands on one of READY_STATUSES. In DFP it also names who gets the issue and needs
-        an unreleased Fix Version, because pickup starts no one without them (Ahmed, 01/11/2026). It assigns before it
-        moves, so running it again after a failure finishes the step. Needs read:jira-work and write:jira-work."""
-        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype,fixVersions")
+        an unreleased Fix Version, because pickup starts no one without them (Ahmed, 01/11/2026). In DFP it also needs
+        numbered acceptance criteria in the description (BASITA-245 B1, the Definition of Ready made deterministic): G2
+        refuses every send-back on an issue without them. It assigns before it moves, so running it again after a
+        failure finishes the step. Needs read:jira-work and write:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype,fixVersions,description")
         fields = data["fields"]
         if fields["issuetype"]["name"] == "Epic":
             raise AtlError(f"{issue}: an Epic is never worked as a ticket")
@@ -1809,6 +1811,12 @@ class AtlClient:
                     f"{issue}: no unreleased Fix Version, so no one would ever be started on it. It stays in "
                     "Refinement. Say so in a comment with @ to whoever owns the release: they set the version and "
                     f"assign it to {self.display} again."
+                )
+            if not sc.parse_acs(_adf_text(fields.get("description"))):
+                raise AtlError(
+                    f"{issue}: no numbered acceptance criteria in its description (a line that starts «AC1 …», "
+                    "«- AC1 …» or «1. AC1 …»), so it is not ready: without them nothing can be sent back on it "
+                    "(BASITA-245). Number them in the description, then run jira-ready again."
                 )
         if assignee:
             account = self._assignee_account(assignee)

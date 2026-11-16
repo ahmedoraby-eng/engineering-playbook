@@ -63,13 +63,21 @@ def _brief_issue(issue: dict, relation: str = "") -> dict:
 def scope_from_fields(key: str, fields: dict, description_text: str) -> dict:
     """G1's data for one issue, from its Jira fields (status, issuelinks, parent, subtasks) and its description as
     plain text. Open and closed are told apart by the status category (done or not), never by a status name."""
-    links = []
+    links: list[dict] = []
+    by_key: dict[str, dict] = {}
     for link in fields.get("issuelinks") or []:
         outward = "outwardIssue" in link
         other = link.get("outwardIssue" if outward else "inwardIssue") or {}
         relation = ((link.get("type") or {}).get("outward" if outward else "inward")) or "relates to"
-        if other.get("key"):
-            links.append(_brief_issue(other, relation))
+        if not other.get("key"):
+            continue
+        if other["key"] in by_key:  # one issue linked twice (relates to + is blocked by): one entry (Yousef B1d)
+            seen = by_key[other["key"]]
+            if relation not in seen["relation"].split(", "):
+                seen["relation"] += f", {relation}"
+            continue
+        by_key[other["key"]] = _brief_issue(other, relation)
+        links.append(by_key[other["key"]])
     parent = fields.get("parent")
     subtasks = [_brief_issue(s) for s in fields.get("subtasks") or [] if s.get("key")]
     return {

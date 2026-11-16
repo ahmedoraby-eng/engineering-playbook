@@ -188,9 +188,24 @@ def test_cli_jira_ready_transitions_and_comments(capsys):
     assert "BASITA-5 -> Ready, by Haya" in capsys.readouterr().out
 
 
-def _refining(versions=({"id": "2", "released": False},), status="Refinement"):
-    fields = {"status": {"name": status}, "issuetype": {"name": "Task"}, "fixVersions": list(versions)}
+def _refining(versions=({"id": "2", "released": False},), status="Refinement", description="AC1 It works."):
+    doc = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}]}
+    fields = {
+        "status": {"name": status},
+        "issuetype": {"name": "Task"},
+        "fixVersions": list(versions),
+        "description": doc,
+    }
     return (200, json.dumps({"fields": fields}))
+
+
+@pytest.mark.parametrize("description", ["Steps: 1. open it. Expected: it works.", "Relates to DFP-240 AC2."])
+def test_jira_ready_in_dfp_needs_numbered_acs_and_changes_nothing(description):
+    # BASITA-245 B1: the Definition of Ready, made deterministic with G2's own parser
+    transport = FakeTransport(_refining(description=description))
+    with pytest.raises(AtlError, match="no numbered acceptance criteria in its description"):
+        client(transport, "adam").jira_ready("DFP-88", "malek")
+    assert len(transport.calls) == 1
 
 
 @pytest.mark.parametrize(

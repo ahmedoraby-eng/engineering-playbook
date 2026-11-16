@@ -352,3 +352,19 @@ def test_cli_jira_scope_prints_the_brief_block_and_json():
     assert code == 0 and out.startswith("Scope (BASITA-245") and "DFP-273 (relates to)" in out
     code, out, _ = _run(["malek", "jira-scope", "DFP-269", "--json"], Jira(fields_269()))
     assert code == 0 and json.loads(out)["acs"] == ["AC1", "AC2", "AC3", "AC4", "AC5", "AC6"]
+
+
+def test_a_ticket_linked_twice_is_listed_once_with_both_relations():
+    # Yousef B1(d): DFP-257 showed DFP-239 twice («relates to» and «is blocked by»)
+    s239 = _issue("DFP-239", "S", "To Do", "new")
+    relates = {"inward": "relates to", "outward": "relates to"}
+    blocks = {"inward": "is blocked by", "outward": "blocks"}
+    twice = {
+        "issuelinks": [
+            {"type": relates, "outwardIssue": s239},
+            {"type": blocks, "inwardIssue": s239},
+            {"type": relates, "inwardIssue": s239},
+        ]
+    }
+    scope = scope_from_fields("DFP-257", twice, "AC1 x")
+    assert [(x["key"], x["relation"]) for x in scope["open_links"]] == [("DFP-239", "relates to, is blocked by")]
