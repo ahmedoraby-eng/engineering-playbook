@@ -443,12 +443,19 @@ def test_agent_gh_request_changes_needs_the_issued_text(tmp_path, monkeypatch):
 
     ok = _gh(tmp_path, "pr", "review", "314", "--request-changes", "--body-file", str(good))
     assert ok.returncode == 0, ok.stderr
+    assert _gh(tmp_path, "pr", "review", "314", "--request-changes=true", "-F", str(good)).returncode == 0
     for args, why in (
         (["pr", "review", "314", "-r", "--body-file", str(free)], "takes only the text jira-changes printed"),
         (["pr", "review", "314", "--request-changes", "--body", "fix the report too"], "takes only the text"),
         (["pr", "review", "314", "-r", "-F", str(edited)], "edited after jira-changes printed it"),
         (["pr", "review", "314", "--request-changes", "--body-file", "-"], "stdin can't be checked"),
         (["pr", "review", "314", "--request-changes"], "exactly one body"),
+        # Yousef B2a: joined short flags and --request-changes=… can't slip through
+        (["pr", "review", "314", "-rb", "fix the report too"], "spell the flags separately"),
+        (["pr", "review", "314", "-rF", str(free)], "spell the flags separately"),
+        (["pr", "review", "314", "-r", "-bfix the report too"], "spell the flags separately"),
+        (["pr", "review", "314", "--request-changes=true", "-b", "fix the report too"], "takes only the text"),
+        (["pr", "review", "314", "--request-changes=true", "--body-file", str(free)], "takes only the text"),
     ):
         bad = _gh(tmp_path, *args)
         assert bad.returncode == 1 and why in bad.stderr, (args, bad.stderr)

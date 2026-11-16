@@ -233,6 +233,21 @@ def _approves(args: list[str]) -> bool:
     return any(a.startswith("--approve") or (re.fullmatch(r"-[A-Za-z]+", a) and "a" in a[1:]) for a in args)
 
 
+def _requests_changes(args: list[str]) -> bool:
+    """--request-changes in any spelling (--request-changes=true too), or -r alone or in a short cluster (-rb)."""
+    return any(a.startswith("--request-changes") or (re.fullmatch(r"-[A-Za-z]+", a) and "r" in a[1:]) for a in args)
+
+
+def _no_short_clusters(args: list[str]) -> None:
+    """Yousef B2a: with request-changes, every short flag stands alone (-r -b x, never -rb x, -rF f or -bx), so the
+    body is read exactly as gh reads it."""
+    joined = [a for a in args if len(a) > 2 and a[0] == "-" and a[1] != "-"]
+    if joined:
+        raise _refuse(
+            f"a request-changes review with short flags joined ({', '.join(joined)}): spell the flags separately"
+        )
+
+
 def _read_body_file(path: str) -> str:
     if path in ("-", ""):
         raise _refuse("a request-changes body from stdin can't be checked; pass --body-file <file>")
@@ -340,7 +355,8 @@ def plan_gh(agent: str, entry: dict, args: list[str], default_repo: str | None, 
     _check_labels(_flag_values(rest, LABEL_FLAGS), config.get("ahmed_only_labels", []))
     if command == "pr" and sub == "review" and entry["kind"] == "app" and _approves(rest[1:]):
         raise _refuse("an App does not approve pull requests; Yousef reviews")
-    if command == "pr" and sub == "review" and any(a in ("-r", "--request-changes") for a in rest[1:]):
+    if command == "pr" and sub == "review" and _requests_changes(rest[1:]):
+        _no_short_clusters(rest[1:])
         _scope_gate(_gh_review_body(rest[1:]))
     if command == "pr" and sub == "edit" and _flag_values(rest, {"-B", "--base"}):
         raise _refuse("retargeting a pull request; open a new one instead")
