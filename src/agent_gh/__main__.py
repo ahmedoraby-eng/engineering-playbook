@@ -60,13 +60,19 @@ GH = "gh"
 # here, whatever a brief says. agent-git <agent> push and every agent-gh write (any permission "write": pr create,
 # edit, comment, label, api writes) stop; reads and the reader go on. basita-sync is exempt: the hourly sync keeps
 # pushing main. The file lives outside every repository; it is removed at restore step F, when the Mac runner is live.
-# GITHUB_WRITES_PAUSE_FILE names it instead, as in basita-ops' jira-pickup.sh (Yousef P1: hermetic tests).
+# GITHUB_WRITES_PAUSE_FILE can name a SECOND pause file (as in basita-ops' jira-pickup.sh); it only adds a pause and
+# never lifts one (Yousef P1b): writes are refused while the default file OR the override file exists. Tests isolate
+# by patching PAUSE_FILE in-process (conftest.py), which an agent's shell can't reach.
 PAUSE_FILE = "~/.config/basita/github-writes-paused"
 PAUSE_ENV = "GITHUB_WRITES_PAUSE_FILE"
 
 
-def pause_file() -> str:
-    return os.path.expanduser(os.environ.get(PAUSE_ENV) or PAUSE_FILE)
+def pause_files() -> list[str]:
+    files = [os.path.expanduser(PAUSE_FILE)]
+    extra = os.environ.get(PAUSE_ENV)
+    if extra and os.path.expanduser(extra) not in files:
+        files.append(os.path.expanduser(extra))
+    return files
 PAUSE_EXEMPT = {"sync"}
 PAUSE_MESSAGE = (
     "GitHub pushes paused until the Mac runner is live (BASITA-233): commit locally and say "
@@ -78,9 +84,9 @@ def refuse_if_paused(name: str, permissions: dict) -> None:
     """Refuse a GitHub write while the pause file exists (sync and pure reads are not affected)."""
     if name.lower() in PAUSE_EXEMPT or not any(v == "write" for v in permissions.values()):
         return
-    path = pause_file()
-    if os.path.exists(path):
-        raise IdentityError(f"refused: {PAUSE_MESSAGE} ({path} exists)")
+    for path in pause_files():
+        if os.path.exists(path):
+            raise IdentityError(f"refused: {PAUSE_MESSAGE} ({path} exists)")
 CLEARED = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS")
 # Anything that could log the token or slip config in front of git's -c options.
 CLEARED_PREFIXES = (

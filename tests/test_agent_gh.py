@@ -760,7 +760,8 @@ def test_pause_file_refuses_agent_pushes(tmp_path):
     _pause(tmp_path)
     for agent in ("malek", "salma", "talia"):
         bad = subprocess.run([script, agent, "push"], cwd=repo, env=env, capture_output=True, text=True)
-        assert bad.returncode == 1 and PAUSED in bad.stderr and "ready to push, waiting for the Mac runner" in bad.stderr
+        assert bad.returncode == 1 and PAUSED in bad.stderr
+        assert "ready to push, waiting for the Mac runner" in bad.stderr
 
 
 def test_pause_file_refuses_agent_gh_writes_but_not_reads(tmp_path):
@@ -796,15 +797,32 @@ def test_pause_check_in_process(tmp_path, monkeypatch):
         cli.refuse_if_paused("malek", {"contents": "read", "pull_requests": "write"})
 
 
-def test_pause_file_env_override_and_default(tmp_path, monkeypatch):
-    monkeypatch.delenv("GITHUB_WRITES_PAUSE_FILE", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    assert cli.pause_file() == str(tmp_path / ".config" / "basita" / "github-writes-paused")
-    monkeypatch.setenv("GITHUB_WRITES_PAUSE_FILE", str(tmp_path / "x"))
-    assert cli.pause_file() == str(tmp_path / "x")
+def test_pause_file_env_override_only_adds(tmp_path, monkeypatch):
+    default = tmp_path / "default-paused"
+    monkeypatch.setattr(cli, "PAUSE_FILE", str(default))
+    monkeypatch.setenv("GITHUB_WRITES_PAUSE_FILE", str(tmp_path / "elsewhere"))
+    assert cli.pause_files() == [str(default), str(tmp_path / "elsewhere")]
+    cli.refuse_if_paused("malek", {"contents": "write"})  # neither exists
+    default.write_text("paused\n")
+    # Yousef P1b: the default file exists and the override points elsewhere (absent) -> still refused
+    with pytest.raises(cli.IdentityError, match="paused until the Mac runner"):
+        cli.refuse_if_paused("malek", {"contents": "write"})
+    default.unlink()
+    (tmp_path / "elsewhere").write_text("paused\n")
+    with pytest.raises(cli.IdentityError, match="paused until the Mac runner"):
+        cli.refuse_if_paused("malek", {"contents": "write"})  # the override adds a pause
+
+
+def test_pause_override_cannot_lift_the_default_through_the_script(tmp_path):
+    repo = _repo(tmp_path, branch="malek/DFP-1-x")
+    _pause(tmp_path)  # the default file, under the temp HOME
+    env = _env(tmp_path, AGENT_GH_DRY_RUN="1", GITHUB_WRITES_PAUSE_FILE=str(tmp_path / "nonexistent"))
+    script = str(ROOT / "scripts" / "agent-git")
+    bad = subprocess.run([script, "malek", "push"], cwd=repo, env=env, capture_output=True, text=True)
+    assert bad.returncode == 1 and PAUSED in bad.stderr
 
 
 def test_the_suite_never_sees_the_real_pause_file():
-    # the autouse fixture in conftest.py points the override at an absent temp file (Yousef P1)
-    assert not os.path.exists(cli.pause_file())
-    assert "github-writes-paused" in os.environ["GITHUB_WRITES_PAUSE_FILE"]
+    # the autouse fixture in conftest.py patches the default path to an absent temp file (Yousef P1/P1b)
+    assert not any(os.path.exists(p) for p in cli.pause_files())
+    assert "github-writes-paused.absent" in cli.PAUSE_FILE
