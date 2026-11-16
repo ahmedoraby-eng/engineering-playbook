@@ -740,3 +740,56 @@ def test_gh_check_fails_when_yousef_is_a_collaborator_on_the_playbook():
     config["agents"]["yousef"]["tokens"] = {"ahmedoraby-eng": CONFIG["agents"]["yousef"]["tokens"]["ahmedoraby-eng"]}
     lines, code = run_check(config, ["yousef"], github, run, today=dt.date(2026, 11, 3))
     assert code == 1 and "ahmedoraby-eng/engineering-playbook (push)" in "\n".join(lines)
+
+
+def _pause(tmp_path):
+    folder = tmp_path / ".config" / "basita"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "github-writes-paused").write_text("paused by Talia, BASITA-233\n")
+
+
+PAUSED = "GitHub pushes paused until the Mac runner is live (BASITA-233)"
+
+
+def test_pause_file_refuses_agent_pushes(tmp_path):
+    repo = _repo(tmp_path, branch="malek/DFP-1-x")
+    script = str(ROOT / "scripts" / "agent-git")
+    env = _env(tmp_path, AGENT_GH_DRY_RUN="1")
+    ok = subprocess.run([script, "malek", "push"], cwd=repo, env=env, capture_output=True, text=True)
+    assert ok.returncode == 0  # no pause file: the push is planned as before
+    _pause(tmp_path)
+    for agent in ("malek", "salma", "talia"):
+        bad = subprocess.run([script, agent, "push"], cwd=repo, env=env, capture_output=True, text=True)
+        assert bad.returncode == 1 and PAUSED in bad.stderr and "ready to push, waiting for the Mac runner" in bad.stderr
+
+
+def test_pause_file_refuses_agent_gh_writes_but_not_reads(tmp_path):
+    repo = _repo(tmp_path)
+    script = str(ROOT / "scripts" / "agent-gh")
+    env = _env(tmp_path, AGENT_GH_DRY_RUN="1")
+    _pause(tmp_path)
+    for args in (
+        ["malek", "pr", "create", "--title", "DFP-1: x", "--body", "b"],
+        ["malek", "pr", "edit", "3", "--title", "DFP-1: y"],
+        ["malek", "pr", "comment", "3", "--body", "c"],
+        ["salma", "pr", "comment", "3", "--body", "c"],
+    ):
+        bad = subprocess.run([script, *args], cwd=repo, env=env, capture_output=True, text=True)
+        assert bad.returncode == 1 and PAUSED in bad.stderr, (args, bad.stderr)
+    for args in (["malek", "pr", "view", "3"], ["reader", "pr", "view", "3"], ["malek", "pr", "list"]):
+        ok = subprocess.run([script, *args], cwd=repo, env=env, capture_output=True, text=True)
+        assert ok.returncode == 0 and PAUSED not in ok.stderr, (args, ok.stderr)
+
+
+def test_pause_never_blocks_the_sync_identity():
+    assert "sync" in cli.PAUSE_EXEMPT
+    cli.refuse_if_paused("sync", {"contents": "write", "metadata": "read"})  # no raise, whatever the file
+
+
+def test_pause_check_in_process(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cli.refuse_if_paused("malek", {"contents": "write"})  # no file: no refusal
+    _pause(tmp_path)
+    cli.refuse_if_paused("malek", {"contents": "read", "pull_requests": "read"})  # a read stays allowed
+    with pytest.raises(cli.IdentityError, match="paused until the Mac runner"):
+        cli.refuse_if_paused("malek", {"contents": "read", "pull_requests": "write"})

@@ -33,6 +33,7 @@ from pathlib import Path
 from . import cloud, delegation, rest
 from .check import run_check
 from .identity import (
+    PUSH,
     IdentityError,
     acting_identity,
     agent_entry,
@@ -55,6 +56,24 @@ HELPER = (
     'printf "username=x-access-token\\npassword=%s\\n" "$AGENT_GH_TOKEN"; return 0; }; f'
 )
 GH = "gh"
+# BASITA-233 (Talia, 16/11/2026, after DFP-268 / PR #322): while this file exists, agents' GitHub writes are refused
+# here, whatever a brief says. agent-git <agent> push and every agent-gh write (any permission "write": pr create,
+# edit, comment, label, api writes) stop; reads and the reader go on. basita-sync is exempt: the hourly sync keeps
+# pushing main. The file lives outside every repository; it is removed at restore step F, when the Mac runner is live.
+PAUSE_FILE = "~/.config/basita/github-writes-paused"
+PAUSE_EXEMPT = {"sync"}
+PAUSE_MESSAGE = (
+    "GitHub pushes paused until the Mac runner is live (BASITA-233): commit locally and say "
+    "'ready to push, waiting for the Mac runner'"
+)
+
+
+def refuse_if_paused(name: str, permissions: dict) -> None:
+    """Refuse a GitHub write while the pause file exists (sync and pure reads are not affected)."""
+    if name.lower() in PAUSE_EXEMPT or not any(v == "write" for v in permissions.values()):
+        return
+    if os.path.exists(os.path.expanduser(PAUSE_FILE)):
+        raise IdentityError(f"refused: {PAUSE_MESSAGE} ({PAUSE_FILE} exists)")
 CLEARED = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS")
 # Anything that could log the token or slip config in front of git's -c options.
 CLEARED_PREFIXES = (
@@ -139,6 +158,7 @@ def cmd_gh(agent: str, args: list[str]) -> int:
     config = load_config()
     name, entry = acting_identity(config, agent, uses_push_app(args))
     plan = plan_gh(name, entry, args, _default_repo(), config)
+    refuse_if_paused(name, plan.permissions)
     # In a cloud session the proxy blocks GraphQL: the policy approved the gh command; REST runs it.
     rest_run = rest.runner(name, plan) if cloud.rest_mode() else None
     cloud.require_cloud_write(plan.permissions)  # in a cloud session a write waits for the proxy test (M0)
@@ -157,6 +177,7 @@ def cmd_push(agent: str, args: list[str]) -> int:
     name, entry = acting_identity(config, agent, True)
     if entry.get("read_only"):
         raise IdentityError(f"refused: {entry['slug']} reads only; it never pushes")
+    refuse_if_paused(name, PUSH)  # every push is a write: refused first, before any branch or remote check
     positionals = [a for a in args if not a.startswith("-")]
     remote = positionals[0] if positionals else "origin"
     if "://" in remote or remote.startswith("git@"):
