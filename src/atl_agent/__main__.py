@@ -52,6 +52,11 @@ signs it (`-` reads stdin); `--due-date` takes YYYY-MM-DD or `none`. `jira-link 
 issues so that the first one "<T>" the second: T is a link type's name or phrase (relates to, blocks, is blocked by,
 duplicates, clones; default relates to). It reads the link back and prints what this call recorded, compared with the
 links there before.
+`jira-scope <KEY> [--json]` (BASITA-245, G1) prints the issue's scope: its numbered ACs (in scope) and its open linked
+issues (out of scope, each with its own ticket), parent and open sub-tasks, from Jira's fields only; it reads only.
+`jira-flow <KEY> fail|reject ["why"] --findings F` and `jira-changes <KEY> ["why"] --findings F` (G2) send work back
+only from a findings file: each finding cites one of the issue's ACs or an open linked issue, else nothing is written;
+out-of-scope findings are posted on their own tickets, and only in-scope ones move the issue and reach its developer.
 `jira-flow <KEY> <action> "why"` makes one step of DFP's flow (submit, pass, fail, accept, reject, and approve once
 it is switched on): the table in client.py gives who may, the next status and the next assignee. With FLOW_REVIEW_GUARD
 on in basita-ops jira-agents.conf, submit waits for Architecture review green on the head of every open PR that
@@ -99,10 +104,12 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 from .client import (
     CLOSE_REASONS,
     ISSUE_KEY,
+    SEND_BACK_AGENTS,
     WONT_DO_LABEL,
     AtlClient,
     AtlError,
@@ -112,6 +119,8 @@ from .client import (
     github_prs,
     keychain_token,
 )
+from .scope import ScopeError, load_findings
+from .scope import brief_lines as scope_brief_lines
 
 READS = {
     "jira-get": lambda c: c.jira_get,
@@ -136,6 +145,8 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             "jira-wontdo",
             "jira-ready",
             "jira-flow",
+            "jira-scope",
+            "jira-changes",
             "jira-create",
             "jira-return",
             "jira-dismiss",
@@ -200,7 +211,22 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         default="",
         help="jira-md, jira-get: the folder that holds work/jira/ (default BASITA_OPS_DIR, else ~/Code/basita-ops)",
     )
-    parser.add_argument("--json", action="store_true", help="jira-get: print the issue as JSON, and write nothing")
+    parser.add_argument(
+        "--json", action="store_true", help="jira-get, jira-scope: print it as JSON, and write nothing"
+    )
+    parser.add_argument(
+        "--review-out",
+        default="",
+        help="jira-changes: also write the PR review text (with its BASITA-245 marker) to this file, for "
+        "agent-gh yousef pr review <N> --request-changes --body-file <file>",
+    )
+    parser.add_argument(
+        "--findings",
+        default="",
+        help="jira-flow fail|reject, jira-changes: the findings file (BASITA-245), - for stdin; each finding cites "
+        'one of the issue\'s ACs or an open linked issue: [{"ac": "AC3", "file": "…", "what": "…"}, '
+        '{"out_of_scope": "DFP-273", "what": "…"}]',
+    )
     parser.add_argument(
         "--comments", default="all", help="jira-get --json: all (default) or N, the latest N comments (BASITA-219)"
     )
@@ -246,9 +272,29 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
     if args.command == "jira-wontdo" and args.ahmed and not args.ahmed.strip():
         print("atl: --ahmed needs his words, not an empty text", file=sys.stderr)
         return 2
-    if args.json and args.command != "jira-get":
-        print(f"atl: --json is for jira-get, not {args.command}", file=sys.stderr)
+    if args.json and args.command not in ("jira-get", "jira-scope"):
+        print(f"atl: --json is for jira-get and jira-scope, not {args.command}", file=sys.stderr)
         return 2
+    # BASITA-245 (G2): a send-back goes only through a findings file, checked against the issue's scope.
+    send_back = args.command == "jira-changes" or (args.command == "jira-flow" and args.text in SEND_BACK_AGENTS)
+    if args.findings and not send_back:
+        print("atl: --findings is for jira-flow fail|reject and jira-changes", file=sys.stderr)
+        return 2
+    if send_back and not args.findings:
+        what = "jira-changes" if args.command == "jira-changes" else f"jira-flow {args.text}"
+        print(
+            f"atl: {what} takes --findings <file> (BASITA-245): each finding cites one of {args.target}'s acceptance "
+            "criteria (AC1…) or an open linked issue; see atl --help",
+            file=sys.stderr,
+        )
+        return 2
+    if args.review_out and args.command != "jira-changes":
+        print("atl: --review-out is for jira-changes", file=sys.stderr)
+        return 2
+    if send_back:
+        return _send_back(args, token_source, transport, pr_source)
+    if args.command == "jira-scope":
+        return _scope(args, token_source, transport)
     if args.out and (args.command not in ("jira-md", "jira-get") or args.json or args.history):
         print("atl: --out is for jira-md and jira-get (without --json or --history)", file=sys.stderr)
         return 2
@@ -424,6 +470,66 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
         else:
             result = client.confluence_append(args.target, text)
             print(f"page {args.target} now version {result.get('version', {}).get('number')} by {client.display}")
+    except AtlError as error:
+        print(f"atl: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _client(args, token_source, transport, product: str = "jira") -> AtlClient:
+    agent = args.agent.lower()
+    kwargs = {"transport": transport} if transport else {}
+    return AtlClient(
+        agent, args.cloud_id, token_source(account_for(agent, args.via), product), args.domain, via=args.via, **kwargs
+    )
+
+
+def _scope(args, token_source, transport) -> int:
+    """G1 (BASITA-245): the issue's scope, as the brief block (or JSON). Reads only."""
+    try:
+        if args.text or args.why:
+            raise AtlError("jira-scope takes only the issue key")
+        client = _client(args, token_source, transport)
+        result = client.issue_scope(args.target)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print("\n".join(scope_brief_lines(result, args.agent.lower())))
+    except AtlError as error:
+        print(f"atl: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _send_back(args, token_source, transport, pr_source) -> int:
+    """G2 (BASITA-245): jira-flow fail|reject and jira-changes, from a findings file."""
+    action = args.text if args.command == "jira-flow" else "changes"
+    why = args.why if args.command == "jira-flow" else args.text
+    if args.command == "jira-changes" and args.why:
+        print("atl: jira-changes takes the issue key and, at most, one text", file=sys.stderr)
+        return 2
+    try:
+        source = "stdin" if args.findings == "-" else args.findings
+        text = sys.stdin.read() if args.findings == "-" else None
+        try:
+            findings = load_findings(source, text)
+        except ScopeError as error:
+            raise AtlError(str(error)) from error
+        why = sys.stdin.read() if why == "-" and text is None else why
+        client = _client(args, token_source, transport)
+        result = client.send_back(args.target, action, findings, why, prs=pr_source)
+        outside = ", ".join(dict.fromkeys(f["out_of_scope"] for f in result["out_of_scope"])) or "none"
+        moved = f"-> {result['status']}" if result["status"] else "not moved"
+        print(
+            f"{args.target} {moved}, {action}: {len(result['in_scope'])} finding(s) in scope, "
+            f"{len(result['out_of_scope'])} out of scope (posted on {outside}), by {client.display}"
+        )
+        if result["review_text"]:
+            if args.review_out:
+                Path(args.review_out).write_text(result["review_text"] + "\n", encoding="utf-8")
+                print(f"PR review text written to {args.review_out}")
+            print("--- PR review text (post it when GitHub writes resume, unchanged: agent-gh checks its marker) ---")
+            print(result["review_text"])
     except AtlError as error:
         print(f"atl: {error}", file=sys.stderr)
         return 1
