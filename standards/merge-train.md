@@ -16,7 +16,45 @@ GitHub's merge queue is not available to us (private repositories need Enterpris
 
 The workflow files are templates only because no agent App can push `.github/workflows/` (decision D4, [agent identity](06-agent-identity.md)).
 
-## What one run does
+## Batch mode (the default, `batch-size: 3`)
+
+Yousef's amendment of 17/11/2026 (BASITA-233 / BASITA-204, D1–D9) is the source for this section. Ahmed's reason: a full E2E per pull request (≈ 20 min on the Mac) costs too much. So the train runs **one full E2E per batch of k pull requests** and **never updates a pull-request branch**. The per-pull-request flow below stays as the fallback (`batch-size: 0`). The order file, the App, the pinning, the comment markers, the triggers and «جاهز للدمج» with its «الإعلان يشمل …» line are unchanged. The train still never merges: the merge follows the delegation in force (`agent-gh talia pr merge`) or Ahmed. The nightly full E2E on `main` stays as the backstop.
+
+### Who joins a batch (D1)
+A pull request is a **candidate** when it is open and not a draft, its base is the default branch (not stacked), it carries `run-e2e`, and `ci / Build and test` and `Owner review` are green on its head. The engineer sets `run-e2e` at the QA hand-off; a pull request without it never needs E2E and goes through the plain ready check, as in the fallback. **A batch is the first k candidates in the published order** (default 3, max 4). A non-candidate earlier in the order doesn't block later ones; the report names it and says why. Owner review must already be green, because a batch is tested as a whole and merged in order, so a member waiting for review would block everyone after it. Since no head changes, **Ahmed labels `reviewed-by-ahmed` once, whenever he has reviewed, and the label stays.**
+
+### Building the batch: the API only (D2)
+One fixed branch, `train/run` (a constant in the code, never an input), is force-updated for each batch:
+1. Point `train/run` at the default branch's SHA, the base (`PATCH /git/refs/heads/train/run`, or `POST /git/refs` the first time).
+2. For each member in order: `POST /merges` with `base: train/run`, `head: <pinned head SHA>` and `commit_message: "train <wave>#<batch>: #<N>@<sha>"`. GitHub builds the merge server-side, so the train runs no pull-request code. **409 (conflict):** that member leaves the batch and gets the `train-conflict` comment and label (the existing `conflicts.py` route, keyed on head + base). The rest continue.
+3. The tip's commit messages are the **manifest** (base, then `#N@sha` in order). The state lives in the branch itself, and a later run re-reads it. There is no other store.
+
+Every app-repository workflow with a `push` trigger is limited to `main`, so pushing `train/run` starts nothing but the dispatch below (pinned by a templates test).
+
+### Excluded from batching (D3)
+A pull request that changes `.github/workflows/**` runs as a **batch of one**, so its workflow change never becomes part of another pull request's gate. A pull request that is a draft, or whose CI is red, is not a candidate.
+
+### Running E2E (D4)
+The train dispatches `e2e.yml` with `ref: train/run` (`POST /actions/workflows/e2e.yml/dispatches`). The run's `head_sha` is the train tip, so `E2E (Playwright)` lands on that SHA and the train reads it with `check_runs()`. The batch runs the `e2e.yml` in the batch tree. That is the same trust as a label run, which runs the pull request's own `e2e.yml`, and D3 keeps a workflow-changing pull request alone. `e2e.yml`'s `concurrency` keys on `refs/heads/train/run`, so a new batch cancels a stale run.
+
+### Green batch (D5)
+For each member, in order, the train posts «جاهز للدمج (batch <wave>#<b>, <i>/<k>): بعد #<previous>», keyed on head + batch, only if: the head is still the pinned SHA; `main` equals the batch base or has moved **only** by the earlier members, in order (`GET /commits/{sha}/pulls` names the member; squash and merge commits both count); and CI and Owner review are still green on that head. **Members are merged strictly in order**, and the comment names the one that must merge first.
+
+### Invalidation (D6)
+A batch is dropped, and the next run rebuilds it from the current state, when: a member's head moves; a member is closed, turns draft, or loses Owner review or CI green; `main` moves by a commit that is not the next member; or the published order changes. Its `ready` comments get «سُحب: batch اتلغى (<reason>)» under the same marker family, so nobody merges on a stale signal.
+
+### Red batch (D7)
+1. **One re-run of the same tip** (`POST /actions/runs/{id}/rerun-failed-jobs`). If it's green, the batch goes on as **flaky**: the train comments the failing test names, and a Salma flake ticket is due (through the Mac-side check, like `train-conflict`).
+2. **Red again → prefix bisect**, because order matters. Test `[1]`: if it's red, #1 is the culprit. Otherwise test `[1,2]`, and so on. That is at most k−1 extra runs (2 for k = 3).
+3. The culprit gets `train-red` and one comment with the failing tests and the run link, and it goes back to Malek. The green prefix gets «جاهز للدمج» (D5). Members after the culprit go back to the queue.
+
+### After the merges: the tree check (D8)
+When the last member of a green batch has merged, the train compares the tree SHA of `main`'s tip with the train tip's. Equal: done. Different (a squash or merge edge case, or a hand change): it dispatches the full E2E on `main` at once and says so.
+
+### When pull-request E2E switches to `@smoke`
+Only on the day the batch train is installed and has passed one real batch. Until then, the full `run-e2e` on the pull request stays the gate.
+
+## Per-pull-request mode (`batch-size: 0`, the fallback)
 
 It takes the first open pull request in `order` (the head of the train; merged and closed ones are skipped) and:
 
@@ -32,7 +70,7 @@ Every comment carries a hidden `<!-- merge-train:<kind>:<key> -->` marker, so a 
 
 ## Owner sign-off and the train's updates (read this before labelling)
 
-**Ahmed adds `reviewed-by-ahmed` to a train pull request only after it is up to date, never in advance.** The train's `update-branch` is a new commit on the pull request (a `synchronize` event), and Owner review withdraws the label on every new commit (`owner-review.yml`, "New commits withdraw an earlier sign-off"). A critical pull request labelled before it became the head of the train loses the label when the train updates it, and Ahmed would review again. The flow is consistent because «جاهز للدمج» already needs Owner review green on the *current* head: label after the update, then the comment appears (the `labeled` trigger below re-runs the train).
+**In batch mode this section doesn't apply:** no head is changed, so the label is given once and stays (D1). In the fallback mode: **Ahmed adds `reviewed-by-ahmed` to a train pull request only after it is up to date, never in advance.** The train's `update-branch` is a new commit on the pull request (a `synchronize` event), and Owner review withdraws the label on every new commit (`owner-review.yml`, "New commits withdraw an earlier sign-off"). A critical pull request labelled before it became the head of the train loses the label when the train updates it, and Ahmed would review again. The flow is consistent because «جاهز للدمج» already needs Owner review green on the *current* head: label after the update, then the comment appears (the `labeled` trigger below re-runs the train).
 
 ## Triggers and cost
 
@@ -40,7 +78,7 @@ Every comment carries a hidden `<!-- merge-train:<kind>:<key> -->` marker, so a 
 
 ## Permissions
 
-Reads use the workflow's `GITHUB_TOKEN` (`contents`, `pull-requests`, `checks`, `statuses` read). Writes use the `basita-train` App's token, minted by `actions/create-github-app-token` with `permission-contents: write` and `permission-pull-requests: write` for this repository only. The write methods are update-branch, add or remove a label, post a comment: there is no merge call, and a test pins the list. The App's pushes are merge commits on pull-request branches; the Main guard (red) and the Mac's hourly check (attention line) already flag any update to `main` by an actor that is not Ahmed, which includes this App.
+Reads use the workflow's `GITHUB_TOKEN` (`contents`, `pull-requests`, `checks`, `statuses` read). Writes use the `basita-train` App's token, minted by `actions/create-github-app-token` with `permission-contents: write`, `permission-pull-requests: write` and, for batch mode, `permission-actions: write` (the dispatch and the re-run; D9), for this repository only. The write methods, pinned by a test: in batch mode, update-ref on `train/run` **only**, `POST /merges` with base `train/run` **only**, dispatch of `e2e.yml` **only**, rerun-failed-jobs, add or remove a label, post a comment; in the fallback, update-branch, labels and comments. There is no merge call into the default branch and no ref write outside `train/run`. The ref name is a constant in the code, never an input. The App's pushes are merge commits on pull-request branches; the Main guard (red) and the Mac's hourly check (attention line) already flag any update to `main` by an actor that is not Ahmed, which includes this App.
 
 ## Install (Ahmed)
 
