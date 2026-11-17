@@ -22,6 +22,10 @@ name: Reusable architecture review re-run
 on:
   workflow_call:
     inputs:
+      runner:
+        description: JSON for runs-on, for example '["self-hosted","basita-ci"]'. Default is the GitHub-hosted runner.
+        type: string
+        default: '"ubuntu-slim"'
       reviewer:
         description: GitHub login of the reviewer; other people's reviews re-run nothing
         type: string
@@ -38,7 +42,7 @@ jobs:
   rerun:
     name: Re-run Architecture review
     if: github.event.review.user.login == inputs.reviewer
-    runs-on: ubuntu-slim # 1 vCPU, $0.002/min (BASITA cost decision §7, item 2a)
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 5
     steps:
       - name: Re-run the check on the head commit

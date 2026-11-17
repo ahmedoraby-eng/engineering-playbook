@@ -74,6 +74,8 @@ class FakeGitHub:
         # Architecture review's machine-readable notice line, by check run id (BASITA-162, Yousef's review of #40).
         self.notices = {1: notice()}
         self.statuses = []
+        self.combined_bare = False  # the real combined-status answer has no `creator`
+        self.rest_statuses = True  # GET commits/<sha>/statuses answers
         self.files = [{"filename": "work/sherif/notes.md"}]
         self.commits = [{"author": {"login": "basita-sherif[bot]"}, "commit": {"author": {"email": "x"}}}]
         self.rules = rules
@@ -98,7 +100,13 @@ class FakeGitHub:
                 [{"message": self.notices[run_id]}] if run_id in self.notices else []
             )
         if method == "GET" and base == f"{r}/commits/{HEAD}/status":
-            return date, {"statuses": self.statuses}
+            return date, {
+                "statuses": [
+                    {k: v for k, v in s.items() if k != "creator"} if self.combined_bare else s for s in self.statuses
+                ]
+            }
+        if method == "GET" and base == f"{r}/commits/{HEAD}/statuses" and self.rest_statuses:
+            return date, self.statuses
         if method == "GET" and base == f"{r}/contents/.github/review-rules.json?ref=main":
             return date, {"content": base64.b64encode(json.dumps(self.rules).encode()).decode()}
         if method == "GET" and base == f"{r}/pulls/12/files":
@@ -306,6 +314,42 @@ def test_jira_status_refusals(status, why):
     github.statuses = status
     result = d.check_merge(FARM, 12, github, jira({"DFP-7": "Ready for Release"}), sleep=lambda _: None)
     assert any(why in f for f in result.failures)
+
+
+def test_jira_status_creator_read_from_rest_when_combined_has_none():
+    github = farm()
+    github.combined_bare = True
+    result = d.check_merge(FARM, 12, github, jira({"DFP-7": "Ready for Release"}), sleep=lambda _: None)
+    assert result.failures == []
+
+
+@pytest.mark.parametrize("rest", [True, False])
+def test_jira_status_creator_fails_closed_without_a_creator(rest):
+    github = farm()
+    github.combined_bare = True
+    github.rest_statuses = rest
+    github.statuses = [{"context": "Jira status", "state": "success"}] if rest else github.statuses
+    result = d.check_merge(FARM, 12, github, jira({"DFP-7": "Ready for Release"}), sleep=lambda _: None)
+    assert any("not success by github-actions[bot]" in f for f in result.failures)
+
+
+def test_jira_status_creator_from_rest_still_refuses_another_creator():
+    github = farm()
+    github.combined_bare = True
+    github.statuses = [{"context": "Jira status", "state": "success", "creator": {"login": "basita-malek[bot]"}}]
+    result = d.check_merge(FARM, 12, github, jira({"DFP-7": "Ready for Release"}), sleep=lambda _: None)
+    assert any("by basita-malek" in f for f in result.failures)
+
+
+def test_jira_status_creator_from_rest_matches_the_same_status():
+    github = farm()
+    github.combined_bare = True
+    github.statuses = [
+        {"id": 2, "context": "Jira status", "state": "success", "creator": {"login": "basita-malek[bot]"}},
+        {"id": 1, "context": "Jira status", "state": "success", "creator": {"login": "github-actions[bot]"}},
+    ]
+    result = d.check_merge(FARM, 12, github, jira({"DFP-7": "Ready for Release"}), sleep=lambda _: None)
+    assert any("by basita-malek" in f for f in result.failures)
 
 
 def test_a_waived_jira_status_waits_for_ahmed():
