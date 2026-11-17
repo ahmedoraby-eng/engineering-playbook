@@ -29,6 +29,8 @@ One fixed branch, `train/run` (a constant in the code, never an input), is force
 2. For each member in order: `POST /merges` with `base: train/run`, `head: <pinned head SHA>` and `commit_message: "train <wave>#<batch>: #<N>@<sha>"`. GitHub builds the merge server-side, so the train runs no pull-request code. **409 (conflict):** that member leaves the batch and gets the `train-conflict` comment and label (the existing `conflicts.py` route, keyed on head + base). The rest continue.
 3. The tip's commit messages are the **manifest** (base, then `#N@sha` in order). The state lives in the branch itself, and a later run re-reads it. There is no other store.
 
+**The manifest is trusted only when GitHub built it** (Yousef's review, M1). There is no branch protection, so anyone with write access could push a commit whose message looks like a manifest line. A manifest commit counts only when its parents are exactly [the previous manifest commit, or the base for the first one; the pinned head its message names], and GitHub verified its signature (`verification.verified`; `POST /merges` commits are signed by web-flow). If any commit fails, the whole manifest is untrusted: the batch is dropped (its ready comments withdrawn), rebuilt from the current state, and the report carries an ATTENTION line.
+
 A pull request whose head conflicted on this `main` is not a candidate again until its head or `main` moves (the conflict comment is the record), so a run never rebuilds the same conflict.
 
 Every app-repository workflow with a `push` trigger is limited to `main`, so pushing `train/run` starts nothing but the dispatch below. A test must pin this (D9); the playbook's templates test reads only `templates/merge-train/`, not the app repository's workflows, so that test is still open (Basel).
@@ -40,7 +42,7 @@ A pull request that changes `.github/workflows/**` runs as a **batch of one**, s
 The train dispatches `e2e.yml` with `ref: train/run` (`POST /actions/workflows/e2e.yml/dispatches`), right after it builds the batch, and again only when no run of the tip is visible after `settle-seconds`. The run's `head_sha` is the train tip, so `E2E (Playwright)` lands on that SHA and the train reads it with `check_runs()`. The batch runs the `e2e.yml` in the batch tree. That is the same trust as a label run, which runs the pull request's own `e2e.yml`, and D3 keeps a workflow-changing pull request alone. `e2e.yml`'s `concurrency` keys on `refs/heads/train/run`, so a new batch cancels a stale run.
 
 ### Green batch (D5)
-For each member, in order, the train posts «جاهز للدمج (batch <wave>#<b>, <i>/<k>): بعد #<previous>», keyed on head + batch, only if: the head is still the pinned SHA; `main` equals the batch base or has moved **only** by the earlier members, in order (`GET /commits/{sha}/pulls` names the member; squash and merge commits both count); and CI and Owner review are still green on that head. **Members are merged strictly in order**, and the comment names the one that must merge first. A CI or Owner review that is running again on a member (a re-run on a label event) holds the signal until it is green; it does not drop the batch. Failed or gone does.
+For each member, in order, the train posts «جاهز للدمج (batch <wave>#<b>, <i>/<k>): بعد #<previous>», keyed on head + batch, only if: the head is still the pinned SHA; `main` equals the batch base or has moved **only** by the earlier members, in order (`GET /commits/{sha}/pulls` names the member; squash and merge commits both count); and CI and Owner review are still green on that head. **Members are merged strictly in order**, and the comment names the one that must merge first. A CI or Owner review that is running again on a member (a re-run on a label event) holds the signal until it is green; it does not drop the batch. Failed or gone does. A gate (CI, Owner review or the batch's E2E) that stays pending for more than 2 hours gets an ATTENTION line in the report; the batch is still held, nothing else changes.
 
 ### Invalidation (D6)
 A batch is dropped, and the next run rebuilds it from the current state, when: a member's head moves; a member is closed, turns draft, or loses Owner review or CI green; `main` moves by a commit that is not the next member; or the published order changes. Its `ready` comments get «سُحب: batch اتلغى (<reason>)» under the same marker family, so nobody merges on a stale signal.
@@ -54,7 +56,7 @@ A batch is dropped, and the next run rebuilds it from the current state, when: a
 When the last member of a green batch has merged, the train compares the tree of `main` right after that merge with the tree that was tested. Equal: done. Different (a squash or merge edge case, or a hand change): it says so in a comment on the last member and in the run's report. **It dispatches nothing on `main`** (Yousef, record 5d9d0b13, which overrides the amendment's "dispatch on main"): the nightly E2E on `main` is the backstop, and Ahmed or an engineer runs E2E on `main` by hand.
 
 ### Pull requests without `run-e2e` in batch mode
-They get the plain ready check: «جاهز للدمج» when CI and Owner review are green on the head and it is up to date with `main`. The train never updates their branch either; one that is behind is reported. One that comes after an unmerged member of the live batch in the order waits for it; one that comes before is told that merging it drops the batch.
+They get the plain ready check: «جاهز للدمج» when CI and Owner review are green on the head and it is up to date with `main`. The train never updates their branch either; one that is behind is reported. While a batch is live, the comment says «جاهز للدمج: #N بعد الـ batch الحالي (<wave>#<b>: #a ثم #b)» and that merging it first drops the batch.
 
 ### When pull-request E2E switches to `@smoke`
 Only on the day the batch train is installed and has passed one real batch. Until then, the full `run-e2e` on the pull request stays the gate.
@@ -99,5 +101,6 @@ The caller passes the App's private key (write access to the app repository) to 
 
 ## Not in this change
 
+- D8 follow-up: when the trees differ, point `train/run` at `main`'s commit and dispatch E2E there (the fence allows `train/run` only), instead of the manual run on `main`.
 - Telling Malek and Talia's queue about `train-conflict` and «جاهز للدمج» is a Mac-side check in basita-ops (it reads the labels and attention lines), because the workflow has no Jira access and should not.
 - `registers-guard`, the Jira "Register IDs" check and the hub-change label (E2, E3, E4) are separate tickets.

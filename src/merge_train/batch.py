@@ -34,6 +34,7 @@ import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from .config import Config
 from .github import TRAIN_REF, CheckRun, GitCommit, GitHub, GitHubError, MergeResult, PullRequest, WorkflowRun
@@ -56,6 +57,7 @@ from .train import (
 RED_LABEL = "train-red"
 MAX_BATCH = 4
 WORKFLOWS_DIR = ".github/workflows/"
+GATE_STALE_SECONDS = 2 * 3600  # a gate pending longer than this gets an ATTENTION line (Yousef, note 1)
 MAIN_WALK_LIMIT = 30  # main commits read back to the batch base; more than that is "main moved by others"
 PLAIN = "no run-e2e: plain ready check"
 
@@ -93,6 +95,7 @@ class Manifest:
     trees: tuple[str, ...]  # the tree of each of those commits
     bisect_of: tuple[Member, ...] = ()  # the full batch, when this is a prefix build
     full_tip: str = ""  # the tip of that full batch (its red runs stay readable by SHA)
+    distrust: str = ""  # why a commit of this manifest is not the train's own (M1); "" when trusted
 
     @property
     def tip(self) -> str:
@@ -123,9 +126,26 @@ def _bisect_line(body: str) -> tuple[str, tuple[Member, ...]] | None:
     return found["tip"], members
 
 
+def manifest_distrust(base: str, commits: Sequence[GitCommit], members: Sequence[Member]) -> str:
+    """Yousef's M1. With no branch protection, anyone with write access could push a commit whose message
+    looks like a manifest line. A manifest commit counts only when (a) its parents are exactly [the
+    previous manifest commit, or the base for the first one; the pinned head its message names], and
+    (b) GitHub verified its signature (`POST /merges` commits are signed by web-flow). Returns why not,
+    or "" when every commit passes. `commits` and `members` are oldest first."""
+    previous = base
+    for commit, member in zip(commits, members, strict=True):
+        if commit.parents != (previous, member.sha):
+            return f"commit `{commit.sha[:7]}` على {TRAIN_REF} مش merge لـ #{member.number} فوق اللي قبله"
+        if not commit.verified:
+            return f"commit `{commit.sha[:7]}` على {TRAIN_REF} مش موقّع من GitHub"
+        previous = commit.sha
+    return ""
+
+
 def parse_manifest(chain: Sequence[GitCommit]) -> Manifest | None:
     """`chain` is train/run's tip and its first parents, newest first. None when the tip is not a train
-    merge (no live batch: never built, or every member of the last build conflicted)."""
+    merge (no live batch: never built, or every member of the last build conflicted). A manifest whose
+    commits fail `manifest_distrust` comes back with `distrust` set: the run drops it and rebuilds."""
     matched: list[tuple[GitCommit, Member]] = []
     key = None
     for commit in chain:
@@ -146,15 +166,18 @@ def parse_manifest(chain: Sequence[GitCommit]) -> Manifest | None:
     if not earliest.parents:
         return None
     wave, batch, bisect = key
+    members = tuple(m for _, m in matched)
+    base = earliest.parents[0]
     return Manifest(
         wave=wave,
         batch=batch,
-        base=earliest.parents[0],
-        members=tuple(m for _, m in matched),
+        base=base,
+        members=members,
         commits=tuple(c.sha for c, _ in matched),
         trees=tuple(c.tree for c, _ in matched),
         bisect_of=bisect[1] if bisect else (),
         full_tip=bisect[0] if bisect else "",
+        distrust=manifest_distrust(base, [c for c, _ in matched], members),
     )
 
 
@@ -619,6 +642,10 @@ class _BatchRun:
         """Carry the batch on train/run one step. True when train/run is free for the next batch (the
         batch is finished or dropped), False while it is still live."""
         full = m.full
+        if m.distrust:
+            self.report.did(f"ATTENTION: the manifest on {TRAIN_REF} is not trusted ({m.distrust}); rebuilding")
+            self.drop(m, full, f"الـ manifest على {TRAIN_REF} مش موثوق: {m.distrust}")
+            return True
         if m.bisect_of and not (0 < len(m.members) < len(full) and m.members == full[: len(m.members)]):
             self.drop(m, full, "بناء الـ bisect مش مطابق لأعضاء الـ batch")
             return True
@@ -642,6 +669,9 @@ class _BatchRun:
         what = f"batch {m.label}" + (f" (bisect prefix {len(m.members)}/{len(full)})" if m.bisect_of else "")
         self.report.did(f"{what}: E2E {e2e.verdict} (attempt {e2e.attempt}) on {m.tip[:7]}")
         if step.kind == "wait":
+            check = _latest(self.gh.check_runs(m.tip), self.options.e2e_check)
+            since = check.started_at if check is not None else (e2e.run.created_at if e2e.run else "")
+            self.stale(f"E2E on batch {m.label} ({m.tip[:7]})", since)
             self.keep_live(m, full)
             return False
         if step.kind == "stuck":
@@ -695,9 +725,26 @@ class _BatchRun:
         if a.pending:
             held = ", ".join(f"#{n}" for n in a.pending)
             self.report.did(f"batch {m.label} green; ready held while CI or Owner review runs again on {held}")
+            for mem in green:
+                if mem.number not in a.pending:
+                    continue
+                for name in (self.options.ci_check, self.options.owner_review_check):
+                    run_ = _latest(self.checks(mem.sha), name)
+                    if run_ is not None and run_.status != "completed":
+                        self.stale(f"{name} on #{mem.number}", run_.started_at)
             return False
         self.announce(m, green, a.merged, e2e, step.flaky)
         return False
+
+    def stale(self, what: str, since: str) -> None:
+        """Note 1: the batch is held as before; a gate pending for more than 2 h is only reported."""
+        try:
+            started = datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return
+        hours = (self.now() - started) / 3600
+        if self.now() - started > GATE_STALE_SECONDS:
+            self.report.did(f"ATTENTION: {what} pending for {hours:.1f} h (since {since}); the batch is held")
 
     def keep_live(self, m: Manifest, members: Sequence[Member]) -> None:
         self.live_members = tuple(members)
@@ -900,24 +947,20 @@ class _BatchRun:
 
     def plain_ready(self, facts: Mapping[int, Facts]) -> None:
         """A pull request without run-e2e needs no E2E: «جاهز للدمج» when CI and Owner review are green on
-        its head and it is up to date with main (batch mode never updates a branch). It waits while an
-        earlier pull request in the order is an unmerged member of the live batch, so the published order
-        holds; one that comes before the live batch is told that merging it drops the batch."""
-        live = {mem.number for mem in self.live_members}
-        seen_live = False
+        its head and it is up to date with main (batch mode never updates a branch). While a batch is live,
+        the comment says «بعد الـ batch الحالي» and names its members (Yousef, note 2): merging it first
+        would move main by a commit that is not the next member, which drops the batch (D6)."""
+        live = [mem.number for mem in self.live_members if (p := self.pull(mem.number)) is not None and not p.merged]
+        after = ""
+        if live:
+            after = f"بعد الـ batch الحالي ({self.live_label}: {' ثم '.join(f'#{n}' for n in live)})"
         for number in self.config.order:
             if number in live:
-                pr = self.pull(number)
-                if pr is not None and not pr.merged:
-                    seen_live = True
                 continue
             f = facts[number]
             if candidacy(f, self.base_branch) != PLAIN or f.pr is None:
                 continue
             pr = f.pr
-            if seen_live:
-                self.notes[number] = ("waiting", f"after the live batch {self.live_label}")
-                continue
             ci_ok = f.ci == "ok" or (f.ci == "missing" and f.owner != "missing")
             if not (ci_ok and f.owner == "ok"):
                 self.notes[number] = ("waiting", f"plain ready check: CI {f.ci}, Owner review {f.owner}")
@@ -930,13 +973,11 @@ class _BatchRun:
                 continue
             passed = ["CI", "Owner review"] + ([REVIEW_LABEL] if REVIEW_LABEL in pr.labels else [])
             note = _not_covered_note(self.gh, pr, self.checks(pr.head_sha), self.options)
-            if live:
-                note += (
-                    f"\n\nتنبيه: دمجه قبل أعضاء batch {self.live_label} المفتوح "
-                    f"({', '.join(f'#{n}' for n in sorted(live))}) يلغي الـ batch ويحتاج E2E جديد."
-                )
-            self.comment(number, ready_comment(pr, self.base_branch, passed, note), "ready (no E2E needed)")
-            self.notes[number] = ("ready", "plain ready check")
+            if after:
+                note += "\n\nدمجه قبل أعضاء الـ batch الحالي يلغي الـ batch ويحتاج E2E جديد."
+            body = ready_comment(pr, self.base_branch, passed, note, after=after)
+            self.comment(number, body, "ready (no E2E needed)" + (", after the live batch" if after else ""))
+            self.notes[number] = ("ready", "plain ready check" + (f", after batch {self.live_label}" if after else ""))
 
 
 def run_batch(

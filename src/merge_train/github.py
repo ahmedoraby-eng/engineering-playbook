@@ -74,6 +74,7 @@ class GitCommit:
     message: str
     tree: str
     parents: tuple[str, ...]
+    verified: bool = False  # GitHub's signature check; POST /merges signs with web-flow, so it is True
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,7 @@ class WorkflowRun:
     head_branch: str
     head_sha: str
     html_url: str
+    created_at: str = ""
 
 
 Transport = Callable[[urllib.request.Request], Any]
@@ -295,7 +297,8 @@ class GitHub:
         return str(self._ok("GET", path, status, payload, (200,))["object"]["sha"])
 
     def git_commit(self, sha: str) -> GitCommit:
-        """A commit's message, tree and parents (the manifest on train/run is read this way, D2)."""
+        """A commit's message, tree, parents and signature check (the manifest on train/run is read this
+        way, D2; Yousef's M1 trusts a manifest commit only when GitHub verified its signature)."""
         path = f"/repos/{self.repo}/git/commits/{sha}"
         status, payload = self._read(path)
         p = self._ok("GET", path, status, payload, (200,))
@@ -304,6 +307,7 @@ class GitHub:
             message=str(p.get("message", "")),
             tree=str(p["tree"]["sha"]),
             parents=tuple(str(parent["sha"]) for parent in p.get("parents", [])),
+            verified=(p.get("verification") or {}).get("verified") is True,
         )
 
     def tree_sha(self, sha: str) -> str:
@@ -335,6 +339,7 @@ class GitHub:
             head_branch=str(item.get("head_branch") or ""),
             head_sha=str(item.get("head_sha") or ""),
             html_url=str(item.get("html_url") or ""),
+            created_at=str(item.get("created_at") or ""),
         )
 
     def e2e_runs(self, head_sha: str) -> list[WorkflowRun]:

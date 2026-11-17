@@ -123,11 +123,13 @@ def conflict_comment(pr: PullRequest, base: str, files: list[str] | None, key: s
     )
 
 
-def ready_comment(pr: PullRequest, base: str, passed: list[str], note: str) -> str:
+def ready_comment(pr: PullRequest, base: str, passed: list[str], note: str, *, after: str = "") -> str:
+    """`after` names what must merge first (batch mode: «بعد الـ batch الحالي»)."""
     ticks = "، ".join(f"{p} ✓" for p in passed)
+    when = f" {after}" if after else ""
     body = (
         f"{marker('ready', pr.head_sha)}\n"
-        f"**Merge train:** جاهز للدمج: #{pr.number} ({ticks}) على آخر commit "
+        f"**Merge train:** جاهز للدمج: #{pr.number}{when} ({ticks}) على آخر commit "
         f"`{pr.head_sha[:7]}`، محدَّث مع `{base}`.\n\n"
         f"القطار لا يدمج: الدمج لأحمد وحده."
     )

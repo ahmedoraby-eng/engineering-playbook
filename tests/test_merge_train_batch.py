@@ -154,7 +154,9 @@ class BatchGH:
             return MergeResult("conflict")
         parent = self.train
         sha = hashlib.sha1(f"{parent}+{head_sha}+{next(self._ids)}".encode()).hexdigest()
-        self.commits[sha] = GitCommit(sha, message, tree_of(self.commits[parent].tree, head_sha), (parent, head_sha))
+        tree = tree_of(self.commits[parent].tree, head_sha)
+        # GitHub builds the merge server-side and signs it with web-flow, so it is verified (M1)
+        self.commits[sha] = GitCommit(sha, message, tree, (parent, head_sha), verified=True)
         self.train = sha
         return MergeResult("merged", sha)
 
@@ -620,8 +622,8 @@ def test_main_moving_by_the_next_member_in_order_is_not_an_invalidation():
 def test_assess_holds_on_a_running_check_and_drops_on_a_missing_one():
     m = parse_manifest(
         [
-            GitCommit("t2", f"train w#1: #2@{head(2)}", "x", ("t1", head(2))),
-            GitCommit("t1", f"train w#1: #1@{head(1)}", "x", (BASE, head(1))),
+            GitCommit("t2", f"train w#1: #2@{head(2)}", "x", ("t1", head(2)), verified=True),
+            GitCommit("t1", f"train w#1: #1@{head(1)}", "x", (BASE, head(1)), verified=True),
         ]
     )
     pulls = {1: pr(1), 2: pr(2)}
@@ -787,13 +789,21 @@ def test_different_trees_are_reported_and_nothing_is_dispatched_on_main():
 # --- pull requests without run-e2e, dry run --------------------------------------------------------------
 
 
-def test_a_pull_request_without_run_e2e_gets_the_plain_ready_check_in_order():
-    gh = BatchGH([pr(1, labels=frozenset()), pr(2), pr(3, labels=frozenset())])
-    report = go(gh, [1, 2, 3])
-    first = gh.comments_of(1, "ready")
-    assert len(first) == 1 and "جاهز للدمج: #1" in first[0] and "يلغي الـ batch" in first[0]
-    assert not gh.comments_of(3, "ready"), "waits behind the live batch member #2"
-    assert {n: s for n, s, _ in report.rows}[3] == "waiting"
+def test_while_a_batch_is_live_a_plain_pull_request_is_ready_after_the_current_batch():
+    gh = BatchGH([pr(1, labels=frozenset()), pr(2), pr(4), pr(3, labels=frozenset())])
+    report = go(gh, [1, 2, 4, 3])
+    for n in (1, 3):
+        text = gh.comments_of(n, "ready")
+        assert len(text) == 1 and f"جاهز للدمج: #{n} بعد الـ batch الحالي (w#1: #2 ثم #4)" in text[0]
+        assert "يلغي الـ batch" in text[0]
+    assert {n: s for n, s, _ in report.rows}[3] == "ready"
+
+
+def test_with_no_live_batch_a_plain_pull_request_is_simply_ready():
+    gh = BatchGH([pr(1, labels=frozenset())])
+    go(gh, [1])
+    text = gh.comments_of(1, "ready")[0]
+    assert "جاهز للدمج: #1 (CI ✓" in text and "batch" not in text
 
 
 def test_a_plain_pull_request_behind_main_is_not_announced_and_never_updated():
@@ -813,3 +823,124 @@ def test_an_empty_order_with_no_batch_does_nothing():
     gh = BatchGH([])
     report = go(gh, [])
     assert gh.writes == [] and "empty" in report.actions[0]
+
+
+# --- M1: the manifest is trusted only when GitHub built it ----------------------------------------------
+
+
+def signed_chain(*numbers, verified=True):
+    """train/run as POST /merges builds it: base, then one signed merge per member (newest first)."""
+    chain, parent = [], BASE
+    for i, n in enumerate(numbers):
+        sha = hashlib.sha1(f"t{i}".encode()).hexdigest()
+        chain.append(GitCommit(sha, f"train w#1: #{n}@{head(n)}", f"tree{i}", (parent, head(n)), verified=verified))
+        parent = sha
+    return list(reversed(chain))
+
+
+def test_a_valid_manifest_passes():
+    m = parse_manifest(signed_chain(1, 2, 3))
+    assert m.distrust == "" and [x.number for x in m.members] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "forge",
+    [
+        lambda c: GitCommit(c.sha, c.message, c.tree, (c.parents[0],), verified=True),  # not a merge
+        lambda c: GitCommit(c.sha, c.message, c.tree, (c.parents[0], head(9)), verified=True),  # other head
+        lambda c: GitCommit(c.sha, c.message, c.tree, (BASE, c.parents[1]), verified=True),  # skips the previous
+        lambda c: GitCommit(c.sha, c.message, c.tree, (c.parents[1], c.parents[0]), verified=True),  # swapped
+    ],
+)
+def test_a_forged_subject_on_a_commit_with_the_wrong_parents_is_not_trusted(forge):
+    chain = signed_chain(1, 2)
+    chain[0] = forge(chain[0])
+    m = parse_manifest(chain)
+    assert m is not None and "مش merge لـ #2" in m.distrust
+
+
+def test_an_unverified_manifest_commit_is_not_trusted():
+    chain = signed_chain(1, 2)
+    chain[1] = GitCommit(chain[1].sha, chain[1].message, chain[1].tree, chain[1].parents, verified=False)
+    assert "مش موقّع من GitHub" in parse_manifest(chain).distrust
+
+
+def test_an_untrusted_manifest_drops_the_batch_and_rebuilds_with_an_attention_line():
+    gh, order = green_batch(2)
+    tip = gh.train
+    forged = hashlib.sha1(b"forged").hexdigest()
+    # someone with write access pushes a look-alike manifest line on top of train/run
+    gh.commits[forged] = GitCommit(forged, f"train w#1: #2@{head(2)}", "t", (tip,), verified=False)
+    gh.train = forged
+    mark = len(gh.writes)
+    report = go(gh, order, size=2)
+    assert any(a.startswith("ATTENTION: the manifest on train/run is not trusted") for a in report.actions)
+    assert any("مش موثوق" in a for a in report.actions if "dropped" in a)
+    assert kinds(since(gh, mark))[:1] == ["update_ref"] and gh.writes[mark][2] == gh.main
+    assert gh.manifest().distrust == "" and [m.number for m in gh.manifest().members] == [1, 2]
+
+
+def test_the_client_reads_the_signature_check():
+    from merge_train.github import GitHub
+
+    class R:
+        status = 200
+
+        def __init__(self, verified):
+            body = {"sha": "s", "message": "m", "tree": {"sha": "t"}, "parents": [], "verification": verified}
+            self._raw = json.dumps(body).encode()
+
+        def read(self):
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    for verification, expected in (({"verified": True}, True), ({"verified": False}, False), (None, False)):
+        gh = GitHub("o/r", "R", "W", transport=lambda r, v=verification: R(v))
+        assert gh.git_commit("s").verified is expected
+
+
+# --- note 1: a gate pending for more than 2 h is reported, the batch is held -----------------------------
+
+
+def iso(seconds_ago):
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(10_000.0 - seconds_ago, UTC).isoformat().replace("+00:00", "Z")
+
+
+def test_an_e2e_pending_for_more_than_2_hours_is_reported_and_held():
+    gh = BatchGH([pr(1)])
+    go(gh, [1])
+    tip = gh.train
+    gh.checks[tip] = [CheckRun(E2E, "in_progress", "", iso(3 * 3600), 5)]
+    gh.runs[tip] = [WorkflowRun(5, "in_progress", "", 1, TRAIN_REF, tip, "u", iso(3 * 3600))]
+    mark = len(gh.writes)
+    report = go(gh, [1])
+    assert since(gh, mark) == []
+    assert any(a.startswith("ATTENTION: E2E on batch w#1") and "pending for 3.0 h" in a for a in report.actions)
+    gh.checks[tip] = [CheckRun(E2E, "in_progress", "", iso(600), 5)]
+    assert not any("ATTENTION" in a for a in go(gh, [1]).actions)
+
+
+def test_a_queued_e2e_with_no_check_yet_uses_the_run_creation_time():
+    gh = BatchGH([pr(1)])
+    go(gh, [1])
+    tip = gh.train
+    gh.runs[tip] = [WorkflowRun(5, "queued", "", 1, TRAIN_REF, tip, "u", iso(5 * 3600))]
+    assert any("ATTENTION: E2E on batch" in a for a in go(gh, [1]).actions)
+
+
+def test_a_member_check_pending_for_more_than_2_hours_is_reported_and_the_ready_held():
+    gh = BatchGH([pr(1), pr(2)])
+    go(gh, [1, 2])
+    gh.e2e_result("success")
+    gh.checks[head(2)] = [GREEN[0], CheckRun("Owner review", "in_progress", "", iso(2 * 3600 + 60), 9)]
+    mark = len(gh.writes)
+    report = go(gh, [1, 2])
+    assert since(gh, mark) == [], "held as before: no ready, no drop"
+    assert any(a.startswith("ATTENTION: Owner review on #2 pending") for a in report.actions)
