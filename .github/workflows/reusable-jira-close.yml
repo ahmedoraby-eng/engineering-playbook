@@ -1,5 +1,5 @@
 # Reusable Jira close-on-merge: when a merged PR's description says `Closes <KEY>`, the Jira issue
-# moves to Done and gets a comment with the links of the PRs that mention it (Basita convention:
+# moves to Done and gets a comment with the links of the PRs that mention it; a merged `Refs <KEY>` PR moves a BASITA/ELB issue in To Do or Ready to In Progress (Basita convention:
 # `Refs <KEY>` in intermediate PRs, `Closes <KEY>` only in the final one; see CONTRIBUTING.md).
 #
 # Adopt it with a workflow like this in the consuming repository. pull_request_target runs the
@@ -115,3 +115,14 @@ jobs:
           PYTHONPATH=.playbook/src python -m atl_agent.close --pr-url "$PR_URL" --agent "$AGENT" \
             --deploy-check "$DEPLOY_CHECK" --repo "$GITHUB_REPOSITORY" --sha "$MERGE_SHA" --branch "$BASE_BRANCH" \
             --links-file "$RUNNER_TEMP/links.txt" < "$RUNNER_TEMP/body.txt"
+      # A merged `Refs <KEY>` PR starts a BASITA or ELB issue still in To Do or Ready (BASITA-178). Never Done.
+      - name: Start the issues this PR only refers to
+        if: ${{ !cancelled() }}
+        env:
+          ATL_TOKEN: ${{ secrets.ATL_TOKEN }}
+          ATL_CLOUD_ID: ${{ inputs.cloud-id }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AGENT: ${{ inputs.agent }}
+        run: |
+          PYTHONPATH=.playbook/src python -m atl_agent.close --pr-url "$PR_URL" --agent "$AGENT" --refs-start \
+            < "$RUNNER_TEMP/body.txt" || echo "::warning::refs-start failed"
