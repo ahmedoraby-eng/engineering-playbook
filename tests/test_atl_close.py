@@ -383,9 +383,14 @@ def test_main_without_a_deploy_check_never_asks_github():
 # --- Refs starts an issue (BASITA-178) ---------------------------------------------------------------------------
 
 
-def issue_fields(status_name, category="new", labels=(), kind="Task"):
+MALEK_ID = "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
+AHMED_ID = "712020:710281c6-e4c2-44fd-b72a-81091935ae21"
+
+
+def issue_fields(status_name, category="new", labels=(), kind="Task", assignee=MALEK_ID):
     fields = {"status": {"name": status_name, "statusCategory": {"key": category}}}
     fields.update({"labels": list(labels), "issuetype": {"name": kind}})
+    fields["assignee"] = {"accountId": assignee} if assignee else None
     return (200, json.dumps({"fields": fields}))
 
 
@@ -423,6 +428,9 @@ def test_refs_moves_to_do_to_in_progress_and_comments():
     [
         (issue_fields("To Do", kind="Epic"), "Epic"),
         (issue_fields("To Do", labels=("agent-hold",)), "agent-hold"),
+        (issue_fields("To Do", assignee=None), "unassigned"),
+        (issue_fields("To Do", assignee=AHMED_ID), "assigned to a person"),
+        (issue_fields("To Do", labels=("human",), assignee=MALEK_ID), "human label"),
         (issue_fields("In Progress", "indeterminate"), "not To Do or Ready"),
         (issue_fields("Done", "done"), "not To Do or Ready"),
     ],
