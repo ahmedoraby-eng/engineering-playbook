@@ -1,8 +1,9 @@
 """Command line entry point, run by the reusable workflow:
 
-    GH_READ_TOKEN=... GH_WRITE_TOKEN=... python -m merge_train --repo owner/name [--repo-dir DIR]
+    GH_READ_TOKEN=... GH_WRITE_TOKEN=... python -m merge_train --repo owner/name [--repo-dir DIR] [--batch-size N]
 
-`--dry-run` makes the decisions and writes nothing.
+`--batch-size` is 0-4, default 3 (0 = the per-PR mode). `--dry-run` makes the decisions and writes nothing.
+The branch the batch mode writes, `train/run`, is a constant in the code and never a flag.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import Path
 from .config import ConfigError, parse
 from .conflicts import conflict_files
 from .github import GitHub, GitHubError
-from .train import Options, Report, run
+from .train import DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, Options, Report, run
 
 CONFIG_PATH = ".github/merge-train.json"
 
@@ -42,6 +43,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-path", default=CONFIG_PATH)
     parser.add_argument("--repo-dir", default=".", help="a clone with the history (to list conflicting files)")
     parser.add_argument("--settle-seconds", type=int, default=Options.settle_seconds)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        choices=range(0, MAX_BATCH_SIZE + 1),
+        metavar="N",
+        help=f"pull requests per batch, 1-{MAX_BATCH_SIZE} (one full E2E each batch); 0 = per-PR mode "
+        f"(default {DEFAULT_BATCH_SIZE})",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--summary", help="file to append the Markdown summary to ($GITHUB_STEP_SUMMARY)")
     args = parser.parse_args(argv)
@@ -63,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         report = run(
             gh,
             config,
-            options=Options(settle_seconds=args.settle_seconds, dry_run=args.dry_run),
+            options=Options(settle_seconds=args.settle_seconds, dry_run=args.dry_run, batch_size=args.batch_size),
             conflict_files=lambda base_sha, head_sha: conflict_files(repo_dir, base_sha, head_sha),
         )
     except ConfigError as exc:

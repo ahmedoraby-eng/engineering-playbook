@@ -1,5 +1,9 @@
 """The merge train's decisions (ADR-020 decision 3 and Enforcement E1).
 
+`Options.batch_size` (default 3) selects batch mode, in `batch.py` (Yousef's amendment D1-D9): one full
+E2E per batch of pull requests, built on `train/run`, and no pull-request branch is updated. Batch size 0
+is the per-pull-request mode described here, kept as the fallback.
+
 For each wave Sherif publishes the merge order (`.github/merge-train.json`). After a merge only the
 *next open pull request* in that order is brought up to date, not all of them, so a wave of N pull
 requests needs about N merge-ups instead of up to N(N-1)/2. This module decides and acts for that one
@@ -35,6 +39,10 @@ CI_CHECK = "ci / Build and test"
 OWNER_REVIEW_CHECK = "Owner review"
 REVIEW_LABEL = "reviewed-by-ahmed"
 DEFAULT_SETTLE_SECONDS = 120
+# Batch mode (Yousef's amendment D1-D9): one full E2E per batch of k pull requests, default 3, max 4.
+# 0 is the per-pull-request mode below, kept as the fallback.
+DEFAULT_BATCH_SIZE = 3
+MAX_BATCH_SIZE = 4
 HEAD_POLL_SECONDS = 5
 HEAD_POLL_TRIES = 12
 
@@ -53,6 +61,11 @@ class Options:
     e2e_check: str = E2E_CHECK
     settle_seconds: int = DEFAULT_SETTLE_SECONDS
     dry_run: bool = False
+    batch_size: int = DEFAULT_BATCH_SIZE
+
+    def __post_init__(self) -> None:
+        if isinstance(self.batch_size, bool) or not 0 <= self.batch_size <= MAX_BATCH_SIZE:
+            raise ValueError(f"batch-size must be 0-{MAX_BATCH_SIZE}, not {self.batch_size!r}")
 
 
 @dataclass
@@ -110,11 +123,13 @@ def conflict_comment(pr: PullRequest, base: str, files: list[str] | None, key: s
     )
 
 
-def ready_comment(pr: PullRequest, base: str, passed: list[str], note: str) -> str:
+def ready_comment(pr: PullRequest, base: str, passed: list[str], note: str, *, after: str = "") -> str:
+    """`after` names what must merge first (batch mode: «بعد الـ batch الحالي»)."""
     ticks = "، ".join(f"{p} ✓" for p in passed)
+    when = f" {after}" if after else ""
     body = (
         f"{marker('ready', pr.head_sha)}\n"
-        f"**Merge train:** جاهز للدمج: #{pr.number} ({ticks}) على آخر commit "
+        f"**Merge train:** جاهز للدمج: #{pr.number}{when} ({ticks}) على آخر commit "
         f"`{pr.head_sha[:7]}`، محدَّث مع `{base}`.\n\n"
         f"القطار لا يدمج: الدمج لأحمد وحده."
     )
@@ -133,6 +148,10 @@ def run(
     sleep: Callable[[float], None] = time.sleep,
 ) -> Report:
     options = options or Options()
+    if options.batch_size:
+        from .batch import run_batch  # batch.py builds on this module's helpers
+
+        return run_batch(gh, config, options=options, conflict_files=conflict_files, now=now)
     report = Report(wave=config.wave)
     if not config.order:
         report.did("the order is empty: nothing to do")
