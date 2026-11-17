@@ -24,7 +24,7 @@ permissions:
 jobs:
   workflow-yaml:
     name: Workflow YAML parses
-    runs-on: ubuntu-slim # 1 vCPU; if Ruby is missing there, the step below fails closed: switch this line to ubuntu-latest
+    runs-on: ubuntu-latest # ubuntu-slim has no Ruby (first run, PR #334: the Ruby check failed closed)
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v6
