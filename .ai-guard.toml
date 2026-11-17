@@ -3,5 +3,5 @@
 source_globs = ["src/*"]
 test_globs = ["tests/*"]
 protected_globs = [".github/workflows/*", ".ai-guard.toml"]
-human_review_label = "human-reviewed"
+human_review_label = "reviewed-by-ahmed"
 max_ai_changed_lines = 400

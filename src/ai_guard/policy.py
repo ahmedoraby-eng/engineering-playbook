@@ -15,7 +15,7 @@ class Policy:
     test_globs: tuple[str, ...] = ("tests/*", "test/*", "*_test.*", "*.test.*", "test_*")
     # Sensitive areas: AI-assisted changes here need an explicit human-review label.
     protected_globs: tuple[str, ...] = ("*auth*", "*migration*", "*permission*", ".github/workflows/*")
-    human_review_label: str = "human-reviewed"
+    human_review_label: str = "reviewed-by-ahmed"
     # AI-assisted PRs above this size get a warning: big generated diffs are hard to review well.
     max_ai_changed_lines: int = 400
     # Additional secret regexes on top of the built-in set.
