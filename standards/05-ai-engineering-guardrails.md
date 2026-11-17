@@ -11,7 +11,7 @@ AI is a tool used by an accountable engineer, not an author. These guardrails ap
 | A1 | The PR author owns every line, and must be able to explain it in review | Code review |
 | A2 | AI assistance is disclosed in the PR (a checkbox, not a confession) | `ai-guard` — `ai-disclosure` |
 | A3 | AI-assisted changes to production code come with tests | `ai-guard` — `tests-with-ai-code` |
-| A4 | AI-assisted changes to sensitive areas (auth, permissions, migrations, CI) need an explicit line-by-line human review | `ai-guard` — `protected-path` + `human-reviewed` label |
+| A4 | AI-assisted changes to sensitive areas (auth, permissions, migrations, CI) need an explicit line-by-line human review | `ai-guard` — `protected-path` + `reviewed-by-ahmed` label |
 | A5 | No secrets, customer data or proprietary code from other clients in prompts; use approved tools with no-training data terms | Tool allow-list, training |
 | A6 | Generated diffs stay reviewable (~400 lines) | `ai-guard` — `reviewable-size` warning |
 | A7 | New dependencies suggested by an assistant are verified to exist and be maintained before use | Review, dependency audit |

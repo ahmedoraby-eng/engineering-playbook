@@ -4,6 +4,9 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## Unreleased
 
+### Changed (BASITA-248, one human-review label in every repo; Ahmed, 17/11/2026)
+- ai-guard's default `human_review_label` and this repo's `.ai-guard.toml` are now `reviewed-by-ahmed` (was `human-reviewed`), the label the platform repo, owner-review and merge_train already use. A caller that sets no `human_review_label` now needs `reviewed-by-ahmed` on AI-assisted changes to protected paths. `human-reviewed` stays on every Ahmed-only list (`atl`, `agent-gh`, `config/github-identities.json`), so agents still cannot set it.
+
 ### Changed (BASITA-228, auto-Released counts a PR only when the key is in its title, branch or Refs/Closes line; Ahmed, 09/11/2026)
 - `atl_agent.release.names_key` counted a PR for an issue when the key appeared anywhere in the description, so a PR that only mentioned another ticket in prose ("DFP 195 / DFP 192 do not conflict" in elbayoumy-farm-nutrition-platform#250) could hold or mislead that ticket's release. Now the hyphenated key counts only in the PR title, the head branch name, or a description line that starts with `Refs` or `Closes` (case-insensitive, optional bullet or colon, several keys separated by commas, `and` or `&`), outside HTML comments, as a whole word (DFP-15 is not DFP-153). A key in prose, or written with a space (`DFP 192`), no longer counts. Tests cover each case.
 - `standards/06-agent-identity.md` rule 3: mention another ticket in a PR or commit with a space (`DFP 192`); the hyphenated key is for the PR's own ticket in title, branch and `Refs` / `Closes`. Jira's development panel still links any hyphenated key, which is why the convention is needed.
