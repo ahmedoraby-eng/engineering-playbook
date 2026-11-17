@@ -399,9 +399,40 @@ def test_writes_use_the_app_token_and_reads_use_the_read_token_and_nothing_can_m
         ("DELETE", "Bearer WRITE"),
     }
     public = {n for n in dir(GitHub) if not n.startswith("_")}
-    writers = {"update_branch", "add_label", "remove_label", "comment"}
-    assert not any("merge" in n for n in public)
-    assert writers <= public
+    # D9: the writers, pinned. The batch writes (train/run, e2e.yml, re-run) are fenced in
+    # test_merge_train_batch.py; nothing merges into the default branch and nothing cancels a run.
+    writers = {
+        "update_branch",
+        "add_label",
+        "remove_label",
+        "comment",
+        "set_train_ref",
+        "merge_into_train",
+        "dispatch_e2e",
+        "rerun_failed",
+    }
+    readers = {
+        "default_branch",
+        "read_file",
+        "pull",
+        "behind_by",
+        "branch_sha",
+        "commit_time",
+        "comments",
+        "commit_statuses",
+        "check_runs",
+        "annotations",
+        "ref_sha",
+        "git_commit",
+        "tree_sha",
+        "pulls_for_commit",
+        "pull_files",
+        "e2e_runs",
+        "workflow_run",
+    }
+    assert public == writers | readers, "a new GitHub method must be added to this pin on purpose"
+    assert {n for n in public if "merge" in n} == {"merge_into_train"}, "the only merge is into train/run"
+    assert not any("cancel" in n or "delete" in n for n in public)
 
 
 def test_only_the_trains_own_comments_count_as_markers():
