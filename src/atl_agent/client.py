@@ -632,6 +632,8 @@ DONE_PROJECTS = ("BASITA", "ELB")
 # An agent with no Jira seat -> the agent whose user it works through. Its issues are assigned to that user and carry
 # the label agent-<name> (jira-agents.conf FOCAL_AGENT and ROUTED_AGENTS in basita-ops).
 ROUTED_THROUGH = {"maya": "sherif"}
+# The real people among JIRA_ACCOUNTS: a Refs PR never starts an issue assigned to one of them (BASITA-178).
+HUMANS = ("ahmed", "yamen", "abdelrahman")
 # Labels that hold an issue for Ahmed: jira-done leaves such an issue as it is.
 WAITS_FOR_AHMED = ("needs-ahmed",)
 # jira-wontdo (BASITA-203; Sherif's scope, 09/11/2026): a lead cancels an issue as Won't Do, with a reason. The BASITA
@@ -1510,6 +1512,32 @@ class AtlClient:
         chosen = next((t for t in options if t["to"]["name"] == "Done"), options[0])
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
+
+    def jira_progress(self, issue: str) -> tuple[bool, str]:
+        """A merged `Refs` PR: move an issue from To Do (or Ready) to In Progress, nothing more. Returns (moved, why or
+        the new status). It adds no label and no assignee, never moves an Epic or an `agent-hold` issue, and never moves
+        an issue that is already started or Done (BASITA-178). Needs read:jira-work and write:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels,issuetype,assignee")
+        fields = data["fields"]
+        status = fields["status"]["name"]
+        if (fields.get("issuetype") or {}).get("name", "").lower() == "epic":
+            return False, "it is an Epic"
+        if "agent-hold" in fields.get("labels", []):
+            return False, "it has the agent-hold label"
+        if "human" in fields.get("labels", []):
+            return False, "it has the human label"
+        owner = (fields.get("assignee") or {}).get("accountId", "")
+        agents = {account for name, account in JIRA_ACCOUNTS.items() if name not in HUMANS}
+        if owner not in agents:
+            return False, "it is assigned to a person, not an agent" if owner else "it is unassigned"
+        if status.lower() not in ("to do", "ready"):
+            return False, f"it is in '{status}', not To Do or Ready"
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        chosen = next((t for t in moves if t["to"]["name"].lower() == "in progress"), None)
+        if not chosen:
+            return False, "no transition to In Progress is available"
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        return True, chosen["to"]["name"]
 
     def jira_start(self, issue: str) -> str:
         """Pick up an issue: To Do -> In Progress, add the `agent-picked` label, return the new status. An unassigned
