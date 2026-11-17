@@ -341,6 +341,17 @@ def test_jira_status_creator_from_rest_still_refuses_another_creator():
     assert any("by basita-malek" in f for f in result.failures)
 
 
+def test_jira_status_creator_from_rest_matches_the_same_status():
+    github = farm()
+    github.combined_bare = True
+    github.statuses = [
+        {"id": 2, "context": "Jira status", "state": "success", "creator": {"login": "basita-malek[bot]"}},
+        {"id": 1, "context": "Jira status", "state": "success", "creator": {"login": "github-actions[bot]"}},
+    ]
+    result = d.check_merge(FARM, 12, github, jira({"DFP-7": "Ready for Release"}), sleep=lambda _: None)
+    assert any("by basita-malek" in f for f in result.failures)
+
+
 def test_a_waived_jira_status_waits_for_ahmed():
     github = farm(labels=[{"name": "jira-status-waived"}])
     result = d.check_merge(FARM, 12, github, jira({"DFP-7": "Ready for Release"}), sleep=lambda _: None)
