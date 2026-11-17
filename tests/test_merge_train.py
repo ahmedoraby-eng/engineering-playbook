@@ -107,6 +107,8 @@ class FakeGH:
 
 
 def go(gh, order, **kw):
+    """The per-pull-request mode (batch-size 0); batch mode has its own tests (test_merge_train_batch.py)."""
+    kw.setdefault("options", Options(batch_size=0))
     kw.setdefault("now", lambda: 10_000.0)
     kw.setdefault("sleep", lambda s: None)
     return run(gh, parse(json.dumps({"wave": "w", "order": order})), **kw)
@@ -249,7 +251,7 @@ def test_the_conflict_label_goes_when_the_pull_request_is_current_again():
 
 def test_dry_run_changes_nothing():
     gh = FakeGH([pr(17, labels=frozenset({E2E_LABEL}))], behind=2)
-    report = go(gh, [17], options=Options(dry_run=True))
+    report = go(gh, [17], options=Options(dry_run=True, batch_size=0))
     assert gh.writes == [] and "dry run" in report.actions[-1]
 
 
@@ -591,7 +593,7 @@ def test_cli_needs_both_tokens(monkeypatch, capsys):
 def test_cli_writes_the_step_summary(monkeypatch, tmp_path, capsys):
     patch_cli(monkeypatch, '{"wave": "w1", "order": [1]}', prs=[pr(1, state="closed", merged=True)])
     out = tmp_path / "summary.md"
-    assert cli(["--repo", "o/r", "--summary", str(out)]) == 0
+    assert cli(["--repo", "o/r", "--batch-size", "0", "--summary", str(out)]) == 0
     text = out.read_text()
     assert "### Merge train w1" in text and "| #1 | merged |" in text
 
@@ -603,5 +605,5 @@ def test_cli_reports_a_github_failure_as_red(monkeypatch, capsys):
         raise GitHubError("GET /pulls/1 -> 500")
 
     stub.pull = boom
-    assert cli(["--repo", "o/r"]) == 1
+    assert cli(["--repo", "o/r", "--batch-size", "0"]) == 1
     assert "500" in capsys.readouterr().out
