@@ -12,6 +12,10 @@ name: Reusable Node CI
 on:
   workflow_call:
     inputs:
+      runner:
+        description: JSON for runs-on, for example '["self-hosted","basita-ci"]'. Default is the GitHub-hosted runner.
+        type: string
+        default: '"ubuntu-latest"'
       node-version:
         type: string
         default: "22"
@@ -40,7 +44,7 @@ permissions:
 jobs:
   build-test:
     name: Build and test
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -59,7 +63,7 @@ jobs:
   audit:
     name: Dependency audit
     if: ${{ !inputs.audit-in-build-job }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6

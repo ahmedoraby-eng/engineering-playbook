@@ -24,6 +24,10 @@ name: Reusable main guard
 on:
   workflow_call:
     inputs:
+      runner:
+        description: JSON for runs-on, for example '["self-hosted","basita-ci"]'. Default is the GitHub-hosted runner.
+        type: string
+        default: '"ubuntu-slim"'
       allowed-actors:
         description: Comma-separated GitHub logins allowed to update main
         type: string
@@ -39,7 +43,7 @@ permissions:
 jobs:
   main-guard:
     name: Main guard
-    runs-on: ubuntu-slim # 1 vCPU, $0.002/min (BASITA cost decision §7, item 2a)
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 5
     steps:
       - name: Check out main_guard from the playbook

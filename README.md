@@ -88,6 +88,10 @@ A repository adopts the playbook with two short workflow files — see [its CI](
 2. **Automate** the gates: call the reusable CI workflow and add the `ai-guard` workflow — with `--warn-only` for two weeks, then enforced.
 3. **Review** progress every two weeks with the team's technical lead; revisit the standards quarterly and delete rules that don't prevent real problems.
 
+## Self-hosted runners and `pull_request_target`
+
+Every reusable workflow takes a `runner` input (JSON for `runs-on`; the default is the GitHub-hosted runner), so a consumer can run it on its own runner. Rule for any `pull_request_target` job, because it can run on a self-hosted runner with a write token: **never check out `github.event.pull_request.head.*`** (read the PR through the API instead), give the job an explicit minimal `permissions:`, and keep fork PRs off. A future edit that breaks one of the three breaks the runner's isolation.
+
 ## Development
 
 ```bash
