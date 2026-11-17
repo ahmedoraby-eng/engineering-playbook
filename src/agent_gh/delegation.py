@@ -238,6 +238,23 @@ def _pattern(parts) -> re.Pattern | None:
     return re.compile("|".join(f"(?:{p})" for p in parts)) if parts else None
 
 
+def _status_creator(read: Call, repo: str, head: str, status: dict) -> str | None:
+    """Who created a commit status. The combined-status answer carries no `creator` (and GraphQL's statusCheckRollup is
+    refused to an App token), so when it's missing the creator comes from the REST statuses list of the commit, newest
+    first, for the same context. No creator anywhere stays None, which the caller refuses (fail closed)."""
+    login = (status.get("creator") or {}).get("login")
+    if login:
+        return login
+    try:
+        _, listed = read("GET", f"/repos/{repo}/commits/{head}/statuses?per_page=100", None)
+    except IdentityError:
+        return None
+    for item in listed if isinstance(listed, list) else []:
+        if item.get("context") == status.get("context"):
+            return (item.get("creator") or {}).get("login")
+    return None
+
+
 def check_merge(
     repo: str,
     number: int,
@@ -344,8 +361,8 @@ def check_merge(
             fail(f"'{waiver}' is on the PR: Ahmed waived the Jira status, so he merges it")
         elif not mine:
             fail(f"no '{context}' status on {head[:7]}")
-        elif mine[0].get("state") != "success" or (mine[0].get("creator") or {}).get("login") != JIRA_STATUS_BOT:
-            by = (mine[0].get("creator") or {}).get("login")
+        elif mine[0].get("state") != "success" or _status_creator(read, repo, head, mine[0]) != JIRA_STATUS_BOT:
+            by = _status_creator(read, repo, head, mine[0])
             fail(f"'{context}' on {head[:7]} is {mine[0].get('state')} by {by}, not success by {JIRA_STATUS_BOT}")
         else:
             projects = jira_rules.get("projects") or {}
