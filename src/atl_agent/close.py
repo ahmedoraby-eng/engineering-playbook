@@ -56,6 +56,38 @@ def closing_keys(description: str, projects: tuple[str, ...] = PROJECTS) -> list
     return keys
 
 
+# `Refs <KEY>` only starts an issue in these projects: DFP has its own flow (operating model 4.1 item 7).
+REFS_PROJECTS = ("BASITA", "ELB")
+
+
+def refs_keys(description: str, projects: tuple[str, ...] = REFS_PROJECTS) -> list[str]:
+    """Keys named by `Refs <KEY>` in a PR description that do not also say `Closes <KEY>` there."""
+    text = re.sub(r"<!--.*?-->", "", description or "", flags=re.DOTALL)
+    pattern = rf"(?<![\w-])refs:?\s+((?:{'|'.join(map(re.escape, projects))})-\d+)\b"
+    closing = closing_keys(description)
+    keys: list[str] = []
+    for key in re.findall(pattern, text, flags=re.IGNORECASE):
+        key = key.upper()
+        if key not in keys and key not in closing:
+            keys.append(key)
+    return keys
+
+
+def start_issues(client: AtlClient, keys: list[str], pr_url: str) -> list[str]:
+    """For each `Refs` key: To Do or Ready -> In Progress, with a comment naming the PR. Never to Done."""
+    lines = []
+    for key in keys:
+        moved, detail = client.jira_progress(key)
+        if not moved:
+            lines.append(f"{key}: left alone, {detail}")
+            continue
+        client.jira_comment(
+            key, f"Moved to {detail} automatically: {pr_url} was merged and its description says 'Refs {key}'."
+        )
+        lines.append(f"{key}: -> {detail}")
+    return lines
+
+
 def gh_api(path: str) -> dict:
     """GET a GitHub API path. Empty on any failure, which reads as not confirmed."""
     done = subprocess.run(["gh", "api", path], capture_output=True, text=True)
@@ -142,6 +174,7 @@ def main(argv: list[str] | None = None, stdin=None, environ=None, transport=None
     parser.add_argument("--pr-url", required=True)
     parser.add_argument("--links-file", help="file with one line per PR that mentions the issue")
     parser.add_argument("--agent", default="sherif", help="whose Atlassian account the token belongs to")
+    parser.add_argument("--refs-start", action="store_true", help="act on `Refs <KEY>`: To Do/Ready -> In Progress")
     parser.add_argument("--dry-run", action="store_true", help="only print the keys that would be closed")
     parser.add_argument("--deploy-check", default="", help="check run that must succeed before a guarded issue moves")
     parser.add_argument("--repo", default="")
@@ -150,7 +183,28 @@ def main(argv: list[str] | None = None, stdin=None, environ=None, transport=None
     args = parser.parse_args(argv)
     environ = os.environ if environ is None else environ
 
-    keys = closing_keys((stdin or sys.stdin).read())
+    description = (stdin or sys.stdin).read()
+    if args.refs_start:
+        keys = refs_keys(description)
+        if not keys or args.dry_run:
+            print("Would start: " + ", ".join(keys) if keys else "No 'Refs <KEY>' in the description.")
+            return 0
+        try:
+            kwargs = {"transport": transport} if transport else {}
+            client = AtlClient(
+                args.agent,
+                default_cloud_id(environ if environ is not None else os.environ),
+                (environ if environ is not None else os.environ).get("ATL_TOKEN", ""),
+                (environ if environ is not None else os.environ).get("BASITA_AGENT_DOMAIN", "basitasolutions.com"),
+                **kwargs,
+            )
+            for line in start_issues(client, keys, args.pr_url):
+                print(line)
+        except AtlError as error:
+            print(f"atl-close: {error}", file=sys.stderr)
+            return 1
+        return 0
+    keys = closing_keys(description)
     if not keys:
         print("No 'Closes <KEY>' in the description: nothing to close.")
         return 0

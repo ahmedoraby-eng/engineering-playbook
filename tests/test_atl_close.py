@@ -378,3 +378,71 @@ def test_main_without_a_deploy_check_never_asks_github():
         raise AssertionError(path)
 
     assert main(["--pr-url", "u"], stdin=io.StringIO("Closes DFP-1"), environ=env, transport=transport, api=no_api) == 0
+
+
+# --- Refs starts an issue (BASITA-178) ---------------------------------------------------------------------------
+
+
+def issue_fields(status_name, category="new", labels=(), kind="Task"):
+    fields = {"status": {"name": status_name, "statusCategory": {"key": category}}}
+    fields.update({"labels": list(labels), "issuetype": {"name": kind}})
+    return (200, json.dumps({"fields": fields}))
+
+
+def test_refs_keys_skip_closes_dfp_and_comments():
+    from atl_agent.close import refs_keys
+
+    body = (
+        "Refs BASITA-1\nRefs ELB-2 and Closes ELB-2\nRefs DFP-3\n<!-- Refs BASITA-9 -->\nrefs: basita-4 Refs BASITA-1"
+    )
+    assert refs_keys(body) == ["BASITA-1", "BASITA-4"]
+    assert refs_keys("") == [] and refs_keys(None) == []
+
+
+def test_refs_moves_to_do_to_in_progress_and_comments():
+    from atl_agent.close import start_issues
+
+    transport = FakeTransport(
+        issue_fields("To Do"),
+        transitions(("11", "In Progress", "indeterminate"), ("31", "Done", "done")),
+        (204, ""),
+        (201, json.dumps({"id": "5"})),
+    )
+    assert start_issues(client(transport), ["BASITA-1"], "https://github.com/o/r/pull/7") == [
+        "BASITA-1: -> In Progress"
+    ]
+    assert transport.calls[2] == ("POST", "/rest/api/3/issue/BASITA-1/transitions", {"transition": {"id": "11"}})
+    assert "https://github.com/o/r/pull/7" in json.dumps(transport.calls[3][2]) and "Refs BASITA-1" in json.dumps(
+        transport.calls[3][2]
+    )
+    assert len(transport.calls) == 4  # no label, no assignee, no Done
+
+
+@pytest.mark.parametrize(
+    ("response", "why"),
+    [
+        (issue_fields("To Do", kind="Epic"), "Epic"),
+        (issue_fields("To Do", labels=("agent-hold",)), "agent-hold"),
+        (issue_fields("In Progress", "indeterminate"), "not To Do or Ready"),
+        (issue_fields("Done", "done"), "not To Do or Ready"),
+    ],
+)
+def test_refs_leaves_epics_held_started_and_done_alone(response, why):
+    from atl_agent.close import start_issues
+
+    transport = FakeTransport(response)
+    lines = start_issues(client(transport), ["BASITA-1"], "u")
+    assert len(lines) == 1 and why in lines[0] and len(transport.calls) == 1
+
+
+def test_refs_start_cli_and_dry_run(capsys):
+    environ = {"ATL_CLOUD_ID": "cloud-1", "ATL_TOKEN": TOKEN}
+    assert main(["--pr-url", "u", "--refs-start", "--dry-run"], stdin=io.StringIO("Refs ELB-5"), environ=environ) == 0
+    assert "Would start: ELB-5" in capsys.readouterr().out
+    transport = FakeTransport(
+        issue_fields("Ready"), transitions(("11", "In Progress", "indeterminate")), (204, ""), (201, "{}")
+    )
+    code = main(
+        ["--pr-url", "u", "--refs-start"], stdin=io.StringIO("Refs ELB-5"), environ=environ, transport=transport
+    )
+    assert code == 0 and "ELB-5: -> In Progress" in capsys.readouterr().out
