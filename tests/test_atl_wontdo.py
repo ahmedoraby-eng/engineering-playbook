@@ -275,8 +275,8 @@ def test_sherif_refuses_mayas_issue_and_says_how_to_cancel_it():
     refused(transport, "atl maya --via sherif jira-wontdo", agent="sherif")
 
 
-def test_an_agent_with_no_jira_user_can_neither_cancel_its_own_nor_use_ahmeds_word():
-    refused(FakeTransport(), "has no Jira user", agent="talia")
+def test_talia_has_a_seat_but_not_the_power_of_ahmeds_word():
+    # Talia's Jira seat (19/11/2026, BASITA-247) does not add her to WONT_DO_ON_AHMEDS_WORD: that is Ahmed's call.
     refused(FakeTransport(), "only sherif cancel on Ahmed's word", agent="talia", ahmed=AHMED_WORDS)
 
 

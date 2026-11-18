@@ -4,6 +4,10 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## Unreleased
 
+### Changed (BASITA-247, Basel's and Talia's seats; Ahmed, 18-19/11/2026)
+- `JIRA_ACCOUNTS` now has Basel's own Jira seat and Talia's Jira-only seat, so `atl basel|talia jira-start` / `jira-done` work on their own issues and `@Basel` / `@Talia` in a comment are real Jira mentions (they stay in the comment relay's text too). Talia has no Confluence seat: her Confluence calls stay `--via sherif`. Only Maya is still seatless.
+- `config/github-identities.json` lists Basel's GitHub App (`basita-basel`, `basel/*` branches, the shared `app_permissions`) as pending, shaped like Malek's; Ahmed creates it with `scripts/gh-app-new basel` and installs it on basita-ops, elbayoumy-farm-nutrition-platform and engineering-playbook, then its ids and installations are filled in.
+
 ### Changed (BASITA-248, one human-review label in every repo; Ahmed, 17/11/2026)
 - ai-guard's default `human_review_label` and this repo's `.ai-guard.toml` are now `reviewed-by-ahmed` (was `human-reviewed`), the label the platform repo, owner-review and merge_train already use. A caller that sets no `human_review_label` now needs `reviewed-by-ahmed` on AI-assisted changes to protected paths. `human-reviewed` stays on every Ahmed-only list (`atl`, `agent-gh`, `config/github-identities.json`), so agents still cannot set it.
 
