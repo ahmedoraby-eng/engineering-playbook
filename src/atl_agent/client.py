@@ -85,7 +85,7 @@ _LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()
 
 def _with_mentions(text: str) -> list[dict]:
     """Plain text as ADF nodes in which `@Name` is a real mention of anyone with a Jira seat. Others stay as text:
-    `@Talia` still counts in the comment relay, which reads the text."""
+    `@Maya` still counts in the comment relay, which reads the text."""
     pattern = r"(?<![\w.@/])@(" + "|".join(JIRA_ACCOUNTS) + r")\b"
     nodes: list[dict] = []
     position = 0
@@ -564,8 +564,8 @@ BUG_DIRECT_STATUS = "Ready for Development"
 EPIC_CREATORS = {"nora": CREATE_PROJECTS, "sherif": ("BASITA",)}
 ASSIGNERS = ("adam", "nora", "sherif", "salma")
 # People and agents with a Jira seat. Maya has none (her work goes to Sherif with the label agent-maya). Basel has his
-# own seat since 18/11/2026 (Ahmed; BASITA-247). Talia has none yet (her Jira-only invite is pending): add her here
-# when her account id is known.
+# own seat since 18/11/2026 and Talia a Jira-only one since 19/11/2026 (Ahmed; BASITA-247). Talia has no Confluence
+# seat, so her Confluence calls stay `--via sherif`.
 JIRA_ACCOUNTS = {
     "malek": ENGINEER_ACCOUNTS[0],
     "haya": ENGINEER_ACCOUNTS[1],
@@ -575,6 +575,7 @@ JIRA_ACCOUNTS = {
     "nora": "712020:05c4e58f-5b7e-482b-b3b6-01b027fd9e11",
     "yousef": "712020:b3f8403e-5f97-4351-bd9e-1435a3081131",
     "basel": "712020:180f7f79-ed32-4e9c-bada-1459774887f3",
+    "talia": "712020:607d0263-6c17-41a8-8591-d61f30f8d61a",
     "ahmed": AHMED_ACCOUNT,
     "yamen": "712020:135e8ec3-e174-46bf-b4fb-65de538cff2d",
     "abdelrahman": "712020:6f47dac6-82b6-4fd4-bd86-da7394ffa87d",
@@ -645,8 +646,8 @@ WAITS_FOR_AHMED = ("needs-ahmed",)
 WONT_DO_STATUS = "Won't Do"
 WONT_DO_LABEL = "wont-do"
 # Who may pass --ahmed to jira-wontdo. `atl` cannot verify Ahmed's words, so this power is not every agent's: it is
-# the named agents' (Sherif, whose scope this is; add Talia when she has a Jira seat). Any other lead cancels only
-# its own issue, with --why (Yousef's review of PR 53, 09/11/2026).
+# the named agents' (Sherif, whose scope this is; Talia has a Jira seat since 19/11/2026: add her on Ahmed's
+# word). Any other lead cancels only its own issue, with --why (Yousef's review of PR 53, 09/11/2026).
 WONT_DO_ON_AHMEDS_WORD = ("sherif",)
 
 

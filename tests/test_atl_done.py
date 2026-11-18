@@ -16,6 +16,7 @@ TOKEN = "tok-" + "d" * 12  # assembled at runtime; not a real credential
 CLOUD = "cloud-1"
 MALEK = JIRA_ACCOUNTS["malek"]
 BASEL = JIRA_ACCOUNTS["basel"]
+TALIA = JIRA_ACCOUNTS["talia"]
 SHERIF = JIRA_ACCOUNTS["sherif"]
 
 
@@ -240,8 +241,10 @@ def test_basel_refuses_an_issue_assigned_to_malek():
     refused(FakeTransport(issue(account=MALEK)), "assigned to", agent="basel")
 
 
-def test_an_agent_with_no_jira_user_is_refused():
-    refused(FakeTransport(), "has no Jira user", agent="talia")
+def test_talia_closes_her_own_issue_as_herself():
+    transport = FakeTransport(issue(account=TALIA), MINE, TRANSITIONS, COMMENTED, MOVED)
+    assert client(transport, "talia").jira_done("BASITA-247", "Seat added.", no_prs)[0] == "Done"
+    assert "— Talia (Basita AI)" in comment_text(transport.calls[3])
 
 
 def test_a_failed_move_after_the_comment_says_so():

@@ -220,7 +220,7 @@ def test_jira_ready_refuses_who_pickup_would_not_start(name):
     assert len(transport.calls) == 1
 
 
-@pytest.mark.parametrize("name", ["maya", "talia", "mallory"])
+@pytest.mark.parametrize("name", ["maya", "mallory"])
 def test_jira_ready_refuses_a_name_with_no_seat(name):
     transport = FakeTransport(_refining())
     with pytest.raises(AtlError, match="no Jira seat"):
@@ -1347,7 +1347,7 @@ def test_maya_through_sherif_is_still_maya_and_does_not_assign():
     assert transport.calls == []
 
 
-@pytest.mark.parametrize("name", ["maya", "talia", "mallory", "712020:someone"])
+@pytest.mark.parametrize("name", ["maya", "mallory", "712020:someone"])
 def test_assign_refuses_a_name_with_no_seat(name):
     transport = FakeTransport()
     with pytest.raises(AtlError, match="no Jira seat"):
@@ -1559,6 +1559,11 @@ def test_at_basel_is_a_real_mention_now_he_has_a_seat():
     assert JIRA_ACCOUNTS["basel"] == "712020:180f7f79-ed32-4e9c-bada-1459774887f3"
 
 
+def test_at_talia_is_a_real_mention_now_she_has_a_seat():
+    nodes = _nodes("@Talia please check")
+    assert nodes[0] == {"type": "mention", "attrs": {"id": JIRA_ACCOUNTS["talia"], "text": "@Talia"}}
+
+
 @pytest.mark.parametrize("prefix", ["FYI ", "CC ", "cc: "])
 def test_fyi_and_cc_keep_their_word_and_mention_too(prefix):
     nodes = _nodes(f"{prefix}@haya")
@@ -1575,7 +1580,6 @@ def test_several_mentions_on_a_line():
     [
         "Malek should look",
         "mail a@malek.com",
-        "@Talia please",
         "@Maya please",
         "@Malekah",
         "x/@malek",
