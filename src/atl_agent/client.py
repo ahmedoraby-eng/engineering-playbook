@@ -86,7 +86,7 @@ _LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)|(https?://[^\s<>\[\]()
 
 def _with_mentions(text: str) -> list[dict]:
     """Plain text as ADF nodes in which `@Name` is a real mention of anyone with a Jira seat. Others stay as text:
-    `@Talia` still counts in the comment relay, which reads the text."""
+    `@Maya` still counts in the comment relay, which reads the text."""
     pattern = r"(?<![\w.@/])@(" + "|".join(JIRA_ACCOUNTS) + r")\b"
     nodes: list[dict] = []
     position = 0
@@ -564,8 +564,9 @@ BUG_ENGINEERS = ("malek", "haya")
 BUG_DIRECT_STATUS = "Ready for Development"
 EPIC_CREATORS = {"nora": CREATE_PROJECTS, "sherif": ("BASITA",)}
 ASSIGNERS = ("adam", "nora", "sherif", "salma")
-# People and agents with a Jira seat. Maya has none (her work goes to Sherif with the label agent-maya); Basel and Talia
-# have no user.
+# People and agents with a Jira seat. Maya has none (her work goes to Sherif with the label agent-maya). Basel has his
+# own seat since 18/11/2026 and Talia a Jira-only one since 19/11/2026 (Ahmed; BASITA-247). Talia has no Confluence
+# seat, so her Confluence calls stay `--via sherif`.
 JIRA_ACCOUNTS = {
     "malek": ENGINEER_ACCOUNTS[0],
     "haya": ENGINEER_ACCOUNTS[1],
@@ -574,6 +575,8 @@ JIRA_ACCOUNTS = {
     "sherif": "712020:06afd42e-fdc7-46be-877f-1f00f3770e81",
     "nora": "712020:05c4e58f-5b7e-482b-b3b6-01b027fd9e11",
     "yousef": "712020:b3f8403e-5f97-4351-bd9e-1435a3081131",
+    "basel": "712020:180f7f79-ed32-4e9c-bada-1459774887f3",
+    "talia": "712020:607d0263-6c17-41a8-8591-d61f30f8d61a",
     "ahmed": AHMED_ACCOUNT,
     "yamen": "712020:135e8ec3-e174-46bf-b4fb-65de538cff2d",
     "abdelrahman": "712020:6f47dac6-82b6-4fd4-bd86-da7394ffa87d",
@@ -635,6 +638,8 @@ DONE_PROJECTS = ("BASITA", "ELB")
 # An agent with no Jira seat -> the agent whose user it works through. Its issues are assigned to that user and carry
 # the label agent-<name> (jira-agents.conf FOCAL_AGENT and ROUTED_AGENTS in basita-ops).
 ROUTED_THROUGH = {"maya": "sherif"}
+# The real people among JIRA_ACCOUNTS: a Refs PR never starts an issue assigned to one of them (BASITA-178).
+HUMANS = ("ahmed", "yamen", "abdelrahman")
 # Labels that hold an issue for Ahmed: jira-done leaves such an issue as it is.
 WAITS_FOR_AHMED = ("needs-ahmed",)
 # jira-wontdo (BASITA-203; Sherif's scope, 09/11/2026): a lead cancels an issue as Won't Do, with a reason. The BASITA
@@ -644,8 +649,8 @@ WAITS_FOR_AHMED = ("needs-ahmed",)
 WONT_DO_STATUS = "Won't Do"
 WONT_DO_LABEL = "wont-do"
 # Who may pass --ahmed to jira-wontdo. `atl` cannot verify Ahmed's words, so this power is not every agent's: it is
-# the named agents' (Sherif, whose scope this is; add Talia when she has a Jira seat). Any other lead cancels only
-# its own issue, with --why (Yousef's review of PR 53, 09/11/2026).
+# the named agents' (Sherif, whose scope this is; Talia has a Jira seat since 19/11/2026: add her on Ahmed's
+# word). Any other lead cancels only its own issue, with --why (Yousef's review of PR 53, 09/11/2026).
 WONT_DO_ON_AHMEDS_WORD = ("sherif",)
 
 
@@ -1513,6 +1518,32 @@ class AtlClient:
         chosen = next((t for t in options if t["to"]["name"] == "Done"), options[0])
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
+
+    def jira_progress(self, issue: str) -> tuple[bool, str]:
+        """A merged `Refs` PR: move an issue from To Do (or Ready) to In Progress, nothing more. Returns (moved, why or
+        the new status). It adds no label and no assignee, never moves an Epic or an `agent-hold` issue, and never moves
+        an issue that is already started or Done (BASITA-178). Needs read:jira-work and write:jira-work."""
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels,issuetype,assignee")
+        fields = data["fields"]
+        status = fields["status"]["name"]
+        if (fields.get("issuetype") or {}).get("name", "").lower() == "epic":
+            return False, "it is an Epic"
+        if "agent-hold" in fields.get("labels", []):
+            return False, "it has the agent-hold label"
+        if "human" in fields.get("labels", []):
+            return False, "it has the human label"
+        owner = (fields.get("assignee") or {}).get("accountId", "")
+        agents = {account for name, account in JIRA_ACCOUNTS.items() if name not in HUMANS}
+        if owner not in agents:
+            return False, "it is assigned to a person, not an agent" if owner else "it is unassigned"
+        if status.lower() not in ("to do", "ready"):
+            return False, f"it is in '{status}', not To Do or Ready"
+        moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
+        chosen = next((t for t in moves if t["to"]["name"].lower() == "in progress"), None)
+        if not chosen:
+            return False, "no transition to In Progress is available"
+        self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
+        return True, chosen["to"]["name"]
 
     def jira_start(self, issue: str) -> str:
         """Pick up an issue: To Do -> In Progress, add the `agent-picked` label, return the new status. An unassigned

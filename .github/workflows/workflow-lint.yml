@@ -1,0 +1,36 @@
+name: Workflow lint
+
+# BASITA-233 (17/11/2026): e2e.yml was invalid YAML, GitHub dropped its triggers and PR #332 stayed green because the workflow never
+# ran. This is a separate file on purpose: GitHub drops a broken ci.yml whole. It parses every workflow and composite action with a
+# strict YAML parser and requires an `on` block in each workflow. No secrets, read-only token, never the Mac, never pull_request_target.
+# Same Ruby file as check-workflow-patch.sh in basita-ops (one copy of the logic). Not a required check for now.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - "scripts/check-workflows.rb"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - "scripts/check-workflows.rb"
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-yaml:
+    name: Workflow YAML parses
+    runs-on: ubuntu-latest # ubuntu-slim has no Ruby (first run, PR #334: the Ruby check failed closed)
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Ruby must exist (fail closed)
+        run: command -v ruby && ruby --version
+      - name: Parse every workflow and action file
+        run: ruby scripts/check-workflows.rb .

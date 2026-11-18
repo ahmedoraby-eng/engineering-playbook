@@ -87,7 +87,7 @@ def test_ai_change_to_sensitive_area_needs_human_review_label():
     files = {"src/auth/session.py": ["TTL = 30"], "tests/test_session.py": ["def test(): ..."]}
     changes = parse_diff(diff_for(files))
     assert rules(run_all(changes, pr_body(assisted=True), set(), POLICY)) == ["protected-path"]
-    assert run_all(changes, pr_body(assisted=True), {"human-reviewed"}, POLICY) == []
+    assert run_all(changes, pr_body(assisted=True), {"reviewed-by-ahmed"}, POLICY) == []
 
 
 def test_large_ai_change_warns_but_does_not_fail():
@@ -95,3 +95,7 @@ def test_large_ai_change_warns_but_does_not_fail():
     findings = run_all(parse_diff(diff_for(files)), pr_body(assisted=True), set(), POLICY)
     assert rules(findings) == []
     assert rules(findings, "warning") == ["reviewable-size"]
+
+
+def test_default_human_review_label_is_reviewed_by_ahmed():
+    assert Policy().human_review_label == "reviewed-by-ahmed"

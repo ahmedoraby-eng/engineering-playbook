@@ -121,6 +121,17 @@
       },
       "manifest": {"name": "basita-nora", "public": true, "description": "Nora (Basita AI): documents, pull requests and pushes to nora/* branches"}
     },
+    "basel": {
+      "kind": "app",
+      "slug": "basita-basel",
+      "branch_prefix": "basel/",
+      "app_id": null,
+      "client_id": null,
+      "bot_id": null,
+      "keychain": "basita-gh-basel-app",
+      "installations": {},
+      "manifest": {"name": "basita-basel", "public": true, "description": "Basel (Basita AI): infrastructure code, pull requests and pushes to basel/* branches"}
+    },
     "yousef-docs": {
       "kind": "app",
       "slug": "basita-yousef-docs",

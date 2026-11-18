@@ -42,14 +42,14 @@ The standards are short on purpose: each one is a handful of *must* practices, w
 | `ai-disclosure` | error | Exactly one AI-assistance box is ticked in the PR description |
 | `no-secrets` | error | No keys, tokens, private keys or hard-coded credentials in added lines |
 | `tests-with-ai-code` | error | AI-assisted changes to source code include test changes |
-| `protected-path` | error | AI-assisted changes to auth, permissions, migrations or CI carry a `human-reviewed` label |
+| `protected-path` | error | AI-assisted changes to auth, permissions, migrations or CI carry a `reviewed-by-ahmed` label |
 | `reviewable-size` | warning | AI-assisted PRs stay small enough to review properly |
 
 Run it locally:
 
 ```bash
 git diff main...HEAD > changes.diff
-PYTHONPATH=src python -m ai_guard --diff changes.diff --pr-body pr.md --labels human-reviewed
+PYTHONPATH=src python -m ai_guard --diff changes.diff --pr-body pr.md --labels reviewed-by-ahmed
 ```
 
 Add `--warn-only` to report findings without failing the build — useful for a trial period before enforcing.

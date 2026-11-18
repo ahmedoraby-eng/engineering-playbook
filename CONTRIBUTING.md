@@ -12,7 +12,7 @@ Changes to the standards and to `ai-guard` go through pull requests like any oth
 
 4. A standard earns a *must* only when it is cheap to check and clearly prevents harm. Everything else is a *should*.
 
-Changes to `.github/workflows/` or `.ai-guard.toml` that were AI-assisted need the `human-reviewed` label.
+Changes to `.github/workflows/` or `.ai-guard.toml` that were AI-assisted need the `reviewed-by-ahmed` label.
 
 ## Architecture review
 

@@ -200,7 +200,16 @@ def test_the_seven_apps_are_listed_with_the_ids_of_s2():
         "adam",
         "nora",
         "yousef-docs",
+        "basel",
     }  # Ahmed 08/11: public so they install on the playbook
+
+
+def test_basel_is_listed_pending_like_malek():
+    # Ahmed 19/11 (BASITA-247): Basel's App mirrors Malek's; Ahmed creates it with scripts/gh-app-new basel.
+    basel, malek = CONFIG["agents"]["basel"], CONFIG["agents"]["malek"]
+    assert is_pending(basel) and basel["keychain"] == "basita-gh-basel-app"
+    assert basel["slug"] == basel["manifest"]["name"] == "basita-basel" and basel["branch_prefix"] == "basel/"
+    assert "permissions" not in basel and "permissions" not in malek  # both use the top-level app_permissions
 
 
 def test_the_four_live_identities_keep_every_field_they_had():
