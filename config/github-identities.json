@@ -125,11 +125,14 @@
       "kind": "app",
       "slug": "basita-basel",
       "branch_prefix": "basel/",
-      "app_id": null,
-      "client_id": null,
-      "bot_id": null,
+      "app_id": 5824483,
+      "client_id": "Iv23lim7Tj45UJro4RI7",
+      "bot_id": 358500913,
       "keychain": "basita-gh-basel-app",
-      "installations": {},
+      "installations": {
+        "basitasolutions": {"id": 183488947, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
+        "ahmedoraby-eng": {"id": 183489118, "repos": ["engineering-playbook"]}
+      },
       "manifest": {"name": "basita-basel", "public": true, "description": "Basel (Basita AI): infrastructure code, pull requests and pushes to basel/* branches"}
     },
     "yousef-docs": {
