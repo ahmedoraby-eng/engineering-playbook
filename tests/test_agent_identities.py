@@ -204,10 +204,19 @@ def test_the_seven_apps_are_listed_with_the_ids_of_s2():
     }  # Ahmed 08/11: public so they install on the playbook
 
 
-def test_basel_is_listed_pending_like_malek():
-    # Ahmed 19/11 (BASITA-247): Basel's App mirrors Malek's; Ahmed creates it with scripts/gh-app-new basel.
+def test_basel_is_live_like_malek():
+    # Ahmed 19/11 (BASITA-247): Basel's App mirrors Malek's, created with scripts/gh-app-new basel and installed on
+    # the same repositories (ids from gh-check basel).
     basel, malek = CONFIG["agents"]["basel"], CONFIG["agents"]["malek"]
-    assert is_pending(basel) and basel["keychain"] == "basita-gh-basel-app"
+    assert not is_pending(basel) and basel["keychain"] == "basita-gh-basel-app"
+    assert (basel["app_id"], basel["client_id"], basel["bot_id"]) == (5824483, "Iv23lim7Tj45UJro4RI7", 358500913)
+    assert {owner: i["id"] for owner, i in basel["installations"].items()} == {
+        "basitasolutions": 183488947,
+        "ahmedoraby-eng": 183489118,
+    }
+    assert {o: i["repos"] for o, i in basel["installations"].items()} == {
+        o: i["repos"] for o, i in malek["installations"].items()
+    }
     assert basel["slug"] == basel["manifest"]["name"] == "basita-basel" and basel["branch_prefix"] == "basel/"
     assert "permissions" not in basel and "permissions" not in malek  # both use the top-level app_permissions
 
