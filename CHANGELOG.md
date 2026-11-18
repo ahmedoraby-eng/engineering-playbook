@@ -4,6 +4,9 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## Unreleased
 
+### Changed (BASITA-247, atl knows Basel's Jira account; Ahmed, 18/11/2026)
+- `JIRA_ACCOUNTS` now has Basel's own Jira seat, so `atl basel jira-start` / `jira-done` work on his issues and `@Basel` in a comment is a real Jira mention (it stays in the comment relay's text too). Talia has no seat yet (Jira-only invite pending) and stays text.
+
 ### Changed (BASITA-248, one human-review label in every repo; Ahmed, 17/11/2026)
 - ai-guard's default `human_review_label` and this repo's `.ai-guard.toml` are now `reviewed-by-ahmed` (was `human-reviewed`), the label the platform repo, owner-review and merge_train already use. A caller that sets no `human_review_label` now needs `reviewed-by-ahmed` on AI-assisted changes to protected paths. `human-reviewed` stays on every Ahmed-only list (`atl`, `agent-gh`, `config/github-identities.json`), so agents still cannot set it.
 
