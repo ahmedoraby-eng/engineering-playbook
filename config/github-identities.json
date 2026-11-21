@@ -153,9 +153,9 @@
     "sync": {
       "kind": "app",
       "slug": "basita-sync",
-      "_updates_main": "the one repository whose main this App pushes, fast-forward or merge, never forced; it pushes nothing else and runs no gh command. Issues write (D16, approved with D22 on 03/11/2026) is added here once Ahmed grants it to the App on GitHub, so gh-check stays green",
+      "_updates_main": "the one repository whose main this App pushes, fast-forward or merge, never forced; it pushes nothing else and runs no gh command. Issues write (D16, approved with D22 on 03/11/2026) is granted on GitHub and is in this config, so gh-check stays green",
       "updates_main": "basitasolutions/basita-ops",
-      "permissions": {"contents": "write", "metadata": "read"},
+      "permissions": {"contents": "write", "issues": "write", "metadata": "read"},
       "app_id": 5596339,
       "client_id": "Iv23liWjBt4dzcm7Ufye",
       "bot_id": 352005823,
