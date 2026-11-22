@@ -254,7 +254,7 @@ def test_the_four_live_identities_keep_every_field_they_had():
 
 
 def test_no_app_may_hold_workflows_administration_secrets_or_write_actions():
-    """D4 and plan 10.2. sync holds exactly contents write, issues write and metadata read: Issues write is granted (D16 with D22)."""
+    """D4 and plan 10.2. sync holds exactly contents write, issues write, metadata read (D16 with D22)."""
     for name, app in CONFIG["agents"].items():
         if app.get("kind") != "app":
             continue
