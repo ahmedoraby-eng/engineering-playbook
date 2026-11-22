@@ -37,6 +37,12 @@ on:
           repositories). The "Dependency audit" job then reports as skipped.
         type: boolean
         default: false
+      timeout-minutes:
+        description: >-
+          Timeout of the "Build and test" job, in minutes. The default is unchanged (15). A loaded
+          self-hosted runner can need longer, so the caller may raise it.
+        type: number
+        default: 15
 
 permissions:
   contents: read
@@ -45,7 +51,7 @@ jobs:
   build-test:
     name: Build and test
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
