@@ -254,14 +254,14 @@ def test_the_four_live_identities_keep_every_field_they_had():
 
 
 def test_no_app_may_hold_workflows_administration_secrets_or_write_actions():
-    """D4 and plan 10.2. sync has no issues permission until Ahmed grants it on GitHub (D16 with D22)."""
+    """D4 and plan 10.2. sync holds exactly contents write, issues write, metadata read (D16 with D22)."""
     for name, app in CONFIG["agents"].items():
         if app.get("kind") != "app":
             continue
         permissions = app.get("permissions") or CONFIG["app_permissions"]
         assert not {"workflows", "administration", "secrets", "variables"} & set(permissions), name
         assert permissions.get("actions", "read") == "read" and permissions["metadata"] == "read", name
-    assert "issues" not in CONFIG["agents"]["sync"]["permissions"]
+    assert CONFIG["agents"]["sync"]["permissions"] == {"contents": "write", "issues": "write", "metadata": "read"}
     assert CONFIG["agents"]["talia"]["permissions"]["issues"] == "read"
 
 
