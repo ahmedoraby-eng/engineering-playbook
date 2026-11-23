@@ -30,16 +30,22 @@ class FakeJira:
     (default: every issue in Ready for Release that is not an Epic, as the JQL asks). `after_list` changes statuses
     between the search and the re-read, as someone moving an issue meanwhile would."""
 
-    def __init__(self, issues, listed=None, after_list=None, fail=()):
+    def __init__(self, issues, listed=None, after_list=None, fail=(), labels=None, labels_after_list=None):
+        self.labels = dict(labels or {})
+        self.labels_after_list = dict(labels_after_list or {})
         self.issues = {k: list(v) for k, v in issues.items()}
         self.listed = listed
         self.after_list = after_list or {}
         self.fail = set(fail)
         self.calls = []
 
-    @staticmethod
-    def _row(key, status, kind, fixes=("0.2.1",)):
-        fields = {"summary": "s", "status": {"name": status}, "issuetype": {"name": kind}, "labels": []}
+    def _row(self, key, status, kind, fixes=("0.2.1",)):
+        fields = {
+            "summary": "s",
+            "status": {"name": status},
+            "issuetype": {"name": kind},
+            "labels": self.labels.get(key, []),
+        }
         fields["fixVersions"] = [{"id": str(i), "name": name} for i, name in enumerate(fixes)]
         return {"key": key, "fields": fields}
 
@@ -61,6 +67,7 @@ class FakeJira:
                 k for k, (s, t, *_) in self.issues.items() if s == RFR and t != "Epic"
             ]  # fmt: skip
             rows = [self._row(k, *self.issues[k]) for k in keys]
+            self.labels.update(self.labels_after_list)
             for key, status in self.after_list.items():
                 self.issues[key][0] = status
             return 200, json.dumps({"issues": rows})
@@ -526,3 +533,20 @@ def test_cli_leaves_a_planned_issue_in_dry_run_output(capsys):
     out = capsys.readouterr().out
     assert "DFP-35: left, Fix Version 0.2.2 is not a current version" in out
     assert "DFP-36: would move Ready for Release -> Released (no PR)" in out
+
+
+def test_a_release_hold_label_keeps_it_in_ready_for_release():
+    jira = FakeJira({"DFP-101": [RFR, "Task"], "DFP-102": [RFR, "Task"]}, labels={"DFP-101": ["release-hold"]})
+    prs = source(pr(7, "MERGED", title="DFP-101: x", body="Refs DFP-101"), pr(8, "MERGED", title="DFP-102: y"))
+    lines, _, failed = release_issues(client(jira), prs, versions=CURRENT)
+    assert lines[0] == "DFP-101: left, labelled release-hold"
+    assert lines[1].startswith("DFP-102: Ready for Release -> Released")
+    assert jira.moved() == ["DFP-102"] and not failed
+
+
+def test_a_hold_label_added_after_the_listing_is_caught_at_the_re_read():
+    jira = FakeJira({"DFP-101": [RFR, "Task"]}, labels_after_list={"DFP-101": ["release-hold"]})
+    prs = source(pr(7, "MERGED", title="DFP-101: x"))
+    lines, _, _ = release_issues(client(jira), prs, versions=CURRENT)
+    assert lines == ["DFP-101: left, labelled release-hold (read again)"]
+    assert jira.moved() == []
