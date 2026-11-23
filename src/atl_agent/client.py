@@ -2016,20 +2016,37 @@ class AtlClient:
         return {"status": status, "in_scope": inside, "out_of_scope": outside, "review_text": review_text}
 
     def jira_dismiss(self, issue: str, reason: str) -> str:
-        """Salma's closing (4.3 item 12): In Testing -> Closed with one of CLOSE_REASONS (the CLI posts
-        it as the comment). Only Salma, only from In Testing. Needs read:jira-work and write:jira-work."""
-        if self.agent != "salma":
-            raise AtlError("jira-dismiss is Salma's: QA closes a bug, as QA opened it")
+        """Closing (4.3 item 12): Salma closes a bug In Testing -> Closed with one of CLOSE_REASONS (the CLI posts it
+        as the comment). BASITA-266 (Ahmed, 23/11/2026): a DFP issue of ANY type can also be closed as Duplicate, by
+        Adam (PO) or Salma, from any open status, but only when it carries a «Duplicates» link to the issue it
+        repeats. Every other reason stays Salma's, Bug-in-In-Testing only. Needs read:jira-work and write:jira-work."""
         if reason not in CLOSE_REASONS:
             raise AtlError(f"reason must be one of: {', '.join(CLOSE_REASONS)}")
-        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status")
+        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuelinks")
         current = data["fields"]["status"]["name"]
-        if current.lower() != "in testing":
-            raise AtlError(f"{issue}: status is '{current}', jira-dismiss only closes from In Testing")
+        legacy = self.agent == "salma" and current.lower() == "in testing"  # Salma's original path, unchanged
+        if reason == "Duplicate" and issue.upper().startswith("DFP-") and not legacy:
+            if self.agent not in ("adam", "salma"):
+                raise AtlError("a Duplicate close on DFP is Adam's (PO) or Salma's")
+            if (data["fields"]["status"].get("statusCategory") or {}).get("key") == "done":
+                raise AtlError(f"{issue}: already {current}, nothing to close")
+            if not any(
+                found.get("type", {}).get("name") == "Duplicate" and "outwardIssue" in found
+                for found in data["fields"].get("issuelinks", [])
+            ):
+                raise AtlError(
+                    f"{issue}: a Duplicate close needs a «duplicates» link first "
+                    f"(atl <agent> jira-link {issue} <KEY> --type Duplicate)"
+                )
+        else:
+            if self.agent != "salma":
+                raise AtlError("jira-dismiss is Salma's: QA closes a bug, as QA opened it")
+            if current.lower() != "in testing":
+                raise AtlError(f"{issue}: status is '{current}', jira-dismiss only closes from In Testing")
         moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
         chosen = next((t for t in moves if t["to"]["name"].lower() == "closed"), None)
         if not chosen:
-            raise AtlError(f"{issue}: no transition to Closed is available from In Testing")
+            raise AtlError(f"{issue}: no transition to Closed is available from {current}")
         self._call("POST", "jira", f"/rest/api/3/issue/{issue}/transitions", {"transition": {"id": chosen["id"]}})
         return chosen["to"]["name"]
 

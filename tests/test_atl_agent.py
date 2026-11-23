@@ -438,6 +438,36 @@ def test_jira_dismiss_is_salmas_from_in_testing_with_a_listed_reason(agent, stat
     assert all(c[0] == "GET" for c in transport.calls)
 
 
+def _dup_issue(status="Refinement", link=True, category="new"):
+    links = [{"type": {"name": "Duplicate"}, "outwardIssue": {"key": "DFP-244"}}] if link else []
+    fields = {"status": {"name": status, "statusCategory": {"key": category}}, "issuelinks": links}
+    return (200, json.dumps({"fields": fields}))
+
+
+@pytest.mark.parametrize("agent", ["adam", "salma"])
+def test_dfp_task_closes_as_duplicate_from_any_open_status_with_a_duplicates_link(agent):
+    transport = FakeTransport(_dup_issue(), _moves("Ready", "Closed"), (204, ""))
+    assert client(transport, agent).jira_dismiss("DFP-274", "Duplicate") == "Closed"
+    assert transport.calls[-1][3] == {"transition": {"id": "2"}}
+
+
+@pytest.mark.parametrize(
+    "agent,issue,payload,reason",
+    [
+        ("adam", "DFP-274", _dup_issue(link=False), "Duplicate"),
+        ("malek", "DFP-274", _dup_issue(), "Duplicate"),
+        ("adam", "DFP-274", _dup_issue("Closed", category="done"), "Duplicate"),
+        ("adam", "DFP-274", _dup_issue(), "Already Fixed"),
+        ("adam", "ELB-5", _dup_issue(), "Duplicate"),
+    ],
+)
+def test_duplicate_close_keeps_its_guards(agent, issue, payload, reason):
+    transport = FakeTransport(payload)
+    with pytest.raises(AtlError):
+        client(transport, agent).jira_dismiss(issue, reason)
+    assert all(c[0] == "GET" for c in transport.calls)
+
+
 def test_cli_jira_dismiss_requires_a_reason_and_comments_it(capsys):
     argv = ["salma", "jira-dismiss", "DFP-7", "--cloud-id", CLOUD]
     assert main(argv, token_source=lambda a, p: TOKEN, transport=FakeTransport()) == 2
