@@ -1954,7 +1954,8 @@ class AtlClient:
                 for found in data["fields"].get("issuelinks", [])
             ):
                 raise AtlError(
-                    f"{issue}: a Duplicate close needs a «duplicates» link first (atl <agent> jira-link {issue} <KEY> --type Duplicate)"
+                    f"{issue}: a Duplicate close needs a «duplicates» link first "
+                    f"(atl <agent> jira-link {issue} <KEY> --type Duplicate)"
                 )
         else:
             if self.agent != "salma":
