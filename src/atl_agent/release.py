@@ -10,6 +10,9 @@ open now, given by `--versions` (basita-ops `RELEASE_CURRENT_VERSIONS` in jira-a
 issue with no Fix Version, or with any Fix Version outside the list (a later version such as 0.2.2 means planned), is
 left with the reason. An empty `--versions` releases nothing.
 
+A Jira label `release-hold` (BASITA-266; Ahmed, 23/11/2026) keeps an issue in Ready for Release: the job skips it, at
+the listing and again at the re-read, and says so. Remove the label to let it release.
+
     python -m atl_agent.release --agent sherif --versions 0.2.1,0.2.1.2 [--dry-run] [--repos a,b,c] [--log FILE]
 
 Run hourly by basita-ops jira-attention.sh, behind AUTO_RELEASE in jira-agents.conf. The PRs are read as basita-reader
@@ -64,6 +67,9 @@ _LINK_LINE = re.compile(
     rf"({_KEY}(?:[ \t]*(?:,|&|\band\b)[ \t]*{_KEY})*)(?![A-Za-z0-9_-])",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+HOLD_LABEL = "release-hold"
 
 
 def names_key(pr: dict, key: str) -> bool:
@@ -134,12 +140,17 @@ def evidence(key: str, merged: list[dict]) -> str:
     return head + "every PR that names it is merged:\n" + "\n".join(_link(p) for p in merged)
 
 
-def _now_status(client: AtlClient, key: str) -> tuple[str, str, list[str]]:
-    """The issue's status, type and Fix Versions, read again now."""
+def _now_status(client: AtlClient, key: str) -> tuple[str, str, list[str], list[str]]:
+    """The issue's status, type, Fix Versions and labels, read again now."""
     found = client.jira_jql(f"key = {key}", limit=1)["issues"]
     if not found:
         raise AtlError(f"{key}: not found when read again")
-    return found[0]["status"], found[0]["type"], list(found[0].get("fix_versions") or [])
+    return (
+        found[0]["status"],
+        found[0]["type"],
+        list(found[0].get("fix_versions") or []),
+        list(found[0].get("labels") or []),
+    )
 
 
 def parse_versions(text: str) -> frozenset[str]:
@@ -185,6 +196,9 @@ def release_issues(
         if (issue.get("status") or "").lower() != FROM.lower():
             lines.append(f"{key}: left in {issue.get('status')}, only {FROM} moves")
             continue
+        if HOLD_LABEL in (issue.get("labels") or []):
+            lines.append(f"{key}: left, labelled {HOLD_LABEL}")
+            continue
         held = version_gate(list(issue.get("fix_versions") or []), versions)
         if held:
             lines.append(f"{key}: left, {held}")
@@ -205,7 +219,7 @@ def release_issues(
         merged = [p for p in prs if p["state"] == "MERGED"]
         shown = ", ".join(_short(p) for p in merged) or "no PR"
         try:
-            status, kind, fix_now = _now_status(client, key)
+            status, kind, fix_now, labels_now = _now_status(client, key)
         except AtlError as error:
             lines.append(f"{key}: left, could not read it again ({error})")
             failed = True
@@ -215,6 +229,9 @@ def release_issues(
             continue
         if kind == "Epic":
             lines.append(f"{key}: left, an Epic is never released automatically")
+            continue
+        if HOLD_LABEL in labels_now:
+            lines.append(f"{key}: left, labelled {HOLD_LABEL} (read again)")
             continue
         held = version_gate(fix_now, versions)
         if held:
