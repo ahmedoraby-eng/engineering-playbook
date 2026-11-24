@@ -182,7 +182,11 @@ def test_the_seven_apps_are_listed_with_the_ids_of_s2():
         "basita-ops",
         "elbayoumy-farm-nutrition-platform",
     ]
-    assert agents["reader"]["installations"]["ahmedoraby-eng"]["repos"] == ["engineering-playbook"]
+    slm = ["engineering-playbook", "smart-library-management-system"]
+    for name in ("malek", "haya", "salma", "talia", "yousef-docs", "basel", "reader"):
+        assert agents[name]["installations"]["ahmedoraby-eng"]["repos"] == slm, name
+    for name in ("sherif", "adam", "nora"):
+        assert agents[name]["installations"]["ahmedoraby-eng"]["repos"] == ["engineering-playbook"], name
     for name in ("sherif", "adam", "nora", "yousef-docs", "sync"):
         assert agents[name]["installations"]["basitasolutions"]["repos"] == ["basita-ops"], name
     for name, prefix in PREFIXED.items():

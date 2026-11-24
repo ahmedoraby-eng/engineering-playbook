@@ -18,7 +18,7 @@
       "keychain": "basita-gh-malek-app",
       "installations": {
         "basitasolutions": {"id": 177981619, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
-        "ahmedoraby-eng": {"id": 177982765, "repos": ["engineering-playbook"]}
+        "ahmedoraby-eng": {"id": 177982765, "repos": ["engineering-playbook", "smart-library-management-system"]}
       },
       "manifest": {"name": "basita-malek", "public": true, "description": "Malek (Basita AI): code, pull requests and pushes to malek/* branches"}
     },
@@ -32,7 +32,7 @@
       "keychain": "basita-gh-haya-app",
       "installations": {
         "basitasolutions": {"id": 177982074, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
-        "ahmedoraby-eng": {"id": 179709069, "repos": ["engineering-playbook"]}
+        "ahmedoraby-eng": {"id": 179709069, "repos": ["engineering-playbook", "smart-library-management-system"]}
       },
       "manifest": {"name": "basita-haya", "public": true, "description": "Haya (Basita AI): front-end code, pull requests and pushes to haya/* branches"}
     },
@@ -46,7 +46,7 @@
       "keychain": "basita-gh-salma-app",
       "installations": {
         "basitasolutions": {"id": 177982412, "repos": ["elbayoumy-farm-nutrition-platform"]},
-        "ahmedoraby-eng": {"id": 179709156, "repos": ["engineering-playbook"]}
+        "ahmedoraby-eng": {"id": 179709156, "repos": ["engineering-playbook", "smart-library-management-system"]}
       },
       "manifest": {"name": "basita-salma", "public": true, "description": "Salma (Basita AI): test code, pull requests and pushes to salma/* branches"}
     },
@@ -72,7 +72,7 @@
       "keychain": "basita-gh-talia-app",
       "installations": {
         "basitasolutions": {"id": 178208723, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
-        "ahmedoraby-eng": {"id": 179709236, "repos": ["engineering-playbook"]}
+        "ahmedoraby-eng": {"id": 179709236, "repos": ["engineering-playbook", "smart-library-management-system"]}
       },
       "manifest": {"name": "basita-talia", "public": true, "description": "Talia (Basita AI): documents, pull requests and pushes to talia/* branches"}
     },
@@ -131,7 +131,7 @@
       "keychain": "basita-gh-basel-app",
       "installations": {
         "basitasolutions": {"id": 183488947, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
-        "ahmedoraby-eng": {"id": 183489118, "repos": ["engineering-playbook"]}
+        "ahmedoraby-eng": {"id": 183489118, "repos": ["engineering-playbook", "smart-library-management-system"]}
       },
       "manifest": {"name": "basita-basel", "public": true, "description": "Basel (Basita AI): infrastructure code, pull requests and pushes to basel/* branches"}
     },
@@ -146,7 +146,7 @@
       "keychain": "basita-gh-yousef-docs-app",
       "installations": {
         "basitasolutions": {"id": 178212701, "repos": ["basita-ops"]},
-        "ahmedoraby-eng": {"id": 179709388, "repos": ["engineering-playbook"]}
+        "ahmedoraby-eng": {"id": 179709388, "repos": ["engineering-playbook", "smart-library-management-system"]}
       },
       "manifest": {"name": "basita-yousef-docs", "public": true, "description": "Yousef (Basita AI): his documents, their pull requests and pushes to yousef/* branches. He reviews as basita-yousef"}
     },
@@ -188,7 +188,7 @@
       "keychain": "basita-gh-reader-app",
       "installations": {
         "basitasolutions": {"id": 178216385, "repos": ["basita-ops", "elbayoumy-farm-nutrition-platform"]},
-        "ahmedoraby-eng": {"id": 178216933, "repos": ["engineering-playbook"]}
+        "ahmedoraby-eng": {"id": 178216933, "repos": ["engineering-playbook", "smart-library-management-system"]}
       },
       "manifest": {"name": "basita-reader", "public": true, "description": "Basita's read-only identity on Ahmed's Mac: fetch, clone and API reads, never a write"}
     }
