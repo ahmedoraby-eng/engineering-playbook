@@ -8,20 +8,21 @@ Solid arrows are the steps of `jira-flow`, the table in `src/atl_agent/client.py
 
 ```mermaid
 flowchart TD
-    refinement["Refinement"]
-    ready_for_development["Ready for Development"]
-    ready_for_testing["Ready for Testing"]
     in_development["In Development"]
+    ready_for_testing["Ready for Testing"]
     in_testing["In Testing"]
     ready_for_acceptance["Ready for Acceptance"]
+    ready_for_development["Ready for Development"]
     closed["Closed"]
     ready_for_release["Ready for Release"]
+    refinement["Refinement"]
     released["Released"]
     in_development -->|"submit · Malek or Haya or Nora or Sherif or Maya<br/>next: Salma"| ready_for_testing
     in_testing -->|"pass · Salma<br/>next: Adam"| ready_for_acceptance
     in_testing -->|"fail · Salma<br/>next: whoever last worked it"| ready_for_development
     ready_for_acceptance -->|"accept · Adam<br/>next: Ahmed"| ready_for_release
     ready_for_acceptance -->|"reject · Adam<br/>next: whoever last worked it"| ready_for_development
+    ready_for_development -->|"unready · Adam<br/>next: Adam"| refinement
     in_development -->|"approve · Yousef (behind FLOW_APPROVE)<br/>next: Salma"| ready_for_testing
     refinement -.->|"ready · Adam<br/>next: an engineer (--assignee)"| ready_for_development
     refinement -.->|"return · Adam<br/>next: Salma"| ready_for_testing
@@ -39,6 +40,7 @@ flowchart TD
 | fail | `jira-flow` | Salma | In Testing | Ready for Development | whoever last worked it |
 | accept | `jira-flow` | Adam | Ready for Acceptance | Ready for Release | Ahmed |
 | reject | `jira-flow` | Adam | Ready for Acceptance | Ready for Development | whoever last worked it |
+| unready | `jira-flow` | Adam | Ready for Development | Refinement | Adam |
 | approve | `jira-flow` | Yousef (behind FLOW_APPROVE) | In Development | Ready for Testing | Salma |
 | ready | `jira-ready` | Adam | Refinement | Ready for Development | an engineer (--assignee) |
 | return | `jira-return` | Adam | Refinement | Ready for Testing | Salma |
@@ -48,6 +50,6 @@ flowchart TD
 | dismiss | `jira-dismiss` | Salma | In Testing | Closed | no one |
 | merged | `the merge (close.py)` | merge job (Sherif's account) | Ready for Release | Released | no one |
 
-6 steps are rows of the `jira-flow` table; 7 are made by other commands.
+7 steps are rows of the `jira-flow` table; 7 are made by other commands.
 
 Decided, not built (BASITA-41), so not drawn: the status In Acceptance, refuse, blocked, restart, reset.

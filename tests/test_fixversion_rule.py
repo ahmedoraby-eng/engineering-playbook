@@ -167,3 +167,22 @@ def test_the_scope_file_is_valid_and_matches_the_rule():
     assert "In Development" in scope["guarded_statuses"] and "Ready for Development" in scope["ready_statuses"]
     assert in_scope("DFP-1", "Story", [], scope) and not in_scope("DFP-1", "Epic", [], scope)
     assert has_unreleased([DONE, OPEN]) and not has_unreleased([DONE]) and not has_unreleased(None)
+
+
+def test_unready_sends_a_ready_issue_back_to_refinement_for_adam():
+    transport = FakeTransport(
+        (200, json.dumps({"fields": {"status": {"name": "Ready for Development", "statusCategory": {"key": "new"}}}})),
+        (200, json.dumps({"transitions": [{"id": "9", "to": {"name": "Refinement"}}]})),
+        (204, ""),
+        (204, ""),
+    )
+    assert client(transport, "adam").jira_flow("DFP-5", "unready") == "Refinement"
+    assert transport.calls[-2][2] == {"accountId": "712020:74556401-e243-4c53-9f59-75f28fdf6cec"}
+
+
+def test_unready_is_adams_and_leaves_only_ready_for_development():
+    with pytest.raises(AtlError, match="is for Adam"):
+        client(FakeTransport(), "malek").jira_flow("DFP-5", "unready")
+    transport = FakeTransport((200, json.dumps({"fields": {"status": {"name": "In Development", "statusCategory": {"key": "indeterminate"}}}})))
+    with pytest.raises(AtlError, match="only leaves 'Ready for Development'"):
+        client(transport, "adam").jira_flow("DFP-5", "unready")

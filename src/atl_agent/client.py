@@ -611,6 +611,9 @@ FLOW = {
         "to": "Ready for Development",
         "assign": LAST_ENGINEER,
     },
+    # Fix Version rule (decision 21, Ahmed 24/11/2026): an issue in Ready for Development with no unreleased Fix Version
+    # goes back to Refinement, assigned to Adam. Used by the hourly backstop's applier, not by hand.
+    "unready": {"agents": ("adam",), "from": "Ready for Development", "to": "Refinement", "assign": ADAM_ACCOUNT},
     # BASITA-151 (plan 4.3, T3): the architect approves a reviewed PR's issue into testing. Off until Ahmed switches it
     # on (FLOW_APPROVE), and D6 decides who owns this step before that; Yousef is the plan's candidate.
     "approve": {
