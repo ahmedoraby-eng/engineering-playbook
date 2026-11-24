@@ -183,6 +183,11 @@ def test_unready_sends_a_ready_issue_back_to_refinement_for_adam():
 def test_unready_is_adams_and_leaves_only_ready_for_development():
     with pytest.raises(AtlError, match="is for Adam"):
         client(FakeTransport(), "malek").jira_flow("DFP-5", "unready")
-    transport = FakeTransport((200, json.dumps({"fields": {"status": {"name": "In Development", "statusCategory": {"key": "indeterminate"}}}})))
+    transport = FakeTransport(
+        (
+            200,
+            json.dumps({"fields": {"status": {"name": "In Development", "statusCategory": {"key": "indeterminate"}}}}),
+        )
+    )
     with pytest.raises(AtlError, match="only leaves 'Ready for Development'"):
         client(transport, "adam").jira_flow("DFP-5", "unready")
