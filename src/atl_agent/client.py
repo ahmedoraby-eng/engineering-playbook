@@ -556,12 +556,14 @@ ENGINEER_ACCOUNTS = (
     "712020:dd45049f-7336-4c37-9f99-e8665102ed92",  # Haya
 )
 LAST_ENGINEER = "last engineer"
-CREATE_PROJECTS = ("BASITA", "DFP", "ELB")
+# SLM (Smart Library, Ahmed 24/11/2026): a separate personal engagement. It is only here so agents can create and edit
+# issues; it is not in the Fix Version scope, the pickup queue or the DFP flow.
+CREATE_PROJECTS = ("BASITA", "DFP", "ELB", "SLM")
 # What an agent writes -> Jira's name for the type. These projects call it Subtask.
 CREATE_TYPES = {"Story": "Story", "Task": "Task", "Bug": "Bug", "Sub-task": "Subtask", "Subtask": "Subtask"}
 BUG_ENGINEERS = ("malek", "haya")
 BUG_DIRECT_STATUS = "Ready for Development"
-EPIC_CREATORS = {"nora": CREATE_PROJECTS, "sherif": ("BASITA",)}
+EPIC_CREATORS = {"nora": CREATE_PROJECTS, "sherif": ("BASITA",), "adam": ("SLM",)}
 ASSIGNERS = ("adam", "nora", "sherif", "salma")
 # People and agents with a Jira seat. Maya has none (her work goes to Sherif with the label agent-maya). Basel has his
 # own seat since 18/11/2026 and Talia a Jira-only one since 19/11/2026 (Ahmed; BASITA-247). Talia has no Confluence
@@ -631,7 +633,7 @@ AGENTS_CONF = Path.home() / "Code" / "basita-ops" / "jira-agents.conf"
 
 # jira-done (BASITA-178; Ahmed, 03/11/2026, operating model 4 "Moving one's own issues"): a lead moves its own issue
 # from In Progress to Done when the work has no PR. DFP keeps jira-flow and the merge (4.1 item 7), so it is not here.
-DONE_PROJECTS = ("BASITA", "ELB")
+DONE_PROJECTS = ("BASITA", "ELB", "SLM")
 # An agent with no Jira seat -> the agent whose user it works through. Its issues are assigned to that user and carry
 # the label agent-<name> (jira-agents.conf FOCAL_AGENT and ROUTED_AGENTS in basita-ops).
 ROUTED_THROUGH = {"maya": "sherif"}
