@@ -633,7 +633,7 @@ AGENTS_CONF = Path.home() / "Code" / "basita-ops" / "jira-agents.conf"
 
 # jira-done (BASITA-178; Ahmed, 03/11/2026, operating model 4 "Moving one's own issues"): a lead moves its own issue
 # from In Progress to Done when the work has no PR. DFP keeps jira-flow and the merge (4.1 item 7), so it is not here.
-DONE_PROJECTS = ("BASITA", "ELB", "SLM")
+DONE_PROJECTS = ("BASITA", "ELB")
 # An agent with no Jira seat -> the agent whose user it works through. Its issues are assigned to that user and carry
 # the label agent-<name> (jira-agents.conf FOCAL_AGENT and ROUTED_AGENTS in basita-ops).
 ROUTED_THROUGH = {"maya": "sherif"}
