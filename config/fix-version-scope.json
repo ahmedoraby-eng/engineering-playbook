@@ -1,0 +1,8 @@
+{
+  "$comment": "The ONE scope list for the Fix Version rule (Ahmed, 24/11/2026, decision 21; rule: basita-ops work/yousef/fix-version-gate-2026-11-24.md). No development issue reaches In Development or later without an unreleased Fix Version. In scope: development work only. atl (jira-start, jira-ready) reads this file; the n8n backstop (basita-ops n8n/workflows/wf05) and the PR gate (.github/review-rules.json jira_status.fix_version) carry copies, and basita-ops tests/fixversion-guards.test.sh fails when the three differ.",
+  "projects": ["DFP", "ELB"],
+  "issue_types": ["Story", "Task", "Bug", "Subtask"],
+  "exclude_labels": ["milestone", "project-plan", "ahmed-decision"],
+  "guarded_statuses": ["In Development", "In Testing", "Ready for Testing", "In Acceptance", "Ready for Acceptance", "Ready for Release"],
+  "info_statuses": ["Ready for Development"]
+}

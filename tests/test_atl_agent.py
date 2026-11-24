@@ -243,15 +243,6 @@ def test_jira_ready_refuses_a_name_with_no_seat(name):
     assert len(transport.calls) == 1
 
 
-@pytest.mark.parametrize("versions", [(), ({"id": "1", "released": True},)])
-def test_jira_ready_with_no_unreleased_version_stays_and_says_who_acts(versions):
-    transport = FakeTransport(_refining(versions))
-    with pytest.raises(AtlError) as error:
-        client(transport, "adam").jira_ready("DFP-88", "malek")
-    assert "no unreleased Fix Version" in str(error.value) and "assign it to Adam again" in str(error.value)
-    assert len(transport.calls) == 1
-
-
 def test_jira_ready_run_again_after_a_failed_move_finishes():
     failing = FakeTransport(_refining(), _moves("Ready for Development"), (204, ""), (500, "{}"))
     with pytest.raises(AtlError):

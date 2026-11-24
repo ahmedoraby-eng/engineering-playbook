@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
+from . import fixversion as fv
 from . import scope as sc
 from . import snapshot as snap
 
@@ -975,6 +976,7 @@ class AtlClient:
         self.cloud_id = cloud_id
         self._auth = "Basic " + base64.b64encode(f"{account}@{domain}:{token}".encode()).decode()
         self._transport = transport
+        self.warnings: list[str] = []  # heads-ups a command wants shown without refusing (jira-ready: no Fix Version)
 
     @property
     def signature(self) -> str:
@@ -1554,7 +1556,9 @@ class AtlClient:
         jira-done for work with no open PR (BASITA-178). Refuses an issue that is not in
         a To Do status or was already picked, so a second pickup can't happen.
         Needs read:jira-work and write:jira-work."""
-        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels,assignee")
+        data = self._call(
+            "GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,labels,assignee,issuetype,fixVersions,parent"
+        )
         fields = data["fields"]
         status = fields["status"]["name"]
         unassigned = "assignee" in fields and not fields["assignee"]
@@ -1568,6 +1572,7 @@ class AtlClient:
             raise AtlError(f"{issue}: in DFP Salma pulls only from 'Ready for Testing', not '{status}'")
         if not in_testing_queue and fields["status"]["statusCategory"]["key"] != "new":
             raise AtlError(f"{issue}: status is '{status}', an agent only starts issues in To Do")
+        self._require_fix_version(issue, fields)
         moves = self._call("GET", "jira", f"/rest/api/3/issue/{issue}/transitions").get("transitions", [])
         if in_testing_queue:
             chosen = next((t for t in moves if t["to"]["name"].lower() == "in testing"), None)
@@ -1596,6 +1601,28 @@ class AtlClient:
             except AtlError as e:
                 raise AtlError(f"{issue}: moved to '{moved_to}' and labelled, but assigning it failed: {e}") from e
         return moved_to
+
+    def _require_fix_version(self, issue: str, fields: dict) -> None:
+        """The Fix Version rule at the source (Ahmed, 24/11/2026, decision 21): an in-scope development issue
+        (config/fix-version-scope.json) needs an unreleased Fix Version before an agent starts it; a Subtask uses its
+        parent's. Refuses before anything is written. Reads the parent only for a Subtask."""
+        issuetype = fields.get("issuetype") or {}
+        if not fv.in_scope(issue, issuetype.get("name", ""), fields.get("labels") or []):
+            return
+        parent = (fields.get("parent") or {}).get("key") if issuetype.get("name") == "Subtask" else ""
+        if parent:
+            data = self._call("GET", "jira", f"/rest/api/3/issue/{parent}?fields=fixVersions")
+            versions = data["fields"].get("fixVersions")
+            owner = f"its parent {parent}"
+        else:
+            versions = fields.get("fixVersions")
+            owner = issue
+        if not fv.has_unreleased(versions):
+            raise AtlError(
+                f"{issue}: {owner} has no unreleased Fix Version, and no development issue goes to In Development "
+                "without one (Ahmed, 24/11/2026). It stays where it is. Say so in a comment with an @ to Adam, who "
+                "sets the version; then start it again."
+            )
 
     def _done_owner(self) -> tuple[str, str]:
         """For jira-done: the account the issue must be assigned to, and the agent label it must carry ("" for none).
@@ -1837,11 +1864,11 @@ class AtlClient:
                 raise AtlError(f"{issue}: name who gets it, with --assignee, or it waits on {self.display}")
             if assignee.lower() in READY_NOT_FOR:
                 raise AtlError(f"{issue}: pickup never starts {assignee.capitalize()} on Ready for Development")
-            if not [v for v in fields.get("fixVersions") or [] if not v.get("released")]:
-                raise AtlError(
-                    f"{issue}: no unreleased Fix Version, so no one would ever be started on it. It stays in "
-                    "Refinement. Say so in a comment with @ to whoever owns the release: they set the version and "
-                    f"assign it to {self.display} again."
+            # Ready needs no Fix Version (Ahmed, 24/11/2026, decision 21): it warns, and jira-start refuses later.
+            if not fv.has_unreleased(fields.get("fixVersions")):
+                self.warnings.append(
+                    f"{issue}: no unreleased Fix Version yet. Expected at Ready, required before In Development "
+                    "(a Subtask uses its parent's): until it has one, nobody can start it."
                 )
             if not sc.parse_acs(_adf_text(fields.get("description"))):
                 raise AtlError(
@@ -2009,7 +2036,7 @@ class AtlClient:
         if action == "changes" and inside:
             review_text = sc.mark_review(issue, "\n".join(
                 [f"Changes needed, each against {issue}'s acceptance criteria:", *map(sc.finding_line, inside)]
-                + ([f"Out of scope (their own tickets, not for this PR): "
+                + (["Out of scope (their own tickets, not for this PR): "
                     + ", ".join(dict.fromkeys(f["out_of_scope"] for f in outside)) + "."] if outside else [])
             ))
             sc.record_issued(issue, review_text, datetime.datetime.now(_UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
