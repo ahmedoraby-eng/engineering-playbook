@@ -976,7 +976,6 @@ class AtlClient:
         self.cloud_id = cloud_id
         self._auth = "Basic " + base64.b64encode(f"{account}@{domain}:{token}".encode()).decode()
         self._transport = transport
-        self.warnings: list[str] = []  # heads-ups a command wants shown without refusing (jira-ready: no Fix Version)
 
     @property
     def signature(self) -> str:
@@ -1602,22 +1601,24 @@ class AtlClient:
                 raise AtlError(f"{issue}: moved to '{moved_to}' and labelled, but assigning it failed: {e}") from e
         return moved_to
 
-    def _require_fix_version(self, issue: str, fields: dict) -> None:
-        """The Fix Version rule at the source (Ahmed, 24/11/2026, decision 21): an in-scope development issue
-        (config/fix-version-scope.json) needs an unreleased Fix Version before an agent starts it; a Subtask uses its
-        parent's. Refuses before anything is written. Reads the parent only for a Subtask."""
+    def _fix_version_owner(self, issue: str, fields: dict) -> str:
+        """The Fix Version rule (Ahmed, 24/11/2026, decision 21; scope: config/fix-version-scope.json). Returns "" when
+        the issue is out of scope or has an unreleased Fix Version, else who lacks one: the issue itself, or "its parent
+        KEY" for a Subtask, which uses its parent's version. Reads the parent only for a Subtask."""
         issuetype = fields.get("issuetype") or {}
         if not fv.in_scope(issue, issuetype.get("name", ""), fields.get("labels") or []):
-            return
+            return ""
         parent = (fields.get("parent") or {}).get("key") if issuetype.get("name") == "Subtask" else ""
         if parent:
             data = self._call("GET", "jira", f"/rest/api/3/issue/{parent}?fields=fixVersions")
-            versions = data["fields"].get("fixVersions")
-            owner = f"its parent {parent}"
-        else:
-            versions = fields.get("fixVersions")
-            owner = issue
-        if not fv.has_unreleased(versions):
+            return "" if fv.has_unreleased(data["fields"].get("fixVersions")) else f"its parent {parent}"
+        return "" if fv.has_unreleased(fields.get("fixVersions")) else issue
+
+    def _require_fix_version(self, issue: str, fields: dict) -> None:
+        """jira-start: no development issue goes to In Development without an unreleased Fix Version. Refuses before
+        anything is written."""
+        owner = self._fix_version_owner(issue, fields)
+        if owner:
             raise AtlError(
                 f"{issue}: {owner} has no unreleased Fix Version, and no development issue goes to In Development "
                 "without one (Ahmed, 24/11/2026). It stays where it is. Say so in a comment with an @ to Adam, who "
@@ -1851,7 +1852,9 @@ class AtlClient:
         numbered acceptance criteria in the description (BASITA-245 B1, the Definition of Ready made deterministic): G2
         refuses every send-back on an issue without them. It assigns before it moves, so running it again after a
         failure finishes the step. Needs read:jira-work and write:jira-work."""
-        data = self._call("GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype,fixVersions,description")
+        data = self._call(
+            "GET", "jira", f"/rest/api/3/issue/{issue}?fields=status,issuetype,fixVersions,description,labels,parent"
+        )
         fields = data["fields"]
         if fields["issuetype"]["name"] == "Epic":
             raise AtlError(f"{issue}: an Epic is never worked as a ticket")
@@ -1864,11 +1867,13 @@ class AtlClient:
                 raise AtlError(f"{issue}: name who gets it, with --assignee, or it waits on {self.display}")
             if assignee.lower() in READY_NOT_FOR:
                 raise AtlError(f"{issue}: pickup never starts {assignee.capitalize()} on Ready for Development")
-            # Ready needs no Fix Version (Ahmed, 24/11/2026, decision 21): it warns, and jira-start refuses later.
-            if not fv.has_unreleased(fields.get("fixVersions")):
-                self.warnings.append(
-                    f"{issue}: no unreleased Fix Version yet. Expected at Ready, required before In Development "
-                    "(a Subtask uses its parent's): until it has one, nobody can start it."
+            owner = self._fix_version_owner(issue, fields)
+            if owner:
+                raise AtlError(
+                    f"{issue}: {owner} has no unreleased Fix Version, and the Fix Version is set in Refinement "
+                    "(Ahmed, 24/11/2026, decision 21), so it can't leave it. It stays in Refinement. Say so in a "
+                    "comment with @ to whoever owns the release: they set the version (on the parent for a Subtask) "
+                    f"and assign it to {self.display} again."
                 )
             if not sc.parse_acs(_adf_text(fields.get("description"))):
                 raise AtlError(
@@ -2029,16 +2034,30 @@ class AtlClient:
         if why.strip():
             lines += ["", why.strip()]
         if outside:
-            lines += ["", "Out of scope, posted on their own tickets: "
-                      + ", ".join(dict.fromkeys(f["out_of_scope"] for f in outside)) + "."]
+            lines += [
+                "",
+                "Out of scope, posted on their own tickets: "
+                + ", ".join(dict.fromkeys(f["out_of_scope"] for f in outside))
+                + ".",
+            ]
         self.jira_comment(issue, "\n".join(lines) + signed)
         review_text = ""
         if action == "changes" and inside:
-            review_text = sc.mark_review(issue, "\n".join(
-                [f"Changes needed, each against {issue}'s acceptance criteria:", *map(sc.finding_line, inside)]
-                + (["Out of scope (their own tickets, not for this PR): "
-                    + ", ".join(dict.fromkeys(f["out_of_scope"] for f in outside)) + "."] if outside else [])
-            ))
+            review_text = sc.mark_review(
+                issue,
+                "\n".join(
+                    [f"Changes needed, each against {issue}'s acceptance criteria:", *map(sc.finding_line, inside)]
+                    + (
+                        [
+                            "Out of scope (their own tickets, not for this PR): "
+                            + ", ".join(dict.fromkeys(f["out_of_scope"] for f in outside))
+                            + "."
+                        ]
+                        if outside
+                        else []
+                    )
+                ),
+            )
             sc.record_issued(issue, review_text, datetime.datetime.now(_UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
         return {"status": status, "in_scope": inside, "out_of_scope": outside, "review_text": review_text}
 

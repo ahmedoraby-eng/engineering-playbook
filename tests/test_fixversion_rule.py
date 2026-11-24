@@ -6,7 +6,6 @@ import json
 import pytest
 
 from atl_agent import AtlClient, AtlError
-from atl_agent.__main__ import main
 from atl_agent.fixversion import has_unreleased, in_scope, load_scope
 
 TOKEN = "tok-" + "x" * 12
@@ -95,31 +94,30 @@ def test_a_subtask_uses_its_parents_version():
         client(bad).jira_start("DFP-2")
 
 
-def refining(versions):
+def refining(versions, kind="Story", labels=(), parent=None):
     doc = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "AC1 It works."}]}]}
     fields = {
         "status": {"name": "Refinement"},
-        "issuetype": {"name": "Story"},
+        "issuetype": {"name": kind},
         "fixVersions": list(versions),
         "description": doc,
+        "labels": list(labels),
     }
+    if parent:
+        fields["parent"] = {"key": parent}
     return (200, json.dumps({"fields": fields}))
 
 
-def test_ready_warns_without_a_version_and_still_moves():
-    transport = FakeTransport(
-        refining(()),
-        (200, json.dumps({"transitions": [{"id": "3", "to": {"name": "Ready for Development"}}]})),
-        (204, ""),
-        (204, ""),
-    )
-    c = client(transport, "adam")
-    c._assignee_account = lambda name: "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
-    assert c.jira_ready("DFP-88", "malek") == "Ready for Development"
-    assert len(c.warnings) == 1 and "required before In Development" in c.warnings[0]
+@pytest.mark.parametrize("versions", [(), (DONE,)])
+def test_ready_refuses_without_an_unreleased_version_and_writes_nothing(versions):
+    transport = FakeTransport(refining(versions))
+    with pytest.raises(AtlError) as error:
+        client(transport, "adam").jira_ready("DFP-88", "malek")
+    assert "no unreleased Fix Version" in str(error.value) and "assign it to Adam again" in str(error.value)
+    assert len(transport.calls) == 1
 
 
-def test_ready_with_a_version_does_not_warn():
+def test_ready_with_a_version_moves():
     transport = FakeTransport(
         refining((OPEN,)),
         (200, json.dumps({"transitions": [{"id": "3", "to": {"name": "Ready for Development"}}]})),
@@ -128,29 +126,37 @@ def test_ready_with_a_version_does_not_warn():
     )
     c = client(transport, "adam")
     c._assignee_account = lambda name: "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
-    c.jira_ready("DFP-88", "malek")
-    assert c.warnings == []
+    assert c.jira_ready("DFP-88", "malek") == "Ready for Development"
 
 
-def test_cli_ready_prints_the_warning_and_puts_it_in_the_comment(capsys):
+def test_ready_leaves_out_of_scope_issues_alone():
     transport = FakeTransport(
-        refining(()),
+        refining((), kind="Story", labels=["milestone"]),
         (200, json.dumps({"transitions": [{"id": "3", "to": {"name": "Ready for Development"}}]})),
         (204, ""),
         (204, ""),
-        (201, "{}"),
     )
-    argv = ["adam", "jira-ready", "DFP-88", "ready", "--assignee", "malek", "--cloud-id", "cloud-1"]
-    import atl_agent.client as cl
+    c = client(transport, "adam")
+    c._assignee_account = lambda name: "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
+    assert c.jira_ready("DFP-88", "malek") == "Ready for Development"
 
-    original = cl.AtlClient._assignee_account
-    cl.AtlClient._assignee_account = lambda self, name: "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
-    try:
-        assert main(argv, token_source=lambda a, p: TOKEN, transport=transport) == 0
-    finally:
-        cl.AtlClient._assignee_account = original
-    assert "warning" in capsys.readouterr().err
-    assert "Heads-up" in json.dumps(transport.calls[-1][2])
+
+def test_ready_for_a_subtask_uses_its_parents_version():
+    bad = FakeTransport(
+        refining((OPEN,), kind="Subtask", parent="DFP-1"), (200, json.dumps({"fields": {"fixVersions": [DONE]}}))
+    )
+    with pytest.raises(AtlError, match="its parent DFP-1 has no unreleased Fix Version"):
+        client(bad, "adam").jira_ready("DFP-88", "malek")
+    ok = FakeTransport(
+        refining((), kind="Subtask", parent="DFP-1"),
+        (200, json.dumps({"fields": {"fixVersions": [OPEN]}})),
+        (200, json.dumps({"transitions": [{"id": "3", "to": {"name": "Ready for Development"}}]})),
+        (204, ""),
+        (204, ""),
+    )
+    c = client(ok, "adam")
+    c._assignee_account = lambda name: "712020:e4253d3d-fed6-43d0-bbcb-acaf9b299bc3"
+    assert c.jira_ready("DFP-88", "malek") == "Ready for Development"
 
 
 def test_the_scope_file_is_valid_and_matches_the_rule():
@@ -158,6 +164,6 @@ def test_the_scope_file_is_valid_and_matches_the_rule():
     assert scope["projects"] == ["DFP", "ELB"]
     assert scope["issue_types"] == ["Story", "Task", "Bug", "Subtask"]
     assert set(scope["exclude_labels"]) == {"milestone", "project-plan", "ahmed-decision"}
-    assert "In Development" in scope["guarded_statuses"] and "Ready for Development" not in scope["guarded_statuses"]
+    assert "In Development" in scope["guarded_statuses"] and "Ready for Development" in scope["ready_statuses"]
     assert in_scope("DFP-1", "Story", [], scope) and not in_scope("DFP-1", "Epic", [], scope)
     assert has_unreleased([DONE, OPEN]) and not has_unreleased([DONE]) and not has_unreleased(None)

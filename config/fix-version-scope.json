@@ -1,5 +1,5 @@
 {
-  "$comment": "The ONE scope list for the Fix Version rule (Ahmed, 24/11/2026, decision 21; rule: basita-ops work/yousef/fix-version-gate-2026-11-24.md). No development issue reaches In Development or later without an unreleased Fix Version. In scope: development work only. atl (jira-start, jira-ready) reads this file; the n8n backstop (basita-ops n8n/workflows/wf05) and the PR gate (.github/review-rules.json jira_status.fix_version) carry copies, and basita-ops tests/fixversion-guards.test.sh fails when the three differ.",
+  "$comment": "The ONE scope list for the Fix Version rule (Ahmed, 24/11/2026, decision 21; rule: basita-ops work/yousef/fix-version-gate-2026-11-24.md). No development issue reaches In Development or later without an unreleased Fix Version. In scope: development work only. atl (jira-start, jira-ready, both refuse) reads this file; the n8n backstop (basita-ops n8n/workflows/wf05) and the PR gate (.github/review-rules.json jira_status.fix_version) carry copies, and basita-ops tests/fixversion-guards.test.sh fails when the three differ.",
   "projects": [
     "DFP",
     "ELB"
@@ -25,11 +25,12 @@
     "Ready for Release"
   ],
   "guarded_comment": "In Progress is ELB's In Development (ELB has the simple workflow). The PR gate and atl treat it the same way.",
-  "info_statuses": [
-    "Ready for Development"
-  ],
   "released_ok_statuses": [
     "Ready for Release"
   ],
-  "released_ok_comment": "Ready for Release is flagged only when it has no Fix Version at all: a version is released after its issues, so a released one there is normal (Adam, 24/11)."
+  "released_ok_comment": "Ready for Release is flagged only when it has no Fix Version at all: a version is released after its issues, so a released one there is normal (Adam, 24/11).",
+  "ready_statuses": [
+    "Ready for Development"
+  ],
+  "ready_comment": "Ready for Development is enforced too (Ahmed, 24/11 ~7:15 AM: the Fix Version is set in Refinement). jira-ready refuses; the hourly backstop sends an issue there without one back to Refinement, with no hold."
 }

@@ -449,10 +449,7 @@ def main(argv: list[str] | None = None, token_source=keychain_token, transport=N
             print(f"{args.target} -> {status}, labelled agent-picked, by {client.display}")
         elif args.command == "jira-ready":
             status = client.jira_ready(args.target, args.assignee)
-            heads_up = "".join(f"Heads-up: {w}\n\n" for w in client.warnings)
-            for w in client.warnings:
-                print(f"atl: warning: {w}", file=sys.stderr)
-            client.jira_comment(args.target, heads_up + signed)
+            client.jira_comment(args.target, signed)
             to = f", assigned to {args.assignee.capitalize()}" if args.assignee else ""
             print(f"{args.target} -> {status}{to}, by {client.display}")
         elif args.command == "jira-flow":
