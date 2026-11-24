@@ -3,6 +3,7 @@
   "projects": ["DFP", "ELB"],
   "issue_types": ["Story", "Task", "Bug", "Subtask"],
   "exclude_labels": ["milestone", "project-plan", "ahmed-decision"],
-  "guarded_statuses": ["In Development", "In Testing", "Ready for Testing", "In Acceptance", "Ready for Acceptance", "Ready for Release"],
+  "guarded_statuses": ["In Development", "In Progress", "In Testing", "Ready for Testing", "In Acceptance", "Ready for Acceptance", "Ready for Release"],
+  "guarded_comment": "In Progress is ELB's In Development (ELB has the simple workflow). The PR gate and atl treat it the same way.",
   "info_statuses": ["Ready for Development"]
 }
