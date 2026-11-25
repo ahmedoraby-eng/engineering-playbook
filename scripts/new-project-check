@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# new-project-check <owner/repo> <JIRA_KEY> [--deploy-check "Workers Builds: <name>"] [--brand none]
+#
+# Reports which items of the new-project start checklist (standards/07-new-project-start.md, ADR-024) a project is
+# missing. Read-only: GitHub through `agent-gh reader`, Jira through `atl yousef jira-jql`, the Mac automation from
+# the local basita-ops checkout. Prints one line per item: PASS, GAP, UNKNOWN (the reader can't see it) or N/A.
+# Exit code: 0 when there is no GAP, 1 otherwise. A prototype of ADR-024 S1 (`baseline check`), which replaces it.
+set -uo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+GH=("$here/agent-gh" reader)
+ATL=("$here/atl" yousef)
+OPS="${BASITA_OPS:-$HOME/Code/basita-ops}"
+IDS="$here/../config/github-identities.json"
+
+repo="${1:?usage: new-project-check <owner/repo> <JIRA_KEY> [--deploy-check NAME] [--brand none]}"
+key="${2:?usage: new-project-check <owner/repo> <JIRA_KEY> [--deploy-check NAME] [--brand none]}"
+shift 2
+deploy="" brand=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --deploy-check) deploy="$2"; shift 2 ;;
+    --brand) brand="$2"; shift 2 ;;
+    *) echo "unknown option $1" >&2; exit 2 ;;
+  esac
+done
+name="${repo#*/}"
+gaps=0
+say() { printf '%-8s %-5s %s\n' "$1" "$2" "$3"; [[ "$1" == GAP ]] && gaps=$((gaps + 1)); return 0; }
+file() { "${GH[@]}" api "repos/$repo/contents/$1" --jq .content 2>/dev/null | base64 -d 2>/dev/null; }
+has() { "${GH[@]}" api "repos/$repo/contents/$1" --jq 'if type == "array" then "dir" else .name end' >/dev/null 2>&1; }
+workflows="$("${GH[@]}" api "repos/$repo/contents/.github/workflows" --jq '.[].name' 2>/dev/null)"
+wf_all=""
+for w in $workflows; do wf_all+=$'\n'"$(file ".github/workflows/$w")"; done
+uses() { grep -qE "uses: *[^ ]*engineering-playbook/\.github/workflows/$1" <<<"$wf_all"; }
+
+echo "== $repo ($key)"
+# B: repository
+has AGENTS.md && has CLAUDE.md && say PASS B1 "AGENTS.md and CLAUDE.md" || say GAP B1 "agent instruction files AGENTS.md + CLAUDE.md"
+tpl="$(file .github/pull_request_template.md)"
+if [[ -n "$tpl" ]] && grep -q "Refs $key-\|Closes $key-\|Refs <KEY>\|Refs SLM-\|Refs [A-Z]*-" <<<"$tpl" && grep -qi "AI-assisted" <<<"$tpl"; then
+  say PASS B2 "PR template with Refs/Closes and the AI box"
+else say GAP B2 "PR template with the Refs/Closes line and the AI-assistance box"; fi
+if uses "reusable-(node|python)-ci.yml"; then say PASS B3 "CI from the playbook (coverage, lint, audit)"
+else say GAP B3 "CI does not call reusable-node-ci / reusable-python-ci (coverage 90 %, lint, audit)"; fi
+if uses reusable-ai-guard.yml && has .ai-guard.toml; then say PASS B4 "ai-guard + .ai-guard.toml"; else say GAP B4 "ai-guard workflow and .ai-guard.toml"; fi
+for w in main-guard architecture-review agent-attribution; do
+  uses "reusable-$w.yml" && say PASS B5 "$w" || say GAP B5 "$w caller"
+done
+if [[ "$brand" == none ]]; then
+  grep -qiE "git grep .*-i|forbidden|employer" <<<"$wf_all" && say PASS B6 "name hygiene step" || say GAP B6 "name hygiene step (brand: none)"
+else say N/A B6 "name hygiene (brand none only)"; fi
+grep -q "gitleaks\|secret" <<<"$wf_all" && say PASS B6 "secret scan" || say GAP B6 "secret scan"
+rs="$("${GH[@]}" api "repos/$repo/rulesets" --jq '[.[].name]|join(",")' 2>/dev/null)"
+if [[ -z "$rs" ]] && "${GH[@]}" api "repos/$repo/rulesets" 2>&1 | grep -q "Upgrade to GitHub Pro"; then say UNKNOWN B8 "rulesets not available (private repo on the free plan)"
+elif [[ -n "$rs" ]]; then say PASS B8 "rulesets: $rs"; else say GAP B8 "no protect-main ruleset"; fi
+say UNKNOWN B9 "repo settings (squash, delete branch): the reader can't see them; confirm by hand"
+has docs/decisions.md && has docs/adr && say PASS B10 "decision register" || say GAP B10 "docs/decisions.md + docs/adr/"
+
+# C: Jira <-> GitHub, deploy, close
+n="$("${ATL[@]}" jira-jql "project = $key AND development[pullrequests].all > 0 AND updated >= -30d" 2>/dev/null | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("count",0))
+except Exception: print(-1)')"
+if [[ "$n" -gt 0 ]]; then say PASS C1 "GitHub for Jira links PRs ($n issues, 30 days)"
+elif [[ "$n" -eq 0 ]]; then say GAP C1 "no Jira issue shows a linked PR in 30 days: GitHub for Jira app or repo selection"
+else say UNKNOWN C1 "Jira not readable"; fi
+if uses reusable-jira-close.yml; then
+  if [[ -n "$deploy" ]] && ! grep -q "deploy-check: \"$deploy\"" <<<"$wf_all"; then say GAP C2 "jira-close without deploy-check \"$deploy\""
+  else say PASS C2 "jira-close"; fi
+else say GAP C2 "jira-close workflow"; fi
+sha="$("${GH[@]}" api "repos/$repo/commits/main" --jq .sha 2>/dev/null)"
+runs="$("${GH[@]}" api "repos/$repo/commits/$sha/check-runs" --jq '[.check_runs[]|.name+"="+(.conclusion//.status)]|join("\n")' 2>/dev/null)"
+if [[ -n "$deploy" ]]; then
+  grep -qx "$deploy=success" <<<"$runs" && say PASS C3 "deploy check on main" || say GAP C3 "no successful \"$deploy\" on main's last commit"
+else say N/A C3 "auto-deploy (pass --deploy-check for a deployed app)"; fi
+if has migrations; then grep -qi "migrations-applied" <<<"$wf_all" && say PASS C4 "migrations gate" || say GAP C4 "migrations gate"
+else say N/A C4 "no migrations/ folder"; fi
+if grep -q "=failure" <<<"$runs"; then say GAP X1 "main is red: $(grep '=failure' <<<"$runs" | tr '\n' ' ')"; else say PASS X1 "main is green"; fi
+
+# A, D, E: registry, Jira relay and the Mac automation (basita-ops on this Mac)
+if [[ -d "$OPS" ]]; then
+  grep -qE "project in \([^)]*\b$key\b" "$OPS/jira-inbox.sh" && say PASS A4 "comment relay includes $key" || say GAP A4 "comment relay (jira-inbox.sh) misses $key"
+  grep -qE "^PROJECTS=.*\b$key\b" "$OPS/jira-attention.sh" && say PASS A5 "jira-attention includes $key" || say GAP A5 "jira-attention misses $key"
+  grep -qE "^JANITOR_REPOS=.*$name" "$OPS/jira-agents.conf" && say PASS E1 "janitor covers $name" || say GAP E1 "janitor (JANITOR_REPOS) misses $name"
+else say UNKNOWN A4 "no basita-ops checkout at $OPS"; fi
+[[ -f "$IDS" ]] && grep -q "\"$name\"" "$IDS" && say PASS D1 "agent Apps list the repo" || say GAP D1 "github-identities.json doesn't list $name"
+[[ -f "$here/../config/projects.json" ]] && { grep -q "\"$key\"" "$here/../config/projects.json" && say PASS A1 "in the registry" || say GAP A1 "not in config/projects.json"; } || say GAP A1 "no registry yet (config/projects.json, ADR-024 S1)"
+say UNKNOWN A2-A3 "Jira workflow mapping, Fix Version, stage flow: confirm by hand until S1"
+echo "== gaps: $gaps"
+[[ $gaps -eq 0 ]]
