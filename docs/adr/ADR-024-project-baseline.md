@@ -3,7 +3,7 @@
 - **Status:** proposed (for Ahmed)
 - **Date:** 2026-11-25
 - **Deciders:** Ahmed (decision); Yousef (design); Basel and Malek (implementation)
-- **Ticket:** BASITA-TBD
+- **Ticket:** BASITA-267
 
 ## Context
 
@@ -92,7 +92,7 @@ Profiles:
 | C1 | Workers Builds connected: production branch `main`, non-production builds off | ✓ if deploy | – | – | the check run `deploy.check` succeeded on main's last commit | **human** (Cloudflare dashboard + Cloudflare App install) |
 | C2 | Health endpoint answers after deploy | ✓ if deploy | – | – | `curl` from the Mac (overlay URL) | – |
 | M1 | Mac automation covers it: pickup, jira-attention, janitor, playbook-sync | ✓ | ✓ | ✓ | automatic once the tools read the registry; the check confirms each tool sees the key | agent |
-| M3 | **Character memory loads in every lead and pickup session.** Gap verified on 25/11: Malek's SLM session read `~/.claude/agents/malek.md` 5 times but never his own `~/.claude/agent-memory/malek/` or `vault/People/Malek.md`. `memory: user` in an agent file applies only when that agent *type* runs as a subagent; our leads are plain sessions told to read the file, so they get the folder's project memory (Talia's), not their own | ✓ | ✓ | ✓ | a test session briefed as a character shows its memory index in context; the daily check reads the hook's log for sessions that started with no character match | **Basel** (hook) |
+| M3 | **Character memory loads in every lead and pickup session.** Gap verified on 25/11: Malek's SLM session read `~/.claude/agents/malek.md` 5 times but never his own `~/.claude/agent-memory/malek/` or `vault/People/Malek.md`. `memory: user` in an agent file applies only when that agent *type* runs as a subagent; our leads are plain sessions told to read the file, so they get the folder's project memory (Talia's), not their own | ✓ | ✓ | ✓ | the daily check lists sessions that read an agent file but not its memory index | Talia (agent files) + Basel (detection) |
 | M2 | Cost category recorded for Sherif | ✓ | ✓ | ✓ | registry field present | agent |
 | X1 | `main` is green (the last CI run on main succeeded) | ✓ | ✓ | – | API | – (a red main goes to the repo's lead) |
 
@@ -110,16 +110,13 @@ A gap is either fixed or **waived in the registry** with a reason, an end date a
    - run `baseline protect <KEY>` (ruleset, repo settings): Ahmed runs it with his own gh, as a settings action, no commit.
 4. Ends with `baseline check <KEY>`. The checklist issue closes only when the check is green (or waived), never on a workaround.
 
-### 3a. Character context hook (M3)
+### 3a. Character memory at session start (M3)
 
-- **Hook:** `UserPromptSubmit`, first prompt of a session only (a marker per session id). It reads the prompt, because a `SessionStart` hook doesn't see the brief.
-- **Character detection:** the first match wins:
-  1. a `Character: <name>` line, which becomes a standard line in every brief (Talia's briefs and `jira-pickup.sh`);
-  2. `~/.claude/agents/<name>.md` named in the prompt;
-  3. a title prefix «<Name>:».
-- **What it injects** as additional context: the character's `~/.claude/agent-memory/<name>/MEMORY.md` index, plus the Canon and the last 10 Log lines of `vault/People/<Name>.md`, about 3–5k tokens, never whole memory files. The session reads individual memories as it does today.
-- **No match:** nothing is injected, and one line goes to the hook log for the daily check.
-- **Owner:** Basel builds it in basita-ops (`hook.sh` family) with a test. It applies to the Mac sessions; a cloud session gets the same text through the brief preamble.
+Ahmed's proposal (25/11), accepted as the mechanism:
+- **Where the rule goes:** the first section of every `~/.claude/agents/<name>.md` tells the session, before any work, to read `~/.claude/agent-memory/<name>/MEMORY.md` (the index, then only the memories it needs) and `vault/People/<Name>.md` (the Canon and the last 10 Log lines).
+- **Why it reaches every session:** every lead brief and every pickup context already makes the session read its agent file, so this needs no new code. In the cloud the same paths map through basita-ops, which carries the vault.
+- **Detection, not injection:** the daily check scans the day's lead and pickup transcripts. It lists any session that read an agent file but never its memory index, so a missed read shows up within a day.
+- **Later, only if detection finds misses:** a `UserPromptSubmit` hook that injects the index.
 
 ### 4. Enforcement and drift detection
 
@@ -177,7 +174,7 @@ GitHub Team for `basitasolutions` (≈ $4 per user per month) would let an **org
 | S4 | E1: n8n daily schedule + report + attention lines (fingerprinted) | Basel | Sonnet 5.5 | S1 |
 | S5 | E2: `reusable-baseline.yml` + callers, including the G7d finding-reply check; `baseline protect` (rulesets on the public repos) and `baseline secrets` scripts for Ahmed | Basel | Sonnet 5.5 | S1 |
 | S6 | `baseline bootstrap` + `templates/baseline/<profile>` + checklist-issue text | Malek (render) + Basel (checklist) | Sonnet 5.5 | S1, S5 |
-| S8 | M3 character-context hook (`UserPromptSubmit`, first prompt) + the `Character:` line in Talia's brief template and in `jira-pickup.sh` | Basel | Sonnet 5.5 | – (independent) |
+| S8 | M3: the memory section at the top of all agent files (Talia, with Ahmed's approval on the Mac), plus the daily detection of sessions that skipped their memory (Basel) | Talia + Basel | Sonnet 5.5 | – (independent) |
 | S7 | Adopt: one bootstrap PR per existing repo to close today's gaps (first SLM, then basita-ops, playbook, DFP) | Basel | Sonnet 5.5 | S6 (or by hand from the gap list before it) |
 
 S2 and S3 can run in parallel after S1. Yousef reviews S1, S2 and S6 at `xhigh`; S3–S5 at `high`.
