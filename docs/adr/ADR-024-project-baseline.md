@@ -119,6 +119,25 @@ Ahmed's proposal (25/11), accepted as the mechanism:
 - **Detection, not injection:** the daily check scans the day's lead and pickup transcripts. It lists any session that read an agent file but never its memory index, so a missed read shows up within a day.
 - **Later, only if detection finds misses:** a `UserPromptSubmit` hook that injects the index.
 
+### 3b. Confluence comment relay trigger (J4, decided 25/11)
+
+**Decision: poll, every 15 minutes, with one CQL search.**
+- **The search:** `type = comment AND space in (<registered space keys>) AND created >= "<cursor>"` returns footer and inline comments from every space in one call; replies are comments too.
+- **Where it runs:** n8n on the Mac (the rule is that anything n8n can run is an n8n workflow), next to the Jira inbox.
+- **What it keeps:** comments that @mention an agent's account, or that reply to a thread an agent started. It writes them into the same inbox as Jira comments, deduplicated by comment id.
+- **The cursor:** the newest `created` seen, with a 2-minute overlap.
+- **Cost:** about 96 API calls a day and no per-page loop.
+
+**Rejected: the Confluence Automation event** («Comment added» trigger + «Send web request»):
+- The Free plan allows about 10 rule runs a month per site ([pricing](https://www.atlassian.com/software/confluence/pricing), [announcement](https://community.atlassian.com/t5/Confluence-articles/Introducing-Confluence-Automation-in-Free-and-Standard-plans-Dec/ba-p/2890646)), so it stops after the first handful of comments.
+- The Mac's n8n has no public URL, so the web request would need a tunnel exposed to the internet: more attack surface for a gain of minutes.
+- **Revisit** if the Atlassian plan changes or a public, authenticated endpoint appears.
+
+**Interim rule, until the relay exists, which then stays as a fast path:**
+- An agent that posts a comment for a page owner also messages that owner's session directly, when one is open.
+- Otherwise coordination routes it by hand.
+- When the relay starts, it treats a comment that was already messaged as handled only if the owner has replied on the page. Duplicates are harmless because the relay dedupes by comment id.
+
 ### 4. Enforcement and drift detection
 
 - **E1. Daily conformance on the Mac (detective; 0 Actions minutes).**
