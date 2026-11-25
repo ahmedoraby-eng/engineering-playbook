@@ -150,7 +150,11 @@ def refused(transport, message, agent="malek", via="", key="BASITA-7", source=no
 
 @pytest.mark.parametrize(
     "key, message",
-    [("DFP-4", "DFP issues move through jira-flow"), ("OTHER-1", "BASITA and ELB issues only"), ("basita-1", "not an")],
+    [
+        ("DFP-4", "DFP issues move through jira-flow"),
+        ("OTHER-1", "BASITA, ELB, SLM issues only"),
+        ("basita-1", "not an"),
+    ],
 )
 def test_refuses_dfp_and_other_projects_before_any_call(key, message):
     transport = FakeTransport()
@@ -391,3 +395,38 @@ def test_jira_done_fails_closed_while_the_reader_is_pending():
 
     transport = FakeTransport(issue(), MINE)
     refused(transport, "can't tell.*basita-reader is not set up yet", source=lambda key: github_prs(key, pending))
+
+
+# ---------- SLM (SLM-11): Released is its only Done status ----------
+
+SLM_MOVES = (
+    200,
+    json.dumps(
+        {
+            "transitions": [
+                {"id": "11", "to": {"name": "Refinement", "statusCategory": {"key": "new"}}},
+                {"id": "3", "to": {"name": "In Testing", "statusCategory": {"key": "indeterminate"}}},
+                {"id": "9", "to": {"name": "Closed", "statusCategory": {"key": "done"}}},
+                {"id": "4", "to": {"name": "Released", "statusCategory": {"key": "done"}}},
+            ]
+        }
+    ),
+)
+
+
+def test_slm_closes_to_released_even_when_another_done_status_comes_first():
+    transport = FakeTransport(issue("In Development"), MINE, SLM_MOVES, COMMENTED, MOVED)
+    assert client(transport).jira_done("SLM-3", "Shipped by hand.", no_prs)[0] == "Released"
+    assert transport.calls[-1][3] == {"transition": {"id": "4"}}
+
+
+def test_slm_without_a_released_transition_writes_nothing():
+    moves = (
+        200,
+        json.dumps({"transitions": [{"id": "9", "to": {"name": "Closed", "statusCategory": {"key": "done"}}}]}),
+    )
+    refused(FakeTransport(issue("In Testing"), MINE, moves), "no transition to 'Released'", key="SLM-3")
+
+
+def test_slm_repo_is_read_for_prs():
+    assert "ahmedoraby-eng/smart-library-management-system" in PR_REPOS

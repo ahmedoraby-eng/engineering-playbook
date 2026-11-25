@@ -633,7 +633,12 @@ AGENTS_CONF = Path.home() / "Code" / "basita-ops" / "jira-agents.conf"
 
 # jira-done (BASITA-178; Ahmed, 03/11/2026, operating model 4 "Moving one's own issues"): a lead moves its own issue
 # from In Progress to Done when the work has no PR. DFP keeps jira-flow and the merge (4.1 item 7), so it is not here.
-DONE_PROJECTS = ("BASITA", "ELB")
+# SLM (Smart Library, Ahmed 25/11/2026, SLM-11) too: its only Done-category status is Released (DONE_STATUS).
+DONE_PROJECTS = ("BASITA", "ELB", "SLM")
+# Project -> the Done-category status jira-done and a `Closes` merge move an issue to. Others take "Done", or the first.
+DONE_STATUS = {"SLM": "Released"}
+# jira-wontdo stays with BASITA and ELB: SLM's only Done status is Released, which would read as delivered.
+WONTDO_PROJECTS = ("BASITA", "ELB")
 # An agent with no Jira seat -> the agent whose user it works through. Its issues are assigned to that user and carry
 # the label agent-<name> (jira-agents.conf FOCAL_AGENT and ROUTED_AGENTS in basita-ops).
 ROUTED_THROUGH = {"maya": "sherif"}
@@ -663,6 +668,7 @@ PR_REPOS = (
     "basitasolutions/basita-ops",
     "basitasolutions/elbayoumy-farm-nutrition-platform",
     "ahmedoraby-eng/engineering-playbook",
+    "ahmedoraby-eng/smart-library-management-system",  # SLM (SLM-11)
 )
 # PRs read per repository. A repository that returns this many may have more, so jira-done can't be sure and refuses.
 PR_LIST_LIMIT = 1000
@@ -1659,7 +1665,7 @@ class AtlClient:
     def jira_done(self, issue: str, why: str, prs: Callable[[str], list[dict]] = github_prs) -> tuple[str, list[dict]]:
         """A lead's own issue from In Progress to Done, for work with no open PR (BASITA-178; Ahmed, 03/11/2026).
 
-        Refuses: a project other than BASITA or ELB (DFP keeps jira-flow and the merge); an Epic; an issue not
+        Refuses: a project other than BASITA, ELB or SLM (DFP keeps jira-flow and the merge); an Epic; an issue not
         assigned to this agent (Maya's: assigned to Sherif, with the label agent-maya, run with --via sherif); a
         status outside the In Progress category; an issue held for Ahmed (needs-ahmed); any open PR that mentions it,
         since PR work closes through `Closes` on merge; and PRs it can't read (fail closed). An issue with no PR, or
@@ -1674,7 +1680,7 @@ class AtlClient:
         if project == "DFP":
             raise AtlError(f"{issue}: DFP issues move through jira-flow and close on the merge, not with jira-done")
         if project not in DONE_PROJECTS:
-            raise AtlError(f"{issue}: jira-done is for {' and '.join(DONE_PROJECTS)} issues only")
+            raise AtlError(f"{issue}: jira-done is for {', '.join(DONE_PROJECTS)} issues only")
         why = why.strip()
         if not why:
             raise AtlError("say what was delivered, with --why")
@@ -1699,7 +1705,10 @@ class AtlClient:
         options = [t for t in moves if t["to"]["statusCategory"]["key"] == "done"]
         if not options:
             raise AtlError(f"{issue}: no transition to a Done status is available from '{status['name']}'")
-        chosen = next((t for t in options if t["to"]["name"] == "Done"), options[0])
+        target = DONE_STATUS.get(project, "Done")
+        chosen = next((t for t in options if t["to"]["name"] == target), None if project in DONE_STATUS else options[0])
+        if chosen is None:
+            raise AtlError(f"{issue}: no transition to '{target}' is available from '{status['name']}'")
         if merged:
             listed = "\n".join(p.get("url") or f"{p.get('repo')}#{p.get('number')}" for p in merged)
             trail = f"Every pull request that mentions {issue} is merged:\n{listed}"
@@ -1739,8 +1748,8 @@ class AtlClient:
         project = issue.split("-")[0]
         if project == "DFP":
             raise AtlError(f"{issue}: DFP issues move through jira-flow and close on the merge, not with jira-wontdo")
-        if project not in DONE_PROJECTS:
-            raise AtlError(f"{issue}: jira-wontdo is for {' and '.join(DONE_PROJECTS)} issues only")
+        if project not in WONTDO_PROJECTS:
+            raise AtlError(f"{issue}: jira-wontdo is for {' and '.join(WONTDO_PROJECTS)} issues only")
         why = why.strip()
         if not why:
             raise AtlError("say why it is cancelled, with --why")

@@ -328,19 +328,40 @@ def test_a_guarded_issue_moves_once_the_deploy_is_confirmed():
     assert lines == ["DFP-1: Ready for Release -> Released"]
 
 
-def test_the_wait_is_skipped_for_an_issue_the_guard_would_not_move_and_for_others():
+def test_the_wait_is_skipped_for_an_issue_the_guard_would_not_move():
     asked = []
+    transport = FakeTransport(status("In Testing", "indeterminate"), (201, "{}"))
+    deployed = lambda: asked.append(1) or True  # noqa: E731
+    close_issues(client(transport), ["DFP-1"], "u", deployed=deployed, deploy_check=CHECK)
+    assert asked == []
+
+
+def test_an_unguarded_issue_also_waits_when_the_caller_passes_a_deploy_check():
+    asked = []
+    transport = FakeTransport(status("To Do", "new"), transitions(("9", "Done", "done")), (204, ""), (201, "{}"))
+    deployed = lambda: asked.append(1) or True  # noqa: E731
+    lines = close_issues(client(transport), ["ELB-2"], "u", deployed=deployed, deploy_check=CHECK)
+    assert asked == [1] and lines == ["ELB-2: To Do -> Done"]
+
+
+def test_slm_stays_when_the_deploy_is_not_confirmed():
+    transport = FakeTransport(status("In Testing", "indeterminate"), (201, "{}"))
+    lines = close_issues(client(transport), ["SLM-11"], "u", deployed=lambda: False, deploy_check=CHECK)
+    assert lines == ["SLM-11: left in In Testing, deploy not confirmed"]
+    assert [call[0] for call in transport.calls] == ["GET", "POST"] and "/comment" in transport.calls[1][1]
+    assert "Not moved to 'Released'" in json.dumps(transport.calls[1][2])
+
+
+def test_slm_moves_to_released_once_the_deploy_is_confirmed():
     transport = FakeTransport(
         status("In Testing", "indeterminate"),
-        (201, "{}"),
-        status("To Do", "new"),
-        transitions(("9", "Done", "done")),
+        transitions(("9", "Closed", "done"), ("4", "Released", "done")),
         (204, ""),
         (201, "{}"),
     )
-    deployed = lambda: asked.append(1) or True  # noqa: E731
-    close_issues(client(transport), ["DFP-1", "ELB-2"], "u", deployed=deployed, deploy_check=CHECK)
-    assert asked == []
+    lines = close_issues(client(transport), ["SLM-11"], "u", deployed=lambda: True, deploy_check=CHECK)
+    assert lines == ["SLM-11: In Testing -> Released"]
+    assert transport.calls[2][2] == {"transition": {"id": "4"}}
 
 
 def test_two_issues_ask_about_the_deploy_once():
@@ -454,3 +475,32 @@ def test_refs_start_cli_and_dry_run(capsys):
         ["--pr-url", "u", "--refs-start"], stdin=io.StringIO("Refs ELB-5"), environ=environ, transport=transport
     )
     assert code == 0 and "ELB-5: -> In Progress" in capsys.readouterr().out
+
+
+# ---------- SLM (SLM-11): close on merge to Released, Refs moves nothing ----------
+
+
+def test_slm_closes_keys_and_refs_are_plain_references():
+    from atl_agent.close import refs_keys
+
+    assert closing_keys("Closes SLM-11\nRefs SLM-4") == ["SLM-11"]
+    assert refs_keys("Refs SLM-4\nRefs BASITA-2") == ["BASITA-2"]
+
+
+@pytest.mark.parametrize("name, category", [("Refinement", "new"), ("In Development", "indeterminate")])
+def test_slm_moves_to_released_from_any_status(name, category):
+    transport = FakeTransport(
+        status(name, category),
+        transitions(("11", "Refinement", "new"), ("9", "Closed", "done"), ("4", "Released", "done")),
+        (204, ""),
+        (201, "{}"),
+    )
+    assert close_issues(client(transport), ["SLM-11"], "http://pr/1", "- pr 1") == [f"SLM-11: {name} -> Released"]
+    assert transport.calls[2][2] == {"transition": {"id": "4"}}
+    assert "Closed automatically" in json.dumps(transport.calls[3][2])
+
+
+def test_slm_already_released_is_left_alone():
+    transport = FakeTransport(status("Released", "done"))
+    assert close_issues(client(transport), ["SLM-11"], "http://pr/1") == ["SLM-11: already Released, nothing to do"]
+    assert len(transport.calls) == 1
