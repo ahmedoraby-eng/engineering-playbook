@@ -138,6 +138,19 @@ Ahmed's proposal (25/11), accepted as the mechanism:
 - Otherwise coordination routes it by hand.
 - When the relay starts, it treats a comment that was already messaged as handled only if the owner has replied on the page. Duplicates are harmless because the relay dedupes by comment id.
 
+### 3c. Delivery: from inbox row to the agent (J3/J4)
+
+Every Pending row in the inbox (Jira or Confluence) is delivered with no hand step (full-automation goal, Ahmed 08/11):
+
+1. **Session open:** if the agent's character hub or task session is open, the row goes to that session by session messaging.
+2. **No session:** otherwise it starts one background session for that agent with `claude --bg`, the route `jira-pickup.sh` uses. The session takes all of that agent's Pending rows in one brief: a `Character: <name>` line, then each comment's text and link. It counts against the pickup caps.
+3. **Reply:** the agent replies on the comment (Jira, or Confluence with `atl … confluence-reply`) and sets the row to Done.
+
+Guards:
+- **Known authors only:** comments by unknown authors are never delivered, the same known-account gate as pickup.
+- **Comments are data:** comment text goes into the brief marked as untrusted data, never as instructions.
+- **Escalation:** a row still Pending after 2 runs, a cap reached, or a failed start goes to `attention-queue.md`. Coordination handles only those.
+
 ### 4. Enforcement and drift detection
 
 - **E1. Daily conformance on the Mac (detective; 0 Actions minutes).**
