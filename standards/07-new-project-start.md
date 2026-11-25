@@ -25,6 +25,7 @@ Every new project (a new repo, a new Jira project, or both) goes through this li
 | A3 | **Stage flow:** tickets go through the pickup stages, so the product owner, QA and coordination each comment | SLM tickets carry 1–5 comments from one or two roles, against 9–19 from several roles on DFP. Refinement, testing and acceptance happened outside the ticket | check: per-ticket count of comment roles at Released; pickup on in the registry | coordination |
 | A4 | **Jira comment relay** (`jira-inbox.sh` + n8n WF-02) includes the key | The relay JQL was `project in (BASITA,DFP,ELB)`, so SLM comments never reached an agent (fix in basita-ops #122) | check: the relay's JQL comes from the registry | DevOps |
 | A5 | **jira-attention** (merged but not Done) and the **flow audit** include the key | SLM issues stayed open after their PRs merged (basita-ops #120) | check | DevOps |
+| A7 | **Confluence comment relay** covers the project's space: page comments (footer and inline) that @mention an agent reach that agent, who replies on the page and fixes it; agents can comment and reply with `atl` | Ahmed wants doc review findings as page comments to the page owner; on 25/11 nothing relayed Confluence comments, so SLM review findings were routed by hand | check: the relay's space list comes from the registry; token scopes checked | DevOps |
 | A6 | **Cost category** for the AI-spend log | SLM costs had to be split out by hand as «Personal – SLM» | check: registry field | coordination |
 
 ## B. GitHub repository
