@@ -11,8 +11,9 @@ comment with the reason. Its workflow allows every status from every other, so t
 SLM (Smart Library, Ahmed 25/11/2026, "light automation", SLM-11) is not guarded: its workflow is Refinement, In
 Development, In Testing and Released, and a merge with `Closes SLM-<n>` moves the issue to Released from any status.
 SLM deploys by hand, so there is no deploy check: merge = Released is accepted for now. `Refs SLM-<n>` moves nothing.
+SLM gets the deploy check by setting `deploy-check` in its caller's workflow: the wait applies to every project.
 
-Reaching Cloudflare means Released (Ahmed, 01/11/2026). With --deploy-check, a guarded issue moves only once that
+Reaching Cloudflare means Released (Ahmed, 01/11/2026). With --deploy-check, an issue moves only once that
 check succeeded on the merge commit or on a later commit of the branch, which contains it: Cloudflare builds only
 the newest of quick merges, so a merge commit can have no check at all.
 
@@ -141,7 +142,7 @@ def close_issues(
 
     Idempotent: an issue already in Done is left alone, so a re-run adds nothing."""
     lines = []
-    confirmed = None  # asked once, and only for an issue the guard would move
+    confirmed = None  # asked once, and only for an issue the merge would move
     for key in keys:
         status = client.jira_status(key)
         if status["category"] == "done":
@@ -156,17 +157,18 @@ def close_issues(
             )
             lines.append(f"{key}: left in {status['name']}, a merge moves it only from {guard[0]}")
             continue
-        if guard and deployed:
+        target = guard[1] if guard else CLOSE_TO.get(key.split("-")[0], "")
+        if deployed:  # any project: a caller that passes --deploy-check waits for it (Yousef, #76)
             confirmed = deployed() if confirmed is None else confirmed
             if not confirmed:
                 client.jira_comment(
                     key,
-                    f"Not moved to '{guard[1]}': {pr_url} was merged, but no successful '{deploy_check}' build "
+                    f"Not moved to '{target or 'Done'}': {pr_url} was merged, but no successful '{deploy_check}' build "
                     f"contains it yet. After a good build, re-run this close job or move the issue by hand.",
                 )
                 lines.append(f"{key}: left in {status['name']}, {NOT_CONFIRMED}")
                 continue
-        new_status = client.jira_close(key, guard[1] if guard else CLOSE_TO.get(key.split("-")[0], ""))
+        new_status = client.jira_close(key, target)
         action = f"Moved to {new_status} automatically" if guard else "Closed automatically"
         comment = f"{action}: {pr_url} was merged and its description says 'Closes {key}'."
         if links.strip():
