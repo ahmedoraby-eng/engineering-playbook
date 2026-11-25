@@ -384,3 +384,14 @@ def test_cli_wrong_arguments_exit_2_and_send_nothing(args):
     transport = FakeTransport()
     assert run(args, transport) == 2
     assert transport.calls == []
+
+
+def test_slm_is_not_cancelled_with_wontdo():
+    # SLM's only Done status is Released, which would read as delivered (SLM-11).
+    from atl_agent import AtlClient, AtlError
+
+    calls = []
+    atl = AtlClient("malek", "cloud-1", "tok-" + "w" * 12, transport=lambda *a: calls.append(a) or (200, "{}"))
+    with pytest.raises(AtlError, match="BASITA and ELB issues only"):
+        atl.jira_wontdo("SLM-3", "Not needed.")
+    assert calls == []

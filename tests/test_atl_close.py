@@ -454,3 +454,32 @@ def test_refs_start_cli_and_dry_run(capsys):
         ["--pr-url", "u", "--refs-start"], stdin=io.StringIO("Refs ELB-5"), environ=environ, transport=transport
     )
     assert code == 0 and "ELB-5: -> In Progress" in capsys.readouterr().out
+
+
+# ---------- SLM (SLM-11): close on merge to Released, Refs moves nothing ----------
+
+
+def test_slm_closes_keys_and_refs_are_plain_references():
+    from atl_agent.close import refs_keys
+
+    assert closing_keys("Closes SLM-11\nRefs SLM-4") == ["SLM-11"]
+    assert refs_keys("Refs SLM-4\nRefs BASITA-2") == ["BASITA-2"]
+
+
+@pytest.mark.parametrize("name, category", [("Refinement", "new"), ("In Development", "indeterminate")])
+def test_slm_moves_to_released_from_any_status(name, category):
+    transport = FakeTransport(
+        status(name, category),
+        transitions(("11", "Refinement", "new"), ("9", "Closed", "done"), ("4", "Released", "done")),
+        (204, ""),
+        (201, "{}"),
+    )
+    assert close_issues(client(transport), ["SLM-11"], "http://pr/1", "- pr 1") == [f"SLM-11: {name} -> Released"]
+    assert transport.calls[2][2] == {"transition": {"id": "4"}}
+    assert "Closed automatically" in json.dumps(transport.calls[3][2])
+
+
+def test_slm_already_released_is_left_alone():
+    transport = FakeTransport(status("Released", "done"))
+    assert close_issues(client(transport), ["SLM-11"], "http://pr/1") == ["SLM-11: already Released, nothing to do"]
+    assert len(transport.calls) == 1

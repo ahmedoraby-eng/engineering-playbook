@@ -4,6 +4,10 @@ Notable changes to the playbook, newest first. Each entry links to the pull requ
 
 ## Unreleased
 
+### Changed (SLM-11, light Jira automation for SLM; Ahmed, 25/11/2026)
+- Jira close on merge now covers SLM (Smart Library): a merged PR in `ahmedoraby-eng/smart-library-management-system` whose description says `Closes SLM-<n>` moves the issue to `Released` (its only Done status) from any status and comments the PR links. SLM is not guarded and has no deploy check (it deploys by hand). `Refs SLM-<n>` moves nothing, since SLM has no To Do or In Progress status.
+- `atl <agent> jira-done` works for SLM and closes to `Released` (new `DONE_STATUS`), refusing when no Released transition exists. `jira-wontdo` stays BASITA and ELB only (`WONTDO_PROJECTS`): Released would read as delivered. `PR_REPOS` includes the SLM repo, so jira-done and auto-release read its PRs.
+
 ### Changed (BASITA-247, Basel's and Talia's seats; Ahmed, 18-19/11/2026)
 - `JIRA_ACCOUNTS` now has Basel's own Jira seat and Talia's Jira-only seat, so `atl basel|talia jira-start` / `jira-done` work on their own issues and `@Basel` / `@Talia` in a comment are real Jira mentions (they stay in the comment relay's text too). Talia has no Confluence seat: her Confluence calls stay `--via sherif`. Only Maya is still seatless.
 - `config/github-identities.json` lists Basel's GitHub App (`basita-basel`, `basel/*` branches, the shared `app_permissions`) as pending, shaped like Malek's; Ahmed creates it with `scripts/gh-app-new basel` and installs it on basita-ops, elbayoumy-farm-nutrition-platform and engineering-playbook, then its ids and installations are filled in.

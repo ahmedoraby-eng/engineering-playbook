@@ -8,6 +8,10 @@ DFP is guarded (Ahmed, 01/11/2026; operating model 4.1 item 7): there the merge 
 moves only from `Ready for Release`, and only to `Released`. From any other status it stays and the issue gets a
 comment with the reason. Its workflow allows every status from every other, so this check is the only limit.
 
+SLM (Smart Library, Ahmed 25/11/2026, "light automation", SLM-11) is not guarded: its workflow is Refinement, In
+Development, In Testing and Released, and a merge with `Closes SLM-<n>` moves the issue to Released from any status.
+SLM deploys by hand, so there is no deploy check: merge = Released is accepted for now. `Refs SLM-<n>` moves nothing.
+
 Reaching Cloudflare means Released (Ahmed, 01/11/2026). With --deploy-check, a guarded issue moves only once that
 check succeeded on the merge commit or on a later commit of the branch, which contains it: Cloudflare builds only
 the newest of quick merges, so a merge commit can have no check at all.
@@ -30,11 +34,13 @@ import time
 from collections.abc import Callable
 from urllib.parse import quote
 
-from .client import AtlClient, AtlError, default_cloud_id
+from .client import DONE_STATUS, AtlClient, AtlError, default_cloud_id
 
-PROJECTS = ("BASITA", "DFP", "ELB")
+PROJECTS = ("BASITA", "DFP", "ELB", "SLM")
 # Project -> (the only status a merge moves an issue from, the only status it moves it to).
 GUARDED = {"DFP": ("Ready for Release", "Released")}
+# Project -> the Done status an unguarded merge moves an issue to (SLM: Released). Others: "Done", or the first.
+CLOSE_TO = DONE_STATUS
 # A build reports about 3 minutes after the merge. Keep the workflow's timeout above this.
 DEPLOY_WAIT_TRIES = 36
 DEPLOY_WAIT_SECONDS = 20
@@ -56,7 +62,8 @@ def closing_keys(description: str, projects: tuple[str, ...] = PROJECTS) -> list
     return keys
 
 
-# `Refs <KEY>` only starts an issue in these projects: DFP has its own flow (operating model 4.1 item 7).
+# `Refs <KEY>` only starts an issue in these projects: DFP has its own flow (operating model 4.1 item 7), and SLM has
+# no To Do or In Progress status, so there a `Refs` PR is a plain reference.
 REFS_PROJECTS = ("BASITA", "ELB")
 
 
@@ -159,7 +166,7 @@ def close_issues(
                 )
                 lines.append(f"{key}: left in {status['name']}, {NOT_CONFIRMED}")
                 continue
-        new_status = client.jira_close(key, guard[1]) if guard else client.jira_close(key)
+        new_status = client.jira_close(key, guard[1] if guard else CLOSE_TO.get(key.split("-")[0], ""))
         action = f"Moved to {new_status} automatically" if guard else "Closed automatically"
         comment = f"{action}: {pr_url} was merged and its description says 'Closes {key}'."
         if links.strip():
