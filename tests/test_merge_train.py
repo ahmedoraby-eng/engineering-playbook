@@ -107,6 +107,8 @@ class FakeGH:
 
 
 def go(gh, order, **kw):
+    """The per-pull-request mode (batch-size 0); batch mode has its own tests (test_merge_train_batch.py)."""
+    kw.setdefault("options", Options(batch_size=0))
     kw.setdefault("now", lambda: 10_000.0)
     kw.setdefault("sleep", lambda s: None)
     return run(gh, parse(json.dumps({"wave": "w", "order": order})), **kw)
@@ -249,7 +251,7 @@ def test_the_conflict_label_goes_when_the_pull_request_is_current_again():
 
 def test_dry_run_changes_nothing():
     gh = FakeGH([pr(17, labels=frozenset({E2E_LABEL}))], behind=2)
-    report = go(gh, [17], options=Options(dry_run=True))
+    report = go(gh, [17], options=Options(dry_run=True, batch_size=0))
     assert gh.writes == [] and "dry run" in report.actions[-1]
 
 
@@ -399,9 +401,40 @@ def test_writes_use_the_app_token_and_reads_use_the_read_token_and_nothing_can_m
         ("DELETE", "Bearer WRITE"),
     }
     public = {n for n in dir(GitHub) if not n.startswith("_")}
-    writers = {"update_branch", "add_label", "remove_label", "comment"}
-    assert not any("merge" in n for n in public)
-    assert writers <= public
+    # D9: the writers, pinned. The batch writes (train/run, e2e.yml, re-run) are fenced in
+    # test_merge_train_batch.py; nothing merges into the default branch and nothing cancels a run.
+    writers = {
+        "update_branch",
+        "add_label",
+        "remove_label",
+        "comment",
+        "set_train_ref",
+        "merge_into_train",
+        "dispatch_e2e",
+        "rerun_failed",
+    }
+    readers = {
+        "default_branch",
+        "read_file",
+        "pull",
+        "behind_by",
+        "branch_sha",
+        "commit_time",
+        "comments",
+        "commit_statuses",
+        "check_runs",
+        "annotations",
+        "ref_sha",
+        "git_commit",
+        "tree_sha",
+        "pulls_for_commit",
+        "pull_files",
+        "e2e_runs",
+        "workflow_run",
+    }
+    assert public == writers | readers, "a new GitHub method must be added to this pin on purpose"
+    assert {n for n in public if "merge" in n} == {"merge_into_train"}, "the only merge is into train/run"
+    assert not any("cancel" in n or "delete" in n for n in public)
 
 
 def test_only_the_trains_own_comments_count_as_markers():
@@ -560,7 +593,7 @@ def test_cli_needs_both_tokens(monkeypatch, capsys):
 def test_cli_writes_the_step_summary(monkeypatch, tmp_path, capsys):
     patch_cli(monkeypatch, '{"wave": "w1", "order": [1]}', prs=[pr(1, state="closed", merged=True)])
     out = tmp_path / "summary.md"
-    assert cli(["--repo", "o/r", "--summary", str(out)]) == 0
+    assert cli(["--repo", "o/r", "--batch-size", "0", "--summary", str(out)]) == 0
     text = out.read_text()
     assert "### Merge train w1" in text and "| #1 | merged |" in text
 
@@ -572,5 +605,5 @@ def test_cli_reports_a_github_failure_as_red(monkeypatch, capsys):
         raise GitHubError("GET /pulls/1 -> 500")
 
     stub.pull = boom
-    assert cli(["--repo", "o/r"]) == 1
+    assert cli(["--repo", "o/r", "--batch-size", "0"]) == 1
     assert "500" in capsys.readouterr().out
